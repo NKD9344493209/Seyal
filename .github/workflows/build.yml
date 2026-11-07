@@ -25,15 +25,23 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
+          ./gradlew --no-daemon assembleDebug 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
 
-      - name: Show errors
+      - name: Report errors
         if: failure()
-        run: grep -nE "^e: |error:|FAILURE|What went wrong" -A 3 build.log | head -200 || true
+        run: |
+          echo "## Build errors" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^e: |error:|What went wrong|Could not|FAILURE|Execution failed' -A 2 build.log | head -150 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^e: ' build.log | head -40 | while IFS= read -r line; do
+            msg="${line#e: }"
+            echo "::error title=Kotlin::${msg//$'\n'/ }"
+          done || true
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Seyal-${{ github.run_number }}.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk "Seyal-${{ github.run_number }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -45,6 +53,6 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Seyal build ${{ github.run_number }}
-          body: "Debug APK. Download Seyal-${{ github.run_number }}.apk on your phone and install it."
+          body: Debug APK. Open this page on your phone, download the .apk and install it.
           files: Seyal-*.apk
           prerelease: true
