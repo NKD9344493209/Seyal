@@ -37,12 +37,13 @@ def main():
                 if len(parts) == 3:
                     timings[parts[0]] = (parts[1], parts[2])
         print("# Seyal end-to-end report\n")
-        print("| # | Command | Mode | Status | Seconds | Summary |")
-        print("|---|---|---|---|---|---|")
+        print("| # | Command | Mode | Status | Total s | Plan s | Summary |")
+        print("|---|---|---|---|---|---|---|")
         ordered = list(reversed(runs))
         for i, r in enumerate(ordered, 1):
             secs = timings.get(r.get("command", ""), ("?", ""))[0]
-            print(f"| {i} | {r.get('command','')[:60]} | {r.get('mode','')} | {r.get('status','')} | {secs} | {(r.get('summary') or '').replace('|','/')} |")
+            plan_s = round((r.get('plan_ms') or 0) / 1000, 1)
+            print(f"| {i} | {r.get('command','')[:60]} | {r.get('mode','')} | {r.get('status','')} | {secs} | {plan_s} | {(r.get('summary') or '').replace('|','/')} |")
         print()
         for i, r in enumerate(ordered, 1):
             print(f"## {i}. {r.get('command','')}")

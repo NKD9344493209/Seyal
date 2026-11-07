@@ -88,20 +88,22 @@ object Engine {
     suspend fun submit(command: String): Run {
         _planning.value = true
         try {
+            val t0 = System.currentTimeMillis()
             val plan = runCatching { Planner.plan(command, history()) }.getOrElse { e ->
                 return addRun(Run(newId(), command, "Couldn't plan", System.currentTimeMillis(), mutableListOf()).apply {
                     mode = "answer"; status = RunStatus.FAILED; finalText = e.message ?: "The AI did not answer."; summary = "Failed"
                 })
             }
-            return applyPlan(command, plan)
+            return applyPlan(command, plan, System.currentTimeMillis() - t0)
         } finally {
             _planning.value = false
         }
     }
 
-    private suspend fun applyPlan(command: String, plan: Plan): Run {
+    private suspend fun applyPlan(command: String, plan: Plan, planMs: Long): Run {
         val run = Run(newId(), command, plan.title, System.currentTimeMillis(), plan.steps.map { it.fresh() }.toMutableList())
         run.mode = plan.mode
+        run.planMs = planMs
         when (plan.mode) {
             "answer" -> { run.status = RunStatus.DONE; run.finalText = plan.answer; run.summary = "Answered" }
             "clarify" -> { run.status = RunStatus.DONE; run.question = plan.question; run.options = plan.options; run.summary = "Needs an answer" }

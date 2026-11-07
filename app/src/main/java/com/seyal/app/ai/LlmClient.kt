@@ -1,5 +1,6 @@
 package com.seyal.app.ai
 
+import android.util.Log
 import com.seyal.app.data.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -18,6 +19,9 @@ object LlmClient {
     /** Gemini models to fall back to, in order, when the chosen one is overloaded. */
     private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest")
 
+    /** Models that rejected thinkingConfig, so we stop sending it to them. */
+    private val noThinking = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     suspend fun complete(system: String, user: String, json: Boolean = false, maxTokens: Int = 2048): String =
         withContext(Dispatchers.IO) {
             if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control.")
@@ -28,13 +32,17 @@ object LlmClient {
             for (model in models) {
                 // Busy servers often recover within seconds: one quick retry, then the next model.
                 for (attempt in 0 until 2) {
+                    val t0 = System.currentTimeMillis()
                     try {
-                        return@withContext when (Settings.provider) {
+                        val out = when (Settings.provider) {
                             "anthropic" -> anthropic(system, user, maxTokens, model)
                             "openai" -> openai(system, user, json, maxTokens, model)
                             else -> gemini(system, user, json, maxTokens, model)
                         }
+                        log("$model try ${attempt + 1}: ok in ${System.currentTimeMillis() - t0} ms")
+                        return@withContext out
                     } catch (e: LlmException) {
+                        log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}): ${e.message?.take(160)}")
                         if (!e.busy) throw e
                         if (attempt == 0) delay(1500L)
                     }
@@ -43,8 +51,20 @@ object LlmClient {
             throw LlmException("The AI is overloaded right now. Try again in a minute.", busy = true)
         }
 
+    private fun log(msg: String) { runCatching { Log.i("SeyalAI", msg) } }
+
     // ---- Gemini ----
-    private fun gemini(system: String, user: String, json: Boolean, maxTokens: Int, model: String): String {
+    private fun gemini(system: String, user: String, json: Boolean, maxTokens: Int, model: String): String = try {
+        geminiCall(system, user, json, maxTokens, model, thinkLow = model !in noThinking)
+    } catch (e: LlmException) {
+        // Older models don't know thinkingLevel: retry once without it.
+        if (model !in noThinking && !e.busy && (e.message ?: "").contains("think", ignoreCase = true)) {
+            noThinking += model
+            geminiCall(system, user, json, maxTokens, model, thinkLow = false)
+        } else throw e
+    }
+
+    private fun geminiCall(system: String, user: String, json: Boolean, maxTokens: Int, model: String, thinkLow: Boolean): String {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val body = JSONObject().apply {
             put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
@@ -53,6 +73,8 @@ object LlmClient {
                 put("temperature", 0.2)
                 put("maxOutputTokens", maxOf(maxTokens, 8192))
                 if (json) put("responseMimeType", "application/json")
+                // Planning a phone command needs little "thinking"; high thinking made replies take 60–90 s.
+                if (thinkLow) put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
             })
         }
         val res = post(url, body, mapOf("x-goog-api-key" to Settings.apiKey))
@@ -109,7 +131,7 @@ object LlmClient {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
-            readTimeout = 90_000
+            readTimeout = 45_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("User-Agent", "Seyal/0.1")
@@ -127,6 +149,9 @@ object LlmClient {
                 throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy)
             }
             return JSONObject(text)
+        } catch (e: java.net.SocketTimeoutException) {
+            // A stuck server: treat like "busy" so we move on to the next model.
+            throw LlmException("AI took too long to answer", busy = true)
         } finally {
             conn.disconnect()
         }

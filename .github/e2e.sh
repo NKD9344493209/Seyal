@@ -13,6 +13,7 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
 fi
 mkdir -p e2e
 : > timings.tsv
+adb logcat -G 16M >/dev/null 2>&1 || true   # keep the whole test in the log buffer
 
 for p in READ_CONTACTS POST_NOTIFICATIONS READ_CALENDAR WRITE_CALENDAR CALL_PHONE RECORD_AUDIO; do
   adb shell pm grant "$PKG" "android.permission.$p" 2>/dev/null || true
@@ -50,7 +51,7 @@ front() { # bring Seyal back if another app (dialer, mail, calendar) opened
 }
 
 n=0
-while IFS= read -r cmd || [ -n "$cmd" ]; do
+while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   [ -z "$cmd" ] && continue
   n=$((n + 1)); tag=$(printf "%02d" "$n")
   echo "== [$tag] $cmd"
@@ -87,7 +88,7 @@ while IFS= read -r cmd || [ -n "$cmd" ]; do
   front; sleep 2
   adb exec-out screencap -p > "e2e/$tag-result.png"
   sleep 4   # stay under the free-tier rate limit
-done < "$HERE/e2e-commands.txt"
+done 3< "$HERE/e2e-commands.txt"
 
 pull
 python3 "$HERE/e2e_state.py" report runs.json timings.tsv > e2e-report.md
@@ -98,6 +99,7 @@ python3 "$HERE/e2e_state.py" report runs.json timings.tsv > e2e-report.md
   echo '```'
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 adb logcat -d > e2e-logcat.txt
+grep "SeyalAI" e2e-logcat.txt > e2e-ai-log.txt || true
 if grep -q "FATAL EXCEPTION" e2e-logcat.txt; then
   grep -E "FATAL EXCEPTION" -A 25 e2e-logcat.txt > e2e-crash.txt
   echo "CRASH during end-to-end test"; head -40 e2e-crash.txt

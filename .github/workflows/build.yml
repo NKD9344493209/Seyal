@@ -87,7 +87,7 @@ jobs:
           mkdir -p out
           cp shots/*.png out/ 2>/dev/null || true
           for f in e2e/*.png; do [ -s "$f" ] && cp "$f" "out/e2e-$(basename "$f")"; done || true
-          for f in e2e-report.md runs.json timings.tsv e2e-crash.txt; do [ -s "$f" ] && cp "$f" out/; done || true
+          for f in e2e-report.md runs.json timings.tsv e2e-crash.txt e2e-ai-log.txt; do [ -s "$f" ] && cp "$f" out/; done || true
           for f in logcat.txt crash.txt app-errors.txt; do [ -s "$f" ] && cp "$f" out/; done; true
           ls out
 

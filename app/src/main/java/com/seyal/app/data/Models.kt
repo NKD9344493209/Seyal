@@ -108,6 +108,8 @@ class Run(
     var options: List<String> = emptyList()
     /** "now" | "schedule" | "answer" | "clarify" */
     var mode: String = "now"
+    /** How long the AI took to plan, in ms. */
+    var planMs: Long = 0L
 
     fun step(id: String): Step? = steps.firstOrNull { it.id == id }
 
@@ -121,6 +123,7 @@ class Run(
         put("status", status.name)
         put("approved", approved)
         put("mode", mode)
+        put("plan_ms", planMs)
         summary?.let { put("summary", it) }
         finalText?.let { put("final_text", it) }
         question?.let { put("question", it) }
@@ -149,6 +152,7 @@ class Run(
                 updatedAt = o.optLong("updated_at", createdAt)
                 question = o.optString("question").ifBlank { null }
                 mode = o.optString("mode", "now")
+                planMs = o.optLong("plan_ms", 0L)
                 val opts = mutableListOf<String>()
                 o.optJSONArray("options")?.let { a -> for (i in 0 until a.length()) opts += a.optString(i) }
                 options = opts
