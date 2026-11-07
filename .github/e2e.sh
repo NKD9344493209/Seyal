@@ -13,6 +13,7 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
 fi
 mkdir -p e2e
 : > timings.tsv
+rm -f ui-stale.tsv
 adb logcat -G 16M >/dev/null 2>&1 || true   # keep the whole test in the log buffer
 # Keep the screen on for the whole test (screenshots were black after the screen slept).
 adb shell svc power stayon true
@@ -63,7 +64,7 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   pull; before=$(python3 "$HERE/e2e_state.py" count runs.json)
   start=$(date +%s)
   adb shell "am broadcast -n $RCV --es command '$cmd'" >/dev/null
-  approved=0; chose=0; state="?"
+  approved=0; chose=0; state="?"; status=""
   for i in $(seq 1 50); do
     sleep 3
     front
@@ -92,11 +93,22 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   echo "   -> $state in ${secs}s"
   front; sleep 2
   shot "e2e/$tag-result.png"
+  # Screen check: once a run is finished, no card on screen may still say "running", "queued" or "Doing it…".
+  case "$status" in DONE|PARTIAL|FAILED|CANCELLED)
+    adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+    stale=$(adb shell cat /sdcard/ui.xml 2>/dev/null | grep -oE 'text="(running|queued|Doing it…)"' | wc -l)
+    if [ "$stale" -gt 0 ]; then echo "   !! screen out of date: $stale stale labels"; echo "$tag	$cmd	$stale" >> ui-stale.tsv; fi ;;
+  esac
   sleep 4   # stay under the free-tier rate limit
 done 3< "$HERE/e2e-commands.txt"
 
 pull
 python3 "$HERE/e2e_state.py" report runs.json timings.tsv > e2e-report.md
+{
+  echo; echo "## Screen check"
+  if [ -s ui-stale.tsv ]; then echo "Cards still showing running/queued after the run finished:"; echo '```'; cat ui-stale.tsv; echo '```'
+  else echo "OK: every finished run showed its final state on screen."; fi
+} >> e2e-report.md
 {
   echo "## End-to-end test"
   echo '```'

@@ -158,6 +158,15 @@ fun testModels() {
     val run = Run("r1", "msg ram", "Msg", 1L, mutableListOf(step("s1", "find_contact"), step("s2", "call", listOf("s1"))))
     run.steps[0].status = StepStatus.RUNNING; run.status = RunStatus.RUNNING
     run.options = listOf("a", "b"); run.question = "Which?"
+    // Screens get copies: a change must show up as a new object, and must not leak into the copy.
+    val snap = run.snapshot()
+    T.check("snapshot is a new object", snap !== run && snap.steps[0] !== run.steps[0])
+    T.eq("snapshot keeps status", StepStatus.RUNNING, snap.steps[0].status)
+    T.eq("snapshot keeps options", listOf("a", "b"), snap.options)
+    run.steps[0].status = StepStatus.DONE
+    T.eq("snapshot unaffected by later change", StepStatus.RUNNING, snap.steps[0].status)
+    T.eq("next snapshot sees the change", StepStatus.DONE, run.snapshot().steps[0].status)
+    run.steps[0].status = StepStatus.RUNNING
     val back = Run.fromJson(JSONObject(run.toJson().toString()))
     T.eq("run id", "r1", back.id)
     T.eq("steps survive", 2, back.steps.size)

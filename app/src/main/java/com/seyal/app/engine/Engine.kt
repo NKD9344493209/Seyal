@@ -40,6 +40,13 @@ object Engine {
     private val lock = Mutex()
     private val stepJobs = ConcurrentHashMap<String, Job>()
 
+    /**
+     * The engine changes these run/recipe objects in place. Screens never see them: every change
+     * publishes fresh copies below, so Compose always notices (same object = "nothing changed").
+     */
+    @Volatile private var live: List<Run> = emptyList()
+    @Volatile private var liveRecipes: List<Recipe> = emptyList()
+
     private val _runs = MutableStateFlow<List<Run>>(emptyList())
     val runs: StateFlow<List<Run>> = _runs
     private val _recipes = MutableStateFlow<List<Recipe>>(emptyList())
@@ -58,27 +65,32 @@ object Engine {
 
     fun init(context: Context) {
         app = context.applicationContext
-        _runs.value = Store.loadRuns().sortedByDescending { it.createdAt }
-        _recipes.value = Store.loadRecipes()
+        live = Store.loadRuns().sortedByDescending { it.createdAt }
+        liveRecipes = Store.loadRecipes()
+        _runs.value = live.map { it.snapshot() }
+        _recipes.value = liveRecipes.map { it.snapshot() }
         _paused.value = Settings.paused
     }
 
     private fun bump() {
-        _runs.value = _runs.value.toList()
+        _runs.value = live.map { it.snapshot() }
         _tick.value = _tick.value + 1
-        Store.saveRuns(_runs.value)
+        Store.saveRuns(live)
     }
 
     private fun bumpRecipes() {
-        _recipes.value = _recipes.value.toList()
+        _recipes.value = liveRecipes.map { it.snapshot() }
         _tick.value = _tick.value + 1
-        Store.saveRecipes(_recipes.value)
+        Store.saveRecipes(liveRecipes)
     }
 
-    fun run(id: String): Run? = _runs.value.firstOrNull { it.id == id }
-    fun recipe(id: String): Recipe? = _recipes.value.firstOrNull { it.id == id }
+    /** The engine's own recipe objects (for the scheduler, which updates next-run times). */
+    internal fun recipeList(): List<Recipe> = liveRecipes
 
-    private fun history(): String = _runs.value.take(4).joinToString("\n") { r ->
+    fun run(id: String): Run? = live.firstOrNull { it.id == id }
+    fun recipe(id: String): Recipe? = liveRecipes.firstOrNull { it.id == id }
+
+    private fun history(): String = live.take(4).joinToString("\n") { r ->
         "- \"${r.command.take(120)}\" → ${r.summary ?: r.status.name.lowercase()}" + (r.finalText?.let { " · " + it.take(100).replace("\n", " ") } ?: "")
     }
 
@@ -123,7 +135,7 @@ object Engine {
     }
 
     private suspend fun addRun(run: Run): Run = lock.withLock {
-        _runs.value = listOf(run) + _runs.value
+        live = listOf(run) + live
         bump()
         run
     }
@@ -354,7 +366,7 @@ object Engine {
     }
 
     fun delete(runId: String) = scope.launch {
-        lock.withLock { _runs.value = _runs.value.filterNot { it.id == runId }; bump() }
+        lock.withLock { live = live.filterNot { it.id == runId }; bump() }
     }
 
     fun setPaused(paused: Boolean) = scope.launch {
@@ -363,7 +375,7 @@ object Engine {
         if (paused) {
             stepJobs.values.forEach { it.cancel() }
             lock.withLock {
-                _runs.value.filter { it.status.isOpen }.forEach { r ->
+                live.filter { it.status.isOpen }.forEach { r ->
                     r.steps.forEach { if (it.status == StepStatus.RUNNING) it.status = StepStatus.PENDING }
                     r.status = RunStatus.WAITING
                 }
@@ -372,7 +384,7 @@ object Engine {
             Scheduler.cancelAll(app)
         } else {
             Scheduler.rescheduleAll(app)
-            _runs.value.filter { it.status.isOpen }.forEach { tick(it.id) }
+            live.filter { it.status.isOpen }.forEach { tick(it.id) }
         }
     }
 
@@ -380,7 +392,7 @@ object Engine {
 
     private fun addRecipe(recipe: Recipe) {
         recipe.nextRun = Times.nextFire(recipe.trigger)
-        _recipes.value = listOf(recipe) + _recipes.value
+        liveRecipes = listOf(recipe) + liveRecipes
         bumpRecipes()
         Scheduler.schedule(app, recipe)
     }
@@ -402,7 +414,7 @@ object Engine {
     fun deleteRecipe(id: String) {
         val r = recipe(id) ?: return
         Scheduler.cancel(app, r)
-        _recipes.value = _recipes.value.filterNot { it.id == id }
+        liveRecipes = liveRecipes.filterNot { it.id == id }
         bumpRecipes()
     }
 
@@ -431,8 +443,9 @@ object Engine {
     fun wipeAll() = scope.launch {
         stepJobs.values.forEach { it.cancel() }
         lock.withLock {
-            _recipes.value.forEach { Scheduler.cancel(app, it) }
-            _runs.value = emptyList(); _recipes.value = emptyList()
+            liveRecipes.forEach { Scheduler.cancel(app, it) }
+            live = emptyList(); liveRecipes = emptyList()
+            _runs.value = emptyList(); _recipes.value = emptyList(); _tick.value = _tick.value + 1
             Store.wipe()
         }
     }

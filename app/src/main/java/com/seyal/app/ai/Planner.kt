@@ -36,6 +36,8 @@ RULES
    "Has <film> released?" / release date → movie_info AND web_search "<film> release date" in parallel, then ai. Lists and rankings ("2025 Tamil movies rated above 7", "best shoes under 500") → web_search with read 3, then ai.
 8. For news: fetch_news → ai (summarise, 2 lines each, simplest words) → notify with a short line like "AI news ready · {count} stories" is NOT needed; the engine notifies automatically.
 9. Messages and emails: write the actual text in the user's voice, short, polite. Emails get a subject.
+   Meeting link for a person at a time → find_contact + meeting_link, then send it (email if they say email, else WhatsApp) AND create_event at that time with the link in the description.
+   Shopping ("best X under ₹N with rating above R") → web_search with read 3, then one ai step whose task repeats EVERY condition (item, colour, max price, min rating).
 10. Never invent phone numbers, emails or links. Never put passwords, OTPs or payments in a plan.
 11. "title": 3-6 words describing the whole command.
 12. NEVER reply only "I can't". Seyal cannot pay or finish bookings/orders yet, so for "book tickets", "order", "buy": do the useful part in mode "now":

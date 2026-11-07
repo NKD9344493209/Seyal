@@ -40,6 +40,12 @@ class Step(
 
     fun fresh(): Step = Step(id, tool, title, JSONObject(args.toString()), dependsOn)
 
+    /** A separate copy for the screens, so they always see a new object when something changes. */
+    fun snapshot(): Step = Step(id, tool, title, args, dependsOn).also { c ->
+        c.status = status; c.output = output; c.error = error; c.line = line; c.attempts = attempts
+        c.approved = approved; c.choicePrompt = choicePrompt; c.choices = choices
+    }
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("tool", tool)
@@ -112,6 +118,12 @@ class Run(
     var planMs: Long = 0L
 
     fun step(id: String): Step? = steps.firstOrNull { it.id == id }
+
+    /** A separate copy (steps included) for the screens. */
+    fun snapshot(): Run = Run(id, command, title, createdAt, steps.map { it.snapshot() }.toMutableList(), recipeId).also { c ->
+        c.status = status; c.approved = approved; c.summary = summary; c.finalText = finalText; c.updatedAt = updatedAt
+        c.question = question; c.options = options; c.mode = mode; c.planMs = planMs
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -221,6 +233,11 @@ class Recipe(
     var enabled: Boolean = true
     var lastRun: Long = 0L
     var nextRun: Long = 0L
+
+    /** A separate copy for the screens. */
+    fun snapshot(): Recipe = Recipe(id, name, trigger, steps, command, createdAt).also { c ->
+        c.enabled = enabled; c.lastRun = lastRun; c.nextRun = nextRun
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)

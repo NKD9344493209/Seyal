@@ -69,7 +69,11 @@ fun RunBody(run: Run, scope: CoroutineScope, compact: Boolean = false, tick: Lon
                 RunStatus.PARTIAL, RunStatus.FAILED -> run.summary ?: "Some steps failed"
                 RunStatus.CANCELLED -> "Cancelled"
                 RunStatus.WAITING -> "Waiting for you"
-                else -> if (run.steps.size == 1) "Doing it…" else "${run.steps.size} tasks · $lanes lanes run together"
+                else -> when {
+                    run.steps.size == 1 -> "Doing it…"
+                    lanes <= 1 -> "${run.steps.size} tasks · one after another"
+                    else -> "${run.steps.size} tasks · $lanes at the same time"
+                }
             }
             Text(headline, style = MaterialTheme.typography.titleLarge)
 

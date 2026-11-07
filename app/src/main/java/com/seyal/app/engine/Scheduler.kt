@@ -83,7 +83,7 @@ object Scheduler {
     }
 
     fun cancelAll(ctx: Context) {
-        Engine.recipes.value.forEach { cancel(ctx, it) }
+        Engine.recipeList().forEach { cancel(ctx, it) }
     }
 
     /** After boot, time change or app update: put every alarm and recipe back. */
@@ -95,7 +95,7 @@ object Scheduler {
             else if (t.at > now - 30 * 60_000) fire(ctx, t.kind, t.id, t.at, t.text) // missed by a little: fire now
         }
         Store.saveTimers(Store.loadTimers().filter { it.at > now })
-        Engine.recipes.value.filter { it.enabled }.forEach { r ->
+        Engine.recipeList().filter { it.enabled }.forEach { r ->
             if (r.nextRun <= now) r.nextRun = Times.nextFire(r.trigger)
             schedule(ctx, r)
         }
