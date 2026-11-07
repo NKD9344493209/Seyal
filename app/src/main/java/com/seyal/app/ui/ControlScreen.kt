@@ -43,6 +43,7 @@ import com.seyal.app.engine.Engine
 import com.seyal.app.engine.Scheduler
 import com.seyal.app.engine.Tools
 import com.seyal.app.ui.theme.Ink
+import com.seyal.app.BuildConfig
 import kotlinx.coroutines.launch
 
 @Composable
@@ -162,6 +163,13 @@ private fun AutoSendSection() {
     val ctx = LocalContext.current
     var numbers by remember { mutableStateOf(Settings.autoSendContacts.toList()) }
     var input by remember { mutableStateOf("") }
+    if (IS_LITE) {
+        Card {
+            Text("WhatsApp auto-send and mail alerts", style = MaterialTheme.typography.titleMedium)
+            Text("Not in Seyal Lite. In India, Google Play Protect blocks downloaded apps that use Accessibility or Notification access. Install Seyal Full from your laptop over USB to get both. Everything else works here: WhatsApp opens with the message typed, you tap Send.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        }
+        return
+    }
     Card {
         Text("WhatsApp auto-send", style = MaterialTheme.typography.titleMedium)
         Text("For these numbers Seyal taps Send itself (max 10 a day). Needs the accessibility switch on. Everyone else: you tap Send.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
@@ -233,7 +241,7 @@ private fun PhoneSection() {
                 SmallButton(if (Scheduler.canExact(ctx)) "Exact alarms ✓" else "Exact alarms", filled = false) {
                     if (Build.VERSION.SDK_INT >= 31) ctx.startActivity(Intent(SysSettings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${ctx.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                SmallButton("Mail alerts (notification access)", filled = false) {
+                if (!IS_LITE) SmallButton("Mail alerts (notification access)", filled = false) {
                     ctx.startActivity(Intent(SysSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
             }
@@ -247,3 +255,6 @@ private fun PhoneSection() {
         }
     }
 }
+
+/** Lite = the browser-installable edition without Accessibility / Notification access. */
+private val IS_LITE: Boolean get() = BuildConfig.FLAVOR == "lite"

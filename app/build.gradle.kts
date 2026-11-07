@@ -16,7 +16,20 @@ android {
         versionName = "0.1.0"
     }
 
+    // Same debug key on every build, so a new APK installs over the old one (settings kept).
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("seyal-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -34,6 +47,23 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    // lite: installs from a browser download (no Accessibility / Notification access, which
+    //       Play Protect blocks for downloaded apps in India).
+    // full: everything; install over USB from Android Studio or adb.
+    flavorDimensions += "edition"
+    productFlavors {
+        create("lite") {
+            dimension = "edition"
+            isDefault = true
+            versionNameSuffix = "-lite"
+        }
+        create("full") {
+            dimension = "edition"
+            versionNameSuffix = "-full"
+        }
     }
 
     packaging {
