@@ -2,6 +2,7 @@ package com.seyal.app.ai
 
 import com.seyal.app.data.Settings
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -9,24 +10,41 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-class LlmException(message: String) : IOException(message)
+class LlmException(message: String, val busy: Boolean = false) : IOException(message)
 
 /** Talks to Gemini, Claude or any OpenAI-compatible server with the user's own key. */
 object LlmClient {
 
+    /** Gemini models to fall back to, in order, when the chosen one is overloaded. */
+    private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest")
+
     suspend fun complete(system: String, user: String, json: Boolean = false, maxTokens: Int = 2048): String =
         withContext(Dispatchers.IO) {
             if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control.")
-            when (Settings.provider) {
-                "anthropic" -> anthropic(system, user, maxTokens)
-                "openai" -> openai(system, user, json, maxTokens)
-                else -> gemini(system, user, json, maxTokens)
+            val models = when (Settings.provider) {
+                "gemini" -> (listOf(Settings.effectiveModel()) + geminiFallbacks).distinct()
+                else -> listOf(Settings.effectiveModel())
             }
+            for (model in models) {
+                // Busy servers often recover within seconds: one quick retry, then the next model.
+                for (attempt in 0 until 2) {
+                    try {
+                        return@withContext when (Settings.provider) {
+                            "anthropic" -> anthropic(system, user, maxTokens, model)
+                            "openai" -> openai(system, user, json, maxTokens, model)
+                            else -> gemini(system, user, json, maxTokens, model)
+                        }
+                    } catch (e: LlmException) {
+                        if (!e.busy) throw e
+                        if (attempt == 0) delay(1500L)
+                    }
+                }
+            }
+            throw LlmException("The AI is overloaded right now. Try again in a minute.", busy = true)
         }
 
     // ---- Gemini ----
-    private fun gemini(system: String, user: String, json: Boolean, maxTokens: Int): String {
-        val model = Settings.effectiveModel()
+    private fun gemini(system: String, user: String, json: Boolean, maxTokens: Int, model: String): String {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val body = JSONObject().apply {
             put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
@@ -47,9 +65,9 @@ object LlmClient {
     }
 
     // ---- Anthropic ----
-    private fun anthropic(system: String, user: String, maxTokens: Int): String {
+    private fun anthropic(system: String, user: String, maxTokens: Int, model: String): String {
         val body = JSONObject().apply {
-            put("model", Settings.effectiveModel())
+            put("model", model)
             put("max_tokens", maxTokens)
             put("temperature", 0.2)
             put("system", system)
@@ -70,10 +88,10 @@ object LlmClient {
     }
 
     // ---- OpenAI-compatible ----
-    private fun openai(system: String, user: String, json: Boolean, maxTokens: Int): String {
+    private fun openai(system: String, user: String, json: Boolean, maxTokens: Int, model: String): String {
         val base = Settings.baseUrl.ifBlank { "https://api.openai.com/v1" }.trimEnd('/')
         val body = JSONObject().apply {
-            put("model", Settings.effectiveModel())
+            put("model", model)
             put("temperature", 0.2)
             put("max_tokens", maxTokens)
             if (json) put("response_format", JSONObject().put("type", "json_object"))
@@ -104,7 +122,9 @@ object LlmClient {
             val text = stream?.bufferedReader()?.readText() ?: ""
             if (code !in 200..299) {
                 val msg = runCatching { JSONObject(text).optJSONObject("error")?.optString("message") }.getOrNull()
-                throw LlmException("AI error $code: ${msg ?: text.take(200)}")
+                val busy = code == 429 || code == 503 || code == 529 || code == 500 ||
+                    (msg ?: text).contains("high demand", true) || (msg ?: text).contains("overloaded", true)
+                throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy)
             }
             return JSONObject(text)
         } finally {
