@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -28,31 +28,65 @@ jobs:
           ./gradlew --no-daemon assembleDebug 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
 
-      - name: Report errors
+      - name: Report build errors
         if: failure()
         run: |
           echo "## Build errors" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           grep -E '^e: |error:|What went wrong|Could not|FAILURE|Execution failed' -A 2 build.log | head -150 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -E '^e: ' build.log | head -40 | while IFS= read -r line; do
-            msg="${line#e: }"
-            echo "::error title=Kotlin::${msg//$'\n'/ }"
-          done || true
+          grep -E '^e: ' build.log | head -40 | while IFS= read -r line; do echo "::error title=Kotlin::${line#e: }"; done || true
+
+      - name: Unit tests (planner, lanes, dates, parsers)
+        run: |
+          ./gradlew --no-daemon testDebugUnitTest 2>&1 | tee test.log
+          code=${PIPESTATUS[0]}
+          echo "## Unit tests" >> "$GITHUB_STEP_SUMMARY"
+          if [ $code = 0 ]; then echo "PASS" >> "$GITHUB_STEP_SUMMARY"; else
+            echo '```' >> "$GITHUB_STEP_SUMMARY"; grep -E "FAIL|AssertionError|expected|failed" test.log | head -60 >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -E "  FAIL " test.log | head -20 | while IFS= read -r l; do echo "::error title=Test::$l"; done
+          fi
+          exit $code
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk "Seyal-${{ github.run_number }}.apk"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Seyal-apk
-          path: Seyal-*.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: Seyal build ${{ github.run_number }}
-          body: Debug APK. Open this page on your phone, download the .apk and install it.
+          body: Debug APK. Open this page on your phone, download the .apk and install it. Screenshots from the emulator test are attached when it finishes.
           files: Seyal-*.apk
           prerelease: true
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Emulator smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/smoke.sh "Seyal-${{ github.run_number }}.apk"
+
+      - name: Attach screenshots and logs to the release
+        if: always()
+        run: |
+          mkdir -p out
+          cp shots/*.png out/ 2>/dev/null || true
+          cp logcat.txt crash.txt app-errors.txt out/ 2>/dev/null || true
+          ls out
+
+      - uses: softprops/action-gh-release@v2
+        if: always()
+        with:
+          tag_name: build-${{ github.run_number }}
+          files: out/*

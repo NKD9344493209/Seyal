@@ -211,3 +211,14 @@ fun main() {
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
+
+/** Same checks, run by Gradle (./gradlew testDebugUnitTest) on every build. */
+class CoreJUnitTest {
+    @org.junit.Test
+    fun brain() {
+        T.passed = 0; T.failed = 0
+        testTimes(); testPlanParser(); testLanes(); testModels(); testParsers()
+        println("${T.passed} passed, ${T.failed} failed")
+        org.junit.Assert.assertEquals("failed checks", 0, T.failed)
+    }
+}
