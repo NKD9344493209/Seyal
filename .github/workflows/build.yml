@@ -13,9 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -82,7 +82,7 @@ jobs:
         run: |
           mkdir -p out
           cp shots/*.png out/ 2>/dev/null || true
-          cp logcat.txt crash.txt app-errors.txt out/ 2>/dev/null || true
+          for f in logcat.txt crash.txt app-errors.txt; do [ -s "$f" ] && cp "$f" out/; done; true
           ls out
 
       - uses: softprops/action-gh-release@v2
