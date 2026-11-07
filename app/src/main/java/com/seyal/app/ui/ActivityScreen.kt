@@ -35,6 +35,7 @@ import com.seyal.app.ui.theme.Ink
 fun ActivityScreen(openRunId: String?) {
     val cs = MaterialTheme.colorScheme
     val runs by Engine.runs.collectAsState()
+    val tick by Engine.tick.collectAsState()
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(openRunId) }
     var saving by remember { mutableStateOf<Run?>(null) }
@@ -47,6 +48,7 @@ fun ActivityScreen(openRunId: String?) {
         if (runs.isEmpty()) Text("Nothing yet. Give a command on Home.", Modifier.padding(20.dp), color = cs.onSurfaceVariant)
         LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(runs, key = { it.id }) { run ->
+                @Suppress("UNUSED_VARIABLE") val redraw = tick
                 val open = expanded == run.id
                 Card(onClick = { expanded = if (open) null else run.id }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -71,7 +73,7 @@ fun ActivityScreen(openRunId: String?) {
                         Spacer(Modifier.height(12.dp))
                         Text(run.command, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        RunBody(run, scope, compact = true)
+                        RunBody(run, scope, compact = true, tick = tick)
                         Spacer(Modifier.height(10.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (run.steps.any { it.status == StepStatus.FAILED || it.status == StepStatus.SKIPPED || it.status == StepStatus.CANCELLED } && !run.status.isOpen) SmallButton("Retry failed") { Engine.retryFailed(run.id) }

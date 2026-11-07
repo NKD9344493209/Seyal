@@ -120,6 +120,12 @@ object Tools {
             ) { a -> movieInfo(a.optString("title")) },
 
             ToolSpec(
+                "read_mail",
+                "Read recent emails from the user's Gmail inbox (promotions skipped). Output: items[from, email, subject, date, snippet, college, looks_important]. Follow with an ai step to pick out and summarise what matters.",
+                "{\"hours\": 24, \"max\": 20, \"include_promotions\": false}", Level.AUTO, false,
+            ) { a -> readMail(a.optInt("hours", 24), a.optInt("max", 20), a.optBoolean("include_promotions", false)) },
+
+            ToolSpec(
                 "ai",
                 "Ask the AI to summarise, answer, decide or write, using the input data. Output: text. Keep 'task' precise.",
                 "{\"task\": \"Summarise in 5 bullets\", \"input\": \"{{s1}}\"}", Level.AUTO, false,
@@ -157,21 +163,47 @@ object Tools {
     }.getOrDefault(false)
 
     // ---------------- contacts ----------------
+    /** Family words → the names people actually save in their phones (Tamil, Hindi, Telugu, Malayalam, English). */
+    private val family = mapOf(
+        "dad" to listOf("dad", "appa", "father", "pappa", "papa", "daddy", "nanna", "achan", "abba", "pitaji", "baba"),
+        "mom" to listOf("mom", "amma", "mother", "mummy", "mum", "maa", "ammi", "mommy"),
+        "brother" to listOf("brother", "anna", "thambi", "bro", "bhai", "bhaiya", "annan"),
+        "sister" to listOf("sister", "akka", "thangachi", "thangai", "sis", "didi", "chechi"),
+        "grandma" to listOf("grandma", "paati", "ammachi", "nani", "dadi", "aaya", "ammamma"),
+        "grandpa" to listOf("grandpa", "thatha", "nana", "dada", "appachan", "thaatha"),
+        "wife" to listOf("wife", "wifey", "pondatti"),
+        "husband" to listOf("husband", "hubby"),
+        "uncle" to listOf("uncle", "mama", "chithappa", "periyappa", "chacha", "mamu"),
+        "aunt" to listOf("aunt", "aunty", "athai", "chithi", "periyamma", "mami", "chachi", "bua"),
+    )
+
+    private fun searchNames(name: String): List<String> {
+        val n = name.trim().lowercase().removePrefix("my ").trim()
+        val group = family.entries.firstOrNull { (k, v) -> n == k || n in v || n == k + "dy" }?.value
+        return (listOf(n) + (group ?: emptyList())).distinct()
+    }
+
     private suspend fun findContact(name: String): ToolResult = withContext(Dispatchers.IO) {
         if (name.isBlank()) return@withContext ToolResult.Failed("No name given")
-        if (!has(Manifest.permission.READ_CONTACTS)) return@withContext ToolResult.Failed("Contacts permission not granted. Allow it in Control.")
-        val found = linkedMapOf<String, JSONObject>()
+        if (!has(Manifest.permission.READ_CONTACTS)) return@withContext ToolResult.Failed("Contacts permission not granted. Allow it in Control → Phone permissions.")
         val cr = ctx.contentResolver
-        cr.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            arrayOf(ContactsContract.CommonDataKinds.Phone.CONTACT_ID, ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?", arrayOf("%$name%"), null,
-        )?.use { c ->
-            while (c.moveToNext()) {
-                val id = c.getString(0)
-                if (found.containsKey(id)) continue
-                found[id] = JSONObject().put("name", c.getString(1)).put("phone", c.getString(2)).put("email", "")
+        val found = linkedMapOf<String, JSONObject>()
+        val names = searchNames(name)
+        for (term in names) {
+            // Whole-word-ish match: the name starts with the term, or the term starts a later word.
+            cr.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Phone.CONTACT_ID, ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER, ContactsContract.CommonDataKinds.Phone.STARRED),
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ? OR ${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
+                arrayOf("$term%", "% $term%"), null,
+            )?.use { c ->
+                while (c.moveToNext() && found.size < 12) {
+                    val id = c.getString(0)
+                    if (found.containsKey(id)) continue
+                    found[id] = JSONObject().put("name", c.getString(1)).put("phone", c.getString(2) ?: "").put("email", "").put("starred", c.getInt(3) == 1)
+                }
             }
+            if (found.isNotEmpty() && term == names.first()) break // the exact word matched; no need for synonyms
         }
         for ((id, o) in found) {
             cr.query(
@@ -180,26 +212,28 @@ object Tools {
             )?.use { if (it.moveToFirst()) o.put("email", it.getString(0) ?: "") }
         }
         if (found.isEmpty()) {
-            cr.query(
-                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-                arrayOf(ContactsContract.CommonDataKinds.Email.CONTACT_ID, ContactsContract.CommonDataKinds.Email.DISPLAY_NAME, ContactsContract.CommonDataKinds.Email.ADDRESS),
-                "${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME} LIKE ?", arrayOf("%$name%"), null,
-            )?.use { c ->
-                while (c.moveToNext()) {
-                    val id = c.getString(0)
-                    if (found.containsKey(id)) continue
-                    found[id] = JSONObject().put("name", c.getString(1)).put("phone", "").put("email", c.getString(2) ?: "")
+            for (term in names) {
+                cr.query(
+                    ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                    arrayOf(ContactsContract.CommonDataKinds.Email.CONTACT_ID, ContactsContract.CommonDataKinds.Email.DISPLAY_NAME, ContactsContract.CommonDataKinds.Email.ADDRESS),
+                    "${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME} LIKE ? OR ${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME} LIKE ?", arrayOf("$term%", "% $term%"), null,
+                )?.use { c ->
+                    while (c.moveToNext() && found.size < 12) {
+                        val id = c.getString(0)
+                        if (found.containsKey(id)) continue
+                        found[id] = JSONObject().put("name", c.getString(1)).put("phone", "").put("email", c.getString(2) ?: "").put("starred", false)
+                    }
                 }
             }
         }
-        val list = found.values.toList()
+        val list = found.values.sortedByDescending { it.optBoolean("starred") }
         when {
-            list.isEmpty() -> ToolResult.Failed("No contact named \"$name\" found")
+            list.isEmpty() -> ToolResult.Failed("No contact found for \"$name\" (also tried: ${names.drop(1).take(5).joinToString()}). Save it in Memory, e.g. \"Dad = Appa Jio\".")
             list.size == 1 -> ToolResult.Done(list[0], "Found ${list[0].optString("name")}")
             else -> {
                 val exact = list.filter { it.optString("name").equals(name, ignoreCase = true) }
                 if (exact.size == 1) ToolResult.Done(exact[0], "Found ${exact[0].optString("name")}")
-                else ToolResult.Choice("Which $name?", list.take(6).map { o ->
+                else ToolResult.Choice("Which ${name.trim()}?", list.take(6).map { o ->
                     val sub = o.optString("phone").ifBlank { o.optString("email") }
                     "${o.optString("name")} · $sub" to o
                 })
@@ -377,6 +411,15 @@ object Tools {
         val results = Parsers.wikiResults(json)
         if (results.length() == 0) return@withContext ToolResult.Failed("No film called \"$title\" found")
         ToolResult.Done(JSONObject().put("results", results), "Looked up $title")
+    }
+
+    private suspend fun readMail(hours: Int, max: Int, promos: Boolean): ToolResult = withContext(Dispatchers.IO) {
+        val r = runCatching { com.seyal.app.device.MailReader.read(hours, max, promos) }
+            .getOrElse { return@withContext ToolResult.Failed(it.message ?: "Could not read mail", retryable = it !is IllegalStateException) }
+        val n = r.items.length()
+        val line = if (n == 0) "No new mail in the last $hours h" + (if (r.promoSkipped > 0) " (${r.promoSkipped} promotions skipped)" else "")
+        else "Read $n mails" + (if (r.promoSkipped > 0) " · ${r.promoSkipped} promotions skipped" else "")
+        ToolResult.Done(JSONObject().put("count", n).put("promotions_skipped", r.promoSkipped).put("items", r.items), line)
     }
 
     private suspend fun aiTask(task: String, input: String): ToolResult {

@@ -39,6 +39,7 @@ import com.seyal.app.ui.theme.Ink
 fun RecipesScreen() {
     val cs = MaterialTheme.colorScheme
     val recipes by Engine.recipes.collectAsState()
+    val tick by Engine.tick.collectAsState()
     var open by remember { mutableStateOf<String?>(null) }
     var code by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Recipe?>(null) }
@@ -51,6 +52,7 @@ fun RecipesScreen() {
         if (recipes.isEmpty()) Text("None yet. Say something like \"every morning at 8, give me AI news\", or save a run from Activity.", Modifier.padding(20.dp), color = cs.onSurfaceVariant)
         LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(recipes, key = { it.id }) { r ->
+                @Suppress("UNUSED_VARIABLE") val redraw = tick
                 val isOpen = open == r.id
                 Card(onClick = { open = if (isOpen) null else r.id; code = false }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

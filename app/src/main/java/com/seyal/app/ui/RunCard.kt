@@ -37,7 +37,7 @@ import kotlinx.coroutines.launch
 
 /** The assistant's reply for one run: plan, approvals, choices, result. */
 @Composable
-fun RunBody(run: Run, scope: CoroutineScope, compact: Boolean = false) {
+fun RunBody(run: Run, scope: CoroutineScope, compact: Boolean = false, tick: Long = 0L) {
     val cs = MaterialTheme.colorScheme
     var showCode by remember { mutableStateOf(false) }
 

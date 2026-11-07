@@ -73,6 +73,7 @@ fun HomeScreen(openRunId: String?, goTo: (Tab) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val runs by Engine.runs.collectAsState()
+    val tick by Engine.tick.collectAsState()
     val planning by Engine.planning.collectAsState()
     val paused by Engine.paused.collectAsState()
     var text by remember { mutableStateOf("") }
@@ -82,7 +83,7 @@ fun HomeScreen(openRunId: String?, goTo: (Tab) -> Unit) {
     val listState = rememberLazyListState()
     val chat = runs.asReversed().takeLast(30)
 
-    LaunchedEffect(runs.size, planning) { if (chat.isNotEmpty()) listState.animateScrollToItem(chat.size) }
+    LaunchedEffect(runs.size, planning, tick) { if (chat.isNotEmpty()) listState.animateScrollToItem(chat.size) }
 
     fun send(cmd: String) {
         val c = cmd.trim()
@@ -136,7 +137,7 @@ fun HomeScreen(openRunId: String?, goTo: (Tab) -> Unit) {
             items(chat, key = { it.id }) { run ->
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (run.recipeId == null) UserBubble(run.command) else Text("Recipe · ${run.title}", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-                    RunBody(run, scope)
+                    RunBody(run, scope, tick = tick)
                 }
             }
             if (planning) item {

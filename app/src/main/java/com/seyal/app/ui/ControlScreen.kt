@@ -71,6 +71,7 @@ fun ControlScreen() {
         }
 
         AiSection()
+        GmailSection()
         LevelsSection()
         AutoSendSection()
         YouSection()
@@ -125,6 +126,43 @@ private fun AiSection() {
 }
 
 @Composable
+private fun GmailSection() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var address by remember { mutableStateOf(Settings.gmailAddress) }
+    var pass by remember { mutableStateOf(Settings.gmailAppPassword) }
+    var status by remember { mutableStateOf("") }
+    Card {
+        Text("Gmail (read mail)", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Lets Seyal read your inbox for \"any important mail from college?\". Read-only: it never sends, moves or deletes.\n" +
+                "1. Google Account → Security → turn on 2-Step Verification.\n" +
+                "2. Open App passwords → name it Seyal → Create.\n" +
+                "3. Paste the 16 letters below.",
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(value = address, onValueChange = { address = it; Settings.gmailAddress = it }, label = { Text("Gmail address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = pass, onValueChange = { pass = it; Settings.gmailAppPassword = it }, label = { Text("App password (16 letters)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmallButton("Get app password", filled = false) {
+                runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://myaccount.google.com/apppasswords")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+            SmallButton("Test") {
+                status = "Checking…"
+                scope.launch {
+                    status = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.seyal.app.device.MailReader.read(24, 5, false) } }
+                        .fold({ "Works: ${it.items.length()} mails today" }, { "Failed: " + (it.message ?: "") })
+                }
+            }
+        }
+        if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall, color = if (status.startsWith("Works")) Ink.green else cs.onSurfaceVariant)
+    }
+}
+
+@Composable
 private fun LevelsSection() {
     val cs = MaterialTheme.colorScheme
     Card {
@@ -135,7 +173,7 @@ private fun LevelsSection() {
             "send_whatsapp" to "WhatsApp message", "send_email" to "Send email", "call" to "Phone call", "create_event" to "Calendar event",
             "set_alarm" to "Set alarm", "remind" to "Reminder", "open_app" to "Open an app", "open_url" to "Open a link",
             "fetch_news" to "Read news", "web_search" to "Search the web", "read_page" to "Read a web page", "movie_info" to "Movie info",
-            "ai" to "AI summarise / write", "find_contact" to "Look up contacts", "notify" to "Notification", "meeting_link" to "Meeting link",
+            "ai" to "AI summarise / write", "read_mail" to "Read Gmail", "find_contact" to "Look up contacts", "notify" to "Notification", "meeting_link" to "Meeting link",
         )
         Tools.all.forEach { t ->
             var level by remember(t.name) { mutableStateOf(Settings.level(t.name, t.defaultLevel)) }

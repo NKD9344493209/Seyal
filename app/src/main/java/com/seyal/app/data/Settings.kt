@@ -63,6 +63,16 @@ object Settings {
         get() = plain.getString("signature", "") ?: ""
         set(v) = plain.edit().putString("signature", v.trim()).apply()
 
+    /** Gmail address used to read mail over IMAP. */
+    var gmailAddress: String
+        get() = plain.getString("gmail_address", "") ?: ""
+        set(v) = plain.edit().putString("gmail_address", v.trim()).apply()
+
+    /** 16-letter Gmail app password (stored encrypted). */
+    var gmailAppPassword: String
+        get() = secure.getString("gmail_app_password", "") ?: ""
+        set(v) = secure.edit().putString("gmail_app_password", v.trim()).apply()
+
     var collegeDomain: String
         get() = plain.getString("college_domain", "") ?: ""
         set(v) = plain.edit().putString("college_domain", v.trim().lowercase()).apply()

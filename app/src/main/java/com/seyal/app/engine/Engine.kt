@@ -49,6 +49,13 @@ object Engine {
     private val _paused = MutableStateFlow(false)
     val paused: StateFlow<Boolean> = _paused
 
+    /**
+     * Bumps on every change. The run objects are updated in place, so the lists above stay
+     * "equal" and StateFlow would not re-emit them; screens watch this counter instead.
+     */
+    private val _tick = MutableStateFlow(0L)
+    val tick: StateFlow<Long> = _tick
+
     fun init(context: Context) {
         app = context.applicationContext
         _runs.value = Store.loadRuns().sortedByDescending { it.createdAt }
@@ -58,11 +65,13 @@ object Engine {
 
     private fun bump() {
         _runs.value = _runs.value.toList()
+        _tick.value = _tick.value + 1
         Store.saveRuns(_runs.value)
     }
 
     private fun bumpRecipes() {
         _recipes.value = _recipes.value.toList()
+        _tick.value = _tick.value + 1
         Store.saveRecipes(_recipes.value)
     }
 
