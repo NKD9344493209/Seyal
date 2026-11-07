@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Seyal</string>
+    <string name="accessibility_label">Seyal auto-send</string>
+    <string name="accessibility_description">Lets Seyal tap the Send button in WhatsApp for contacts you switched to auto-send. Seyal only acts after a command you gave, never reads passwords, and does nothing else on your screen.</string>
+</resources>
