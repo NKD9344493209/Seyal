@@ -33,7 +33,7 @@ object LlmClient {
             put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", user)))))
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.2)
-                put("maxOutputTokens", maxTokens)
+                put("maxOutputTokens", maxOf(maxTokens, 8192))
                 if (json) put("responseMimeType", "application/json")
             })
         }

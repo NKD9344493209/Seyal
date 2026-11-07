@@ -47,9 +47,9 @@ object Settings {
     val hasKey: Boolean get() = apiKey.isNotBlank()
 
     fun defaultModel(): String = when (provider) {
-        "anthropic" -> "claude-haiku-4-5"
+        "anthropic" -> "claude-haiku-5-5"
         "openai" -> "gpt-4o-mini"
-        else -> "gemini-2.0-flash"
+        else -> "gemini-flash-latest"
     }
 
     fun effectiveModel(): String = model.ifBlank { defaultModel() }
