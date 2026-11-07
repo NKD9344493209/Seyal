@@ -56,6 +56,23 @@ object Parsers {
         return results
     }
 
+    /** The first [n] result links worth reading as text: one per site, no video, social or file links. */
+    fun readableUrls(results: JSONArray, n: Int): List<String> {
+        val skip = listOf("youtube.com", "youtu.be", "facebook.com", "instagram.com", "x.com", "twitter.com", "tiktok.com", "linkedin.com", "pinterest.")
+        val hosts = HashSet<String>()
+        val out = mutableListOf<String>()
+        for (i in 0 until results.length()) {
+            if (out.size >= n) break
+            val url = results.optJSONObject(i)?.optString("url").orEmpty()
+            if (!url.startsWith("http")) continue
+            val host = url.substringAfter("://").substringBefore("/").removePrefix("www.").lowercase()
+            if (skip.any { host == it || host.endsWith(".$it") || host.startsWith(it) }) continue
+            if (Regex("\\.(pdf|docx?|xlsx?|pptx?|zip|apk)(\\?|$)", RegexOption.IGNORE_CASE).containsMatchIn(url)) continue
+            if (hosts.add(host)) out += url
+        }
+        return out
+    }
+
     fun pageTitle(html: String): String = Regex("<title>([\\s\\S]*?)</title>").find(html)?.groupValues?.get(1)?.let { strip(it) } ?: ""
 
     /** Wikipedia extracts API → results[title, extract]. */

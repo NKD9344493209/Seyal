@@ -14,6 +14,11 @@ fi
 mkdir -p e2e
 : > timings.tsv
 adb logcat -G 16M >/dev/null 2>&1 || true   # keep the whole test in the log buffer
+# Keep the screen on for the whole test (screenshots were black after the screen slept).
+adb shell svc power stayon true
+adb shell settings put system screen_off_timeout 1800000
+adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard 2>/dev/null || true
+shot() { adb shell input keyevent KEYCODE_WAKEUP; adb exec-out screencap -p > "$1"; }
 
 for p in READ_CONTACTS POST_NOTIFICATIONS READ_CALENDAR WRITE_CALENDAR CALL_PHONE RECORD_AUDIO; do
   adb shell pm grant "$PKG" "android.permission.$p" 2>/dev/null || true
@@ -70,12 +75,12 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
     case "$state" in
       *WAITING_APPROVAL*)
         if [ $approved -lt 4 ]; then
-          adb exec-out screencap -p > "e2e/$tag-approval.png"
+          shot "e2e/$tag-approval.png"
           adb shell "am broadcast -n $RCV --ez approve_all true" >/dev/null; approved=$((approved + 1)); continue
         fi ;;
       *WAITING_CHOICE*)
         if [ $chose -lt 3 ]; then
-          adb exec-out screencap -p > "e2e/$tag-choice.png"
+          shot "e2e/$tag-choice.png"
           adb shell "am broadcast -n $RCV --ei choose 0" >/dev/null; chose=$((chose + 1)); continue
         fi ;;
     esac
@@ -86,7 +91,7 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   printf "%s\t%s\t%s\n" "$cmd" "$secs" "$state" >> timings.tsv
   echo "   -> $state in ${secs}s"
   front; sleep 2
-  adb exec-out screencap -p > "e2e/$tag-result.png"
+  shot "e2e/$tag-result.png"
   sleep 4   # stay under the free-tier rate limit
 done 3< "$HERE/e2e-commands.txt"
 

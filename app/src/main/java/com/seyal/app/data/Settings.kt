@@ -49,7 +49,8 @@ object Settings {
     fun defaultModel(): String = when (provider) {
         "anthropic" -> "claude-haiku-5-5"
         "openai" -> "gpt-4o-mini"
-        else -> "gemini-flash-latest"
+        // Flash-Lite answers in 1–3 s and has a bigger free quota; Flash is the automatic backup.
+        else -> "gemini-flash-lite-latest"
     }
 
     fun effectiveModel(): String = model.ifBlank { defaultModel() }

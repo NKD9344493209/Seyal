@@ -194,6 +194,15 @@ fun testParsers() {
     T.eq("title tags stripped", "Ramayana (2026 film) - Wikipedia", res.getJSONObject(0).getString("title"))
     T.check("snippet kept", res.getJSONObject(0).getString("snippet").contains("Diwali 2026"))
 
+    val mixed = org.json.JSONArray().apply {
+        listOf("https://www.youtube.com/watch?v=1", "https://en.wikipedia.org/wiki/A", "https://en.wikipedia.org/wiki/B",
+            "https://site.com/report.pdf", "ftp://x", "https://www.imdb.com/list/1", "https://m.facebook.com/p", "https://news.example.in/a")
+            .forEach { put(org.json.JSONObject().put("url", it)) }
+    }
+    T.eq("readable: skip video/social/pdf, one per site", listOf("https://en.wikipedia.org/wiki/A", "https://www.imdb.com/list/1"), Parsers.readableUrls(mixed, 2))
+    T.eq("readable: up to n", 3, Parsers.readableUrls(mixed, 3).size)
+    T.eq("readable: zero", 0, Parsers.readableUrls(mixed, 0).size)
+
     val html = "<html><head><title>Hello &amp; welcome</title><style>a{}</style></head><body><script>x()</script><h1>Big</h1><p>One</p><p>Two</p></body></html>"
     T.eq("page title", "Hello & welcome", Parsers.pageTitle(html))
     val text = Parsers.strip(html)

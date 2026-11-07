@@ -11,7 +11,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-class LlmException(message: String, val busy: Boolean = false) : IOException(message)
+/** busy = worth trying again or another model. slow = timed out, quota = rate/quota limit (neither clears in seconds). */
+class LlmException(message: String, val busy: Boolean = false, val slow: Boolean = false, val quota: Boolean = false) : IOException(message)
 
 /** Talks to Gemini, Claude or any OpenAI-compatible server with the user's own key. */
 object LlmClient {
@@ -19,18 +20,23 @@ object LlmClient {
     /** Gemini models to fall back to, in order, when the chosen one is overloaded. */
     private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest")
 
+    /** A model that just hung or hit its quota is skipped until this time, so the next command doesn't wait on it again. */
+    private val coolUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     /** Models that rejected thinkingConfig, so we stop sending it to them. */
     private val noThinking = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     suspend fun complete(system: String, user: String, json: Boolean = false, maxTokens: Int = 2048): String =
         withContext(Dispatchers.IO) {
             if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control.")
-            val models = when (Settings.provider) {
+            val all = when (Settings.provider) {
                 "gemini" -> (listOf(Settings.effectiveModel()) + geminiFallbacks).distinct()
                 else -> listOf(Settings.effectiveModel())
             }
+            val now = System.currentTimeMillis()
+            val models = all.filter { (coolUntil[it] ?: 0L) <= now }.ifEmpty { all }
             for (model in models) {
-                // Busy servers often recover within seconds: one quick retry, then the next model.
+                // A quick "busy" often clears within seconds: one retry. A hang or a quota error doesn't: move on.
                 for (attempt in 0 until 2) {
                     val t0 = System.currentTimeMillis()
                     try {
@@ -40,11 +46,16 @@ object LlmClient {
                             else -> gemini(system, user, json, maxTokens, model)
                         }
                         log("$model try ${attempt + 1}: ok in ${System.currentTimeMillis() - t0} ms")
+                        coolUntil.remove(model)
                         return@withContext out
                     } catch (e: LlmException) {
                         log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}): ${e.message?.take(160)}")
                         if (!e.busy) throw e
-                        if (attempt == 0) delay(1500L)
+                        if (e.slow || e.quota || attempt == 1) {
+                            if (models.size > 1) coolUntil[model] = System.currentTimeMillis() + (if (e.quota) 15 else 5) * 60_000L
+                            break
+                        }
+                        delay(1500L)
                     }
                 }
             }
@@ -146,12 +157,12 @@ object LlmClient {
                 val msg = runCatching { JSONObject(text).optJSONObject("error")?.optString("message") }.getOrNull()
                 val busy = code == 429 || code == 503 || code == 529 || code == 500 ||
                     (msg ?: text).contains("high demand", true) || (msg ?: text).contains("overloaded", true)
-                throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy)
+                throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy, quota = code == 429)
             }
             return JSONObject(text)
         } catch (e: java.net.SocketTimeoutException) {
             // A stuck server: treat like "busy" so we move on to the next model.
-            throw LlmException("AI took too long to answer", busy = true)
+            throw LlmException("AI took too long to answer", busy = true, slow = true)
         } finally {
             conn.disconnect()
         }
