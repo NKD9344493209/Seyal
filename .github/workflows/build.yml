@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v5
 
@@ -77,13 +77,17 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash .github/smoke.sh "Seyal-Lite-${{ github.run_number }}.apk"
+          script: bash .github/device-tests.sh "Seyal-Lite-${{ github.run_number }}.apk"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
       - name: Attach screenshots and logs to the release
         if: always()
         run: |
           mkdir -p out
           cp shots/*.png out/ 2>/dev/null || true
+          for f in e2e/*.png; do [ -s "$f" ] && cp "$f" "out/e2e-$(basename "$f")"; done || true
+          for f in e2e-report.md runs.json timings.tsv e2e-crash.txt; do [ -s "$f" ] && cp "$f" out/; done || true
           for f in logcat.txt crash.txt app-errors.txt; do [ -s "$f" ] && cp "$f" out/; done; true
           ls out
 
