@@ -1,4 +1,4 @@
-package com.seyal.app.engine
+package com.seyal.app.util
 
 import com.seyal.app.data.Trigger
 import java.time.DayOfWeek
@@ -75,7 +75,7 @@ object Times {
     }
 
     fun parseClock(s: String): LocalTime? {
-        Regex("(\\d{1,2}):(\\d{2})\\s*(am|pm)?").find(s)?.let { m ->
+        Regex("(\\d{1,2})[:.](\\d{2})\\s*(am|pm)?").find(s)?.let { m ->
             var h = m.groupValues[1].toInt()
             val min = m.groupValues[2].toInt()
             val ap = m.groupValues[3]
@@ -94,9 +94,10 @@ object Times {
 
     /** Next time a trigger fires, after [after]. 0 if never. */
     fun nextFire(t: Trigger, after: Long = System.currentTimeMillis()): Long {
+        if (!t.isTime) return 0L
         val clock = parseClock(t.time) ?: LocalTime.of(9, 0)
         val afterDt = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(after), zone)
-        return when (t.type) {
+        return when (t.repeat) {
             "daily" -> {
                 var dt = LocalDateTime.of(afterDt.toLocalDate(), clock)
                 if (!dt.isAfter(afterDt)) dt = dt.plusDays(1)

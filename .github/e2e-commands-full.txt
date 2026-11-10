@@ -1,0 +1,21 @@
+# Full edition: screen control and notification access are on. "> " = follow-up in the same conversation.
+What is a macro in phone automation?
+What is the weather in Coimbatore today?
+> And tomorrow?
+Send a message to my dad saying I will be late today
+Remind me in 2 minutes to drink water
+Give me todays top AI news in 5 points
+Every morning at 8, give me AI news
+Make a meeting link for Priya tomorrow 4 PM and email it to her
+Amma ku call pannu
+What notifications do I have right now?
+Open the Calculator app and work out 48 times 12 using the screen, then tell me the answer
+> Save this as a skill called Multiply
+Open Settings, find the Android version of this phone and tell me
+Open Chrome, search for Broadway Cinemas Coimbatore and tell me the title of the first result
+Open the Clock app and add an alarm for 7:15 AM using its screen
+In the Contacts app add a new contact named Test Kumar with the number 9876512345
+Set the brightness to 30 percent and turn on do not disturb
+How long have I used YouTube today, and what is my battery level?
+Remember that my favourite theatre is Broadway Cinemas
+Book 2 tickets for Ramayana at Broadway Cinemas Coimbatore at 5:30 pm

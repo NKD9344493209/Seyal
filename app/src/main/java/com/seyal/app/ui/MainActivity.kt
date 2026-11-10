@@ -2,6 +2,7 @@ package com.seyal.app.ui
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.clickable
@@ -27,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,48 +37,94 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.seyal.app.data.Part
+import com.seyal.app.data.Settings
+import com.seyal.app.device.Images
 import com.seyal.app.ui.theme.SeyalTheme
 
 class MainActivity : ComponentActivity() {
-    private val askPerms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
-    var openRunId = mutableStateOf<String?>(null)
+    private val askPerms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { resumeTick.value = resumeTick.value + 1 }
+    var openSessionId = mutableStateOf<String?>(null)
+    /** Text shared into Seyal from another app (Share → Seyal, or select text → Ask Seyal). */
+    val sharedText = mutableStateOf<String?>(null)
+    /** A picture shared into Seyal. */
+    val sharedImage = mutableStateOf<Part.Image?>(null)
+    /** Goes up each time Seyal is opened as the assistant, from the tile or the shortcut: start listening. */
+    val listenTick = mutableStateOf(0)
+    /** The last listen request the Chat screen acted on. */
+    var listenSeen = 0
+    /** Goes up on every return to the app, so permission states on screen refresh. */
+    val resumeTick = mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        openRunId.value = intent?.getStringExtra("run")
-        val perms = mutableListOf(Manifest.permission.READ_CONTACTS)
-        if (Build.VERSION.SDK_INT >= 33) perms += Manifest.permission.POST_NOTIFICATIONS
-        askPerms.launch(perms.toTypedArray())
-        setContent { SeyalTheme { Shell(openRunId.value) } }
+        if (savedInstanceState == null) handle(intent)
+        if (Build.VERSION.SDK_INT >= 33 && !Settings.onboarded) { Settings.onboarded = true; askPerms.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) }
+        setContent { SeyalTheme { Shell(openSessionId.value) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        openRunId.value = intent.getStringExtra("run")
+        setIntent(intent)
+        handle(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumeTick.value = resumeTick.value + 1
+    }
+
+    private fun handle(intent: Intent?) {
+        if (intent == null) return
+        openSessionId.value = intent.getStringExtra("session")
+        when (intent.action) {
+            Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND, ACTION_LISTEN -> listenTick.value = listenTick.value + 1
+            Intent.ACTION_PROCESS_TEXT -> intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()?.takeIf { it.isNotBlank() }?.let { sharedText.value = it.take(6000) }
+            Intent.ACTION_SEND -> {
+                intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { sharedText.value = it.take(6000) }
+                if (intent.type?.startsWith("image/") == true) {
+                    @Suppress("DEPRECATION")
+                    val uri: Uri? = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) else intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                    if (uri != null) Thread { val img = Images.load(applicationContext, uri); runOnUiThread { sharedImage.value = img } }.start()
+                }
+            }
+        }
     }
 
     fun askFor(vararg p: String) = askPerms.launch(arrayOf(*p))
+
+    companion object {
+        const val ACTION_LISTEN = "com.seyal.app.LISTEN"
+    }
 }
 
 enum class Tab(val label: String, val icon: ImageVector) {
-    HOME("Home", Icons.Outlined.Home),
-    RECIPES("Recipes", Icons.Outlined.List),
-    ACTIVITY("Activity", Icons.Outlined.Timeline),
+    HOME("Chat", Icons.Outlined.Home),
+    SKILLS("Skills", Icons.Outlined.List),
+    HISTORY("Activity", Icons.Outlined.Timeline),
     CONTROL("Control", Icons.Outlined.Shield),
 }
 
 @Composable
-fun Shell(openRunId: String?) {
+fun Shell(openSessionId: String?) {
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
+    LaunchedEffect(openSessionId) { if (openSessionId != null) tab = Tab.HISTORY }
+    // Anything shared into Seyal, or a "listen" request, belongs on the Chat tab.
+    val activity = LocalContext.current as? MainActivity
+    val listen = activity?.listenTick?.value ?: 0
+    val hasShared = activity?.sharedText?.value != null || activity?.sharedImage?.value != null
+    LaunchedEffect(listen, hasShared) { if (listen > 0 || hasShared) tab = Tab.HOME }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize()) {
+        // Bottom bar and composer stay above the navigation bar and the keyboard.
+        Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             Column(Modifier.weight(1f)) {
                 when (tab) {
-                    Tab.HOME -> HomeScreen(openRunId) { tab = it }
-                    Tab.RECIPES -> RecipesScreen()
-                    Tab.ACTIVITY -> ActivityScreen(openRunId)
+                    Tab.HOME -> ChatScreen(openSessionId) { tab = it }
+                    Tab.SKILLS -> SkillsScreen { tab = it }
+                    Tab.HISTORY -> HistoryScreen(openSessionId)
                     Tab.CONTROL -> ControlScreen()
                 }
             }
@@ -87,7 +136,7 @@ fun Shell(openRunId: String?) {
 @Composable
 private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).navigationBarsPadding().padding(horizontal = 12.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Tab.values().forEach { t ->

@@ -35,12 +35,12 @@ shot 1-home
 alive "launch"
 
 echo "== tabs"
-tap_text "Recipes" && shot 2-recipes; alive "Recipes tab"
+tap_text "Skills" && shot 2-skills; alive "Skills tab"
 tap_text "Activity" && shot 3-activity; alive "Activity tab"
 tap_text "Control" && shot 4-control; alive "Control tab"
 adb shell input swipe 540 1800 540 600 300; shot 5-control-scrolled; alive "scroll Control"
 adb shell input swipe 540 1800 540 600 300; shot 6-control-bottom; alive "scroll Control 2"
-tap_text "Home" && shot 7-home-again; alive "Home tab"
+tap_text "Chat" && shot 7-home-again; alive "Chat tab"
 
 echo "== send without a key (should open Control, not crash)"
 tap_text "Remind me in 20 minutes to drink water" && shot 8-after-suggestion; alive "suggestion tap"

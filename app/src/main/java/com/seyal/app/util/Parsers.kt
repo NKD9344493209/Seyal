@@ -1,4 +1,4 @@
-package com.seyal.app.engine
+package com.seyal.app.util
 
 import org.json.JSONArray
 import org.json.JSONObject

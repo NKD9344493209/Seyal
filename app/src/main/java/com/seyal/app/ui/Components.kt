@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,9 +20,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import com.seyal.app.data.StepStatus
+import com.seyal.app.data.CallStatus
+import com.seyal.app.data.SessionStatus
 import com.seyal.app.ui.theme.Ink
 
 @Composable
@@ -67,18 +74,29 @@ fun Dot(color: Color, size: Int = 8) {
 }
 
 @Composable
-fun StatusPill(status: StepStatus) {
+fun StatusPill(status: CallStatus) {
     val cs = MaterialTheme.colorScheme
     when (status) {
-        StepStatus.DONE -> Pill("done", cs.primaryContainer, cs.onPrimaryContainer)
-        StepStatus.RUNNING -> Pill("running", cs.primaryContainer, cs.onPrimaryContainer)
-        StepStatus.PENDING -> Pill("queued", cs.surfaceVariant, cs.onSurfaceVariant)
-        StepStatus.WAITING_APPROVAL -> Pill("asks you", cs.secondaryContainer, cs.onSecondaryContainer)
-        StepStatus.WAITING_CHOICE -> Pill("choose", cs.secondaryContainer, cs.onSecondaryContainer)
-        StepStatus.WAITING_RETURN -> Pill("your tap", cs.secondaryContainer, cs.onSecondaryContainer)
-        StepStatus.FAILED -> Pill("failed", cs.errorContainer, cs.onErrorContainer)
-        StepStatus.SKIPPED -> Pill("skipped", cs.surfaceVariant, cs.onSurfaceVariant)
-        StepStatus.CANCELLED -> Pill("cancelled", cs.surfaceVariant, cs.onSurfaceVariant)
+        CallStatus.DONE -> Pill("done", cs.primaryContainer, cs.onPrimaryContainer)
+        CallStatus.RUNNING -> Pill("running", cs.primaryContainer, cs.onPrimaryContainer)
+        CallStatus.PENDING -> Pill("queued", cs.surfaceVariant, cs.onSurfaceVariant)
+        CallStatus.WAITING_APPROVAL -> Pill("asks you", cs.secondaryContainer, cs.onSecondaryContainer)
+        CallStatus.WAITING_USER -> Pill("question", cs.secondaryContainer, cs.onSecondaryContainer)
+        CallStatus.FAILED -> Pill("failed", cs.errorContainer, cs.onErrorContainer)
+        CallStatus.DENIED -> Pill("you said no", cs.surfaceVariant, cs.onSurfaceVariant)
+        CallStatus.CANCELLED -> Pill("stopped", cs.surfaceVariant, cs.onSurfaceVariant)
+    }
+}
+
+@Composable
+fun SessionPill(status: SessionStatus) {
+    val cs = MaterialTheme.colorScheme
+    when (status) {
+        SessionStatus.DONE -> Pill("done", cs.primaryContainer, cs.onPrimaryContainer)
+        SessionStatus.RUNNING -> Pill("working", cs.primaryContainer, cs.onPrimaryContainer)
+        SessionStatus.WAITING -> Pill("needs you", cs.secondaryContainer, cs.onSecondaryContainer)
+        SessionStatus.FAILED -> Pill("failed", cs.errorContainer, cs.onErrorContainer)
+        SessionStatus.CANCELLED -> Pill("stopped", cs.surfaceVariant, cs.onSurfaceVariant)
     }
 }
 
@@ -117,4 +135,38 @@ fun SmallButton(text: String, filled: Boolean = true, danger: Boolean = false, o
         Modifier.height(32.dp).background(bg, shape).border(1.dp, if (filled || danger) bg else MaterialTheme.colorScheme.outline, shape)
             .clickable(onClick = onClick).padding(horizontal = 12.dp), contentAlignment = Alignment.Center,
     ) { Text(text, color = fg, style = MaterialTheme.typography.labelMedium) }
+}
+
+
+/** "**bold**" → bold. An unbalanced pair is left as plain text. */
+fun boldSpans(s: String): AnnotatedString {
+    val clean = s.replace("`", "")
+    val parts = clean.split("**")
+    if (parts.size < 3 || parts.size % 2 == 0) return AnnotatedString(clean.replace("**", ""))
+    return buildAnnotatedString {
+        parts.forEachIndexed { i, p ->
+            if (i % 2 == 1) withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(p) } else append(p)
+        }
+    }
+}
+
+/** The agent's answers: paragraphs, "- " bullets, "1." lists, "#" headings and **bold**. */
+@Composable
+fun Rich(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, color: Color = MaterialTheme.colorScheme.onBackground) {
+    val lines = text.trim().lines().map { it.trim() }.filter { it.isNotEmpty() }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (line in lines) {
+            val bullet = line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ")
+            val heading = line.startsWith("#")
+            val body = if (bullet) line.substring(2).trim() else if (heading) line.trimStart('#', ' ') else line
+            if (bullet) {
+                Row {
+                    Text("•", style = style, color = color, modifier = Modifier.padding(end = 8.dp))
+                    Text(boldSpans(body), style = style, color = color)
+                }
+            } else {
+                Text(boldSpans(body), style = if (heading) MaterialTheme.typography.titleMedium else style, color = color)
+            }
+        }
+    }
 }

@@ -1,7 +1,7 @@
 package com.seyal.app.device
 
 import com.seyal.app.data.Settings
-import com.seyal.app.engine.Parsers
+import com.seyal.app.util.Parsers
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Date
@@ -12,8 +12,14 @@ import javax.mail.Multipart
 import javax.mail.Part
 import javax.mail.Session
 import javax.mail.internet.InternetAddress
+import javax.mail.search.AndTerm
+import javax.mail.search.BodyTerm
 import javax.mail.search.ComparisonTerm
+import javax.mail.search.FromStringTerm
+import javax.mail.search.OrTerm
 import javax.mail.search.ReceivedDateTerm
+import javax.mail.search.SearchTerm
+import javax.mail.search.SubjectTerm
 
 /**
  * Reads the Gmail inbox over IMAP with a Gmail *app password* (Google Account → Security →
@@ -25,7 +31,8 @@ object MailReader {
 
     private val important = listOf("exam", "fee", "deadline", "placement", "internship", "interview", "offer", "result", "hall ticket", "assignment", "submission", "timetable", "urgent", "last date", "registration")
 
-    fun read(hours: Int, max: Int, includePromotions: Boolean): Result {
+    /** [query] searches subject, sender and body (then [hours] is ignored and the last 60 days are searched). */
+    fun read(hours: Int, max: Int, includePromotions: Boolean, query: String = ""): Result {
         val email = Settings.gmailAddress
         val pass = Settings.gmailAppPassword.replace(" ", "")
         if (email.isBlank() || pass.isBlank()) throw IllegalStateException("Gmail isn't connected yet. Control → Gmail: add your address and an app password.")
@@ -47,8 +54,10 @@ object MailReader {
         try {
             val inbox = store.getFolder("INBOX")
             inbox.open(Folder.READ_ONLY)
-            val since = Date(System.currentTimeMillis() - hours.coerceIn(1, 24 * 14) * 3_600_000L)
-            val hits = inbox.search(ReceivedDateTerm(ComparisonTerm.GE, since)).takeLast(80).toTypedArray()
+            val since = Date(System.currentTimeMillis() - (if (query.isBlank()) hours.coerceIn(1, 24 * 14) else 24 * 60) * 3_600_000L)
+            val term: SearchTerm = if (query.isBlank()) ReceivedDateTerm(ComparisonTerm.GE, since)
+            else AndTerm(ReceivedDateTerm(ComparisonTerm.GE, since), OrTerm(arrayOf(SubjectTerm(query), FromStringTerm(query), BodyTerm(query))))
+            val hits = inbox.search(term).takeLast(80).toTypedArray()
             // One round trip for all headers instead of one per mail.
             inbox.fetch(hits, FetchProfile().apply {
                 add(FetchProfile.Item.ENVELOPE)

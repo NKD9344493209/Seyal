@@ -39,7 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.seyal.app.R
-import com.seyal.app.engine.Scheduler
+import com.seyal.app.agent.Scheduler
 
 /** Seyal's own alarm screen, so an alarm can ring on an exact date (the clock app can't). */
 class AlarmActivity : ComponentActivity() {

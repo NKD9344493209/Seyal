@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 
@@ -37,7 +37,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           grep -E '^e: ' build.log | head -40 | while IFS= read -r line; do echo "::error title=Kotlin::${line#e: }"; done || true
 
-      - name: Unit tests (planner, lanes, dates, parsers)
+      - name: Unit tests (models, dates, parsers, memory)
         run: |
           ./gradlew --no-daemon testLiteDebugUnitTest 2>&1 | tee test.log
           code=${PIPESTATUS[0]}
@@ -47,6 +47,29 @@ jobs:
             grep -E "  FAIL " test.log | head -20 | while IFS= read -r l; do echo "::error title=Test::$l"; done
           fi
           exit $code
+
+      - name: Collect errors when the build or tests fail
+        if: failure()
+        run: |
+          {
+            echo "Seyal build ${{ github.run_number }} failed (commit ${{ github.sha }})"; echo
+            echo "=== Kotlin / Gradle errors ==="
+            grep -E '^e: |error:|What went wrong|Could not|FAILURE|Execution failed|AAPT|Manifest merger' -A 3 build.log 2>/dev/null | head -300
+            echo; echo "=== Unit tests ==="
+            grep -E "FAIL|AssertionError|expected|failed|Exception" test.log 2>/dev/null | head -80
+            echo; echo "=== Last lines of the build log ==="; tail -60 build.log 2>/dev/null
+          } > build-errors.txt
+
+      # A failed build still leaves something public to read: the error list, as a release file.
+      - name: Publish the error list
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: failed-${{ github.run_number }}
+          name: Build ${{ github.run_number }} failed
+          body: "The build did not finish. build-errors.txt has the reasons."
+          files: build-errors.txt
+          prerelease: true
 
       - name: Rename APKs
         run: |
@@ -58,7 +81,7 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Seyal build ${{ github.run_number }}
-          body: "Seyal-Lite installs from your phone browser. Seyal-Full (WhatsApp auto-send + mail alerts) must be installed over USB: adb install Seyal-Full-N.apk. Emulator screenshots are attached when the test finishes."
+          body: "Seyal-Full is the real product (screen control, notification triggers): install it over USB with tools/install-full.cmd or adb install. Seyal-Lite installs from the phone browser but cannot see or operate the screen. Emulator test results are attached when the test finishes."
           files: Seyal-*.apk
           prerelease: true
 
@@ -77,7 +100,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash .github/device-tests.sh "Seyal-Lite-${{ github.run_number }}.apk"
+          script: bash .github/device-tests.sh "Seyal-Full-${{ github.run_number }}.apk" full
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
@@ -87,7 +110,8 @@ jobs:
           mkdir -p out
           cp shots/*.png out/ 2>/dev/null || true
           for f in e2e/*.png; do [ -s "$f" ] && cp "$f" "out/e2e-$(basename "$f")"; done || true
-          for f in e2e-report.md runs.json timings.tsv e2e-crash.txt e2e-ai-log.txt; do [ -s "$f" ] && cp "$f" out/; done || true
+          for f in e2e-report.md index.json timings.tsv e2e-crash.txt e2e-ai-log.txt e2e-warnings.txt; do [ -s "$f" ] && cp "$f" out/; done || true
+          [ -d sessions ] && (cd sessions && zip -q ../out/sessions.zip *.json) || true
           for f in logcat.txt crash.txt app-errors.txt; do [ -s "$f" ] && cp "$f" out/; done; true
           ls out
 

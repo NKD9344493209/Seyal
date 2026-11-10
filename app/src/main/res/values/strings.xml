@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Seyal</string>
-    <string name="accessibility_label">Seyal auto-send</string>
-    <string name="accessibility_description">Lets Seyal tap the Send button in WhatsApp for contacts you switched to auto-send. Seyal only acts after a command you gave, never reads passwords, and does nothing else on your screen.</string>
+    <string name="accessibility_label">Seyal screen control</string>
+    <string name="accessibility_description">Lets Seyal see what is on screen and tap, type and scroll for you while it carries out a command you gave. It never types passwords, never pays, and does nothing when you have not asked it to.</string>
+    <string name="ask_seyal">Ask Seyal</string>
+    <string name="shortcut_speak">Speak to Seyal</string>
 </resources>

@@ -1,4 +1,4 @@
-package com.seyal.app.engine
+package com.seyal.app.agent
 
 import android.app.AlarmManager
 import android.app.PendingIntent
@@ -6,24 +6,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
-import androidx.work.WorkManager
-import androidx.work.Worker
-import androidx.work.WorkerParameters
-import androidx.work.workDataOf
 import com.seyal.app.data.Settings
+import com.seyal.app.data.Skill
 import com.seyal.app.data.Store
 import com.seyal.app.data.Timer
 import com.seyal.app.data.newId
 import com.seyal.app.device.AlarmActivity
 import com.seyal.app.device.Notify
-import com.seyal.app.data.Recipe
 
 /**
- * Exact alarms for things that must ring at a time (alarms, reminders, recipes);
- * WorkManager runs the recipe itself so it survives the app being closed.
+ * Exact alarms for things that must happen at a time (alarms, reminders, timed skills);
+ * a skill then runs as a normal task, kept alive by the "working" foreground service.
  */
 object Scheduler {
     const val ACTION_FIRE = "com.seyal.app.FIRE"
@@ -37,8 +30,7 @@ object Scheduler {
         return PendingIntent.getBroadcast(ctx, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    fun canExact(ctx: Context): Boolean =
-        Build.VERSION.SDK_INT < 31 || am(ctx).canScheduleExactAlarms()
+    fun canExact(ctx: Context): Boolean = Build.VERSION.SDK_INT < 31 || am(ctx).canScheduleExactAlarms()
 
     private fun set(ctx: Context, kind: String, id: String, at: Long, text: String) {
         val pi = pending(ctx, kind, id, at, text)
@@ -73,20 +65,28 @@ object Scheduler {
         return id
     }
 
-    fun schedule(ctx: Context, recipe: Recipe) {
-        if (!recipe.enabled || recipe.nextRun <= 0) { cancel(ctx, recipe); return }
-        set(ctx, "recipe", recipe.id, recipe.nextRun, recipe.name)
+    /** Pending alarms and reminders. */
+    fun pendingTimers(): List<Timer> = Store.loadTimers().filter { it.at > System.currentTimeMillis() }.sortedBy { it.at }
+
+    fun cancelTimer(ctx: Context, kind: String, id: String) {
+        am(ctx).cancel(pending(ctx, kind, id, 0, ""))
+        forget(kind, id)
     }
 
-    fun cancel(ctx: Context, recipe: Recipe) {
-        am(ctx).cancel(pending(ctx, "recipe", recipe.id, 0, ""))
+    fun schedule(ctx: Context, skill: Skill) {
+        if (!skill.enabled || skill.trigger?.isTime != true || skill.nextRun <= 0) { cancel(ctx, skill); return }
+        set(ctx, "skill", skill.id, skill.nextRun, skill.name)
+    }
+
+    fun cancel(ctx: Context, skill: Skill) {
+        am(ctx).cancel(pending(ctx, "skill", skill.id, 0, ""))
     }
 
     fun cancelAll(ctx: Context) {
-        Engine.recipeList().forEach { cancel(ctx, it) }
+        Skills.all().forEach { cancel(ctx, it) }
     }
 
-    /** After boot, time change or app update: put every alarm and recipe back. */
+    /** After boot, time change or app update: put every alarm and timed skill back. */
     fun rescheduleAll(ctx: Context) {
         if (Settings.paused) return
         val now = System.currentTimeMillis()
@@ -95,29 +95,15 @@ object Scheduler {
             else if (t.at > now - 30 * 60_000) fire(ctx, t.kind, t.id, t.at, t.text) // missed by a little: fire now
         }
         Store.saveTimers(Store.loadTimers().filter { it.at > now })
-        Engine.recipeList().filter { it.enabled }.forEach { r ->
-            if (r.nextRun <= now) r.nextRun = Times.nextFire(r.trigger)
-            schedule(ctx, r)
-        }
+        Skills.rescheduleAll()
     }
 
     fun fire(ctx: Context, kind: String, id: String, at: Long, text: String) {
         when (kind) {
-            "alarm" -> {
-                forget("alarm", id)
-                AlarmActivity.ring(ctx, id, text)
-            }
-            "remind" -> {
-                forget("remind", id)
-                Notify.reminder(ctx, id, text)
-            }
-            "recipe" -> {
-                val req = OneTimeWorkRequestBuilder<RecipeWorker>()
-                    .setInputData(workDataOf("recipe_id" to id))
-                    .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                    .build()
-                WorkManager.getInstance(ctx).enqueueUniqueWork("recipe-$id-$at", ExistingWorkPolicy.KEEP, req)
-            }
+            "alarm" -> { forget("alarm", id); AlarmActivity.ring(ctx, id, text) }
+            "remind" -> { forget("remind", id); Notify.reminder(ctx, id, text) }
+            // The alarm-clock broadcast lets the app start its "working" service, which keeps it alive while the skill runs.
+            "skill" -> Skills.run(id, fromTrigger = true)
         }
     }
 }
@@ -135,36 +121,26 @@ class SchedulerReceiver : BroadcastReceiver() {
     }
 }
 
-class BootReceiver : BroadcastReceiver() {
+/** Boot, time changes, charging: puts alarms back and fires event-triggered skills. */
+class EventReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Scheduler.rescheduleAll(context)
-    }
-}
-
-/** Runs one recipe. The Application is created first, so the engine is ready. */
-class RecipeWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
-    override fun doWork(): Result {
-        val id = inputData.getString("recipe_id") ?: return Result.failure()
-        Engine.runRecipe(id, fromSchedule = true)
-        // Keep the process alive a little so the steps can finish.
-        var waited = 0
-        while (waited < 120_000) {
-            Thread.sleep(2000); waited += 2000
-            val open = Engine.runs.value.any { it.recipeId == id && it.status.isOpen && it.status != com.seyal.app.data.RunStatus.WAITING }
-            if (!open) break
+        when (intent.action) {
+            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> { Scheduler.rescheduleAll(context); if (intent.action == Intent.ACTION_BOOT_COMPLETED) Skills.onEvent("boot") }
+            Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED -> Scheduler.rescheduleAll(context)
+            Intent.ACTION_POWER_CONNECTED -> Skills.onEvent("charging")
+            Intent.ACTION_POWER_DISCONNECTED -> Skills.onEvent("unplugged")
         }
-        return Result.success()
     }
 }
 
-/** Allow / Deny buttons on approval notifications. */
+/** Buttons on approval notifications. */
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val runId = intent.getStringExtra("run") ?: return
-        val stepId = intent.getStringExtra("step") ?: return
+        if (intent.action == "com.seyal.app.STOP_ALL") { Agent.cancelAll(); return }
+        val callId = intent.getStringExtra("call") ?: return
         when (intent.action) {
-            "com.seyal.app.ALLOW" -> Engine.approve(runId, stepId, true)
-            "com.seyal.app.DENY" -> Engine.approve(runId, stepId, false)
+            "com.seyal.app.ALLOW" -> Agent.decide(callId, "allow")
+            "com.seyal.app.DENY" -> Agent.decide(callId, "deny")
         }
     }
 }
