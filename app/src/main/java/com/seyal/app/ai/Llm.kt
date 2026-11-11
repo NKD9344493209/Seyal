@@ -73,16 +73,57 @@ object Llm {
      * the time the server asks and moves on; when every model is resting it waits for the first one back
      * (telling [onWait]), for at most about 2½ minutes. A used-up daily limit rests the model until it resets.
      */
-    suspend fun chat(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048, onWait: (String) -> Unit = {}): LlmResponse = withContext(Dispatchers.IO) {
-        if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
-        // A new key or provider has its own limits: forget what the old one ran into.
-        val keyNow = (Settings.provider + Settings.apiKey).hashCode()
-        if (keyNow != lastKey) { coolUntil.clear(); coolWhy.clear(); lastKey = keyNow }
+    /** The models to try, best first. */
+    private fun models(): List<String> {
         val chosen = Settings.effectiveModel()
-        val all = when (Settings.provider) {
+        return when (Settings.provider) {
             "gemini" -> (listOf(chosen) + geminiFallbacks).distinct()
             else -> listOf(chosen)
         }
+    }
+
+    /** A new key or provider has its own limits: forget what the old one ran into. Daily rests survive restarts. */
+    private fun syncKey() {
+        val keyNow = (Settings.provider + Settings.apiKey).hashCode()
+        if (keyNow == lastKey) return
+        coolUntil.clear(); coolWhy.clear()
+        if (lastKey == 0 && Settings.provider == "gemini") runCatching {
+            // First call since the app started: bring back daily rests for this same key.
+            val o = JSONObject(Settings.aiRests)
+            if (o.optInt("key") == keyNow) o.optJSONObject("rests")?.let { r -> r.keys().forEach { m -> val until = r.optLong(m); if (until > System.currentTimeMillis()) rest(m, until, "daily") } }
+        }
+        lastKey = keyNow
+    }
+
+    private fun saveDailyRests() = runCatching {
+        val r = JSONObject(); coolWhy.filter { it.value == "daily" }.keys.forEach { m -> r.put(m, coolUntil[m] ?: 0L) }
+        Settings.aiRests = JSONObject().put("key", lastKey).put("rests", r).toString()
+    }
+
+    /**
+     * Shown before the user types: why the AI can't answer right now and when it can again, or null when
+     * it is ready. Every usable model resting (a used-up daily limit, a per-minute limit, overloaded) counts.
+     */
+    fun limitNote(now: Long = System.currentTimeMillis()): String? {
+        if (!Settings.hasKey) return null
+        syncKey()
+        val usable = models().filter { coolWhy[it] != "missing" }
+        val resting = usable.filter { (coolUntil[it] ?: 0L) > now }
+        if (usable.isEmpty() || resting.size < usable.size) return null
+        val back = resting.minOf { coolUntil[it] ?: now }
+        val whenBack = if (back - now < 90_000) "in ${(back - now) / 1000 + 1} s" else "at ${clock(back)}"
+        return when {
+            resting.all { coolWhy[it] == "daily" } -> "Today's free AI limit is used up · back at ${clock(back)}"
+            resting.any { coolWhy[it] == "minute" } -> "AI limit reached · back $whenBack"
+            else -> "The AI is overloaded · trying again $whenBack"
+        }
+    }
+
+    suspend fun chat(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048, onWait: (String) -> Unit = {}): LlmResponse = withContext(Dispatchers.IO) {
+        if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
+        syncKey()
+        val chosen = Settings.effectiveModel()
+        val all = models()
         var last: LlmException? = null
         val started = System.currentTimeMillis()
         var triedResting = false
@@ -106,6 +147,7 @@ object Llm {
             for (model in ready) {
                 for (attempt in 0..backoff.size) {
                     val t0 = System.currentTimeMillis()
+                    Settings.aiRequestsToday = Settings.aiRequestsToday + 1
                     try {
                         val out = when (Settings.provider) {
                             "anthropic" -> anthropic(system, messages, tools, maxTokens, model)
@@ -113,7 +155,8 @@ object Llm {
                             else -> gemini(system, messages, tools, maxTokens, model)
                         }
                         log("$model try ${attempt + 1}: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
-                        coolUntil.remove(model); coolWhy.remove(model)
+                        if (coolWhy.remove(model) == "daily") saveDailyRests()
+                        coolUntil.remove(model)
                         Settings.tokensUsed = Settings.tokensUsed + out.tokens
                         return@withContext out
                     } catch (e: LlmException) {
@@ -123,7 +166,7 @@ object Llm {
                         // A fallback this key can't use: skip it for a while.
                         if (e.missing && model != chosen) { rest(model, end + 6 * 3_600_000L, "missing"); break }
                         if (!e.busy) throw e
-                        if (e.quota && e.daily) { rest(model, quotaResetAt(), "daily"); break }
+                        if (e.quota && e.daily) { rest(model, quotaResetAt(), "daily"); saveDailyRests(); break }
                         if (e.quota) { rest(model, end + e.retryAfterMs.coerceIn(15_000, 65_000), "minute"); minuteLimit = true; break }
                         if (e.slow || attempt == backoff.size) { if (all.size > 1) rest(model, end + 3 * 60_000L, "busy"); break }
                         delay(backoff[attempt])
@@ -407,7 +450,9 @@ object Llm {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
-            readTimeout = 35_000
+            // Long screen tasks send big requests, and phone networks are slow at times: give an answer
+            // 55 s before trying the next model (Flash usually answers in 2-10 s).
+            readTimeout = 55_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("User-Agent", "Seyal/2.0")

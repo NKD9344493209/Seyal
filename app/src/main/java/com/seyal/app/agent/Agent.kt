@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import com.seyal.app.util.Times
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
@@ -137,16 +138,67 @@ object Agent {
 
     fun session(id: String): Session? = live[id]
 
-    /** Loads a session for the Chat tab (from disk if needed). */
-    fun open(id: String) = scope.launch {
+    /** Loads a session (from disk if needed). [asChat]: it becomes the chat on the Chat tab (user chats only). */
+    fun open(id: String, asChat: Boolean = true) = scope.launch {
         lock.withLock {
             if (!live.containsKey(id)) Store.loadSession(id)?.let { live[id] = it; trimLive() }
-            _current.value = id
+            if (asChat && live[id]?.source == "user") _current.value = id
             publish()
         }
     }
 
     fun newChat() { _current.value = null; publish() }
+
+    /** Gives a chat the name the user chose (kept in the list and on disk). */
+    fun rename(sessionId: String, title: String) = scope.launch {
+        val t = title.trim().replace('\n', ' ').take(80)
+        if (t.isBlank()) return@launch
+        lock.withLock {
+            val s = live[sessionId] ?: Store.loadSession(sessionId)
+            index.firstOrNull { it.optString("id") == sessionId }?.put("title", t)
+            if (s != null) { s.title = t; Store.saveSession(s) }
+            Store.saveIndex(index)
+            publish()
+        }
+    }
+
+    /**
+     * The whole task as plain text: each message, each step with its arguments, status and result
+     * (screens and long outputs shortened). "Share log" sends this so a problem can be seen exactly.
+     */
+    fun debugLog(s: Session): String = buildString {
+        val results = HashMap<String, Part.Result>()
+        s.messages.filter { it.role == "tool" }.forEach { m -> m.results.forEach { results[it.callId] = it } }
+        appendLine("Seyal ${com.seyal.app.BuildConfig.VERSION_NAME} · ${s.title} · ${s.status} · ${s.steps} steps · ${s.llmCalls} AI calls · model ${Settings.effectiveModel()}")
+        appendLine("Started ${Times.format(s.createdAt)}, last change ${Times.format(s.updatedAt)}")
+        var n = 0
+        for (m in s.messages) when (m.role) {
+            "user" -> { appendLine(); appendLine("USER: ${m.text.removePrefix(MIDTASK).take(1500)}") }
+            "assistant" -> {
+                if (m.text.isNotBlank()) appendLine("SEYAL: ${m.text.take(1500)}")
+                m.calls.forEach { c ->
+                    n++
+                    val st = s.calls[c.id]
+                    val secs = if (st != null && st.endedAt > 0 && st.startedAt > 0) " ${(st.endedAt - st.startedAt) / 100 / 10.0}s" else ""
+                    appendLine("  $n. ${c.name} [${st?.status ?: "?"}]$secs ${c.args.toString().take(400)}")
+                    results[c.id]?.output?.let { o ->
+                        val copy = JSONObject(o.toString())
+                        copy.optJSONObject("screen")?.let { sc -> copy.put("screen", sc.toString().take(900) + "…") }
+                        appendLine("     → ${copy.toString().take(1200)}")
+                    }
+                }
+            }
+        }
+        s.result?.let { appendLine(); appendLine("RESULT: $it") }
+    }
+
+    /** A short chat name from the first message: its first words, cut at a word. */
+    internal fun titleFrom(command: String): String {
+        val line = command.trim().lines().firstOrNull { it.isNotBlank() }?.trim() ?: return "Chat"
+        if (line.length <= 48) return line
+        val cut = line.take(48)
+        return cut.substringBeforeLast(' ', cut).trimEnd(',', '.', ' ') + "…"
+    }
 
     private fun trimLive() {
         val closed = live.values.filter { !it.status.isOpen }.sortedByDescending { it.updatedAt }
@@ -158,7 +210,7 @@ object Agent {
     /** Starts a new session for a user request and runs the loop. */
     fun start(command: String, image: Part.Image? = null, source: String = "user"): Session {
         val s = Session(newId(), System.currentTimeMillis(), source)
-        s.title = command.trim().lines().first().take(60)
+        s.title = titleFrom(command)
         val parts = mutableListOf<Part>(Part.Text(command.trim()))
         image?.let { parts += it }
         s.messages += Msg("user", parts)
@@ -453,6 +505,14 @@ object Agent {
 
     // ------------------------------------------------------------ one tool call
 
+    /** Whether a message target is the person a skill was started by ("amma" and "Amma (2 messages)"). */
+    internal fun samePerson(target: String, person: String?): Boolean {
+        if (person.isNullOrBlank()) return false
+        val a = com.seyal.app.data.Trigger.norm(target); val b = com.seyal.app.data.Trigger.norm(person)
+        if (a.length < 2 || b.length < 2) return false
+        return a == b || a.startsWith("$b ") || b.startsWith("$a ")
+    }
+
     private suspend fun runCall(s: Session, call: Part.Call, tool: Tool?): Part.Result {
         val state = lock.withLock { s.state(call.id).also { it.startedAt = System.currentTimeMillis() } }
         fun fail(msg: String, status: CallStatus = CallStatus.FAILED): Part.Result {
@@ -466,6 +526,9 @@ object Agent {
         val target = runCatching { tool.target(call.args) }.getOrNull()
         var level = Settings.level(tool.name, tool.defaultLevel)
         if (level == Level.ASK && target != null && Settings.isAllowed(tool.name, target)) level = Level.AUTO
+        // A skill the user made to answer a person ("when Amma asks where I am, reply with my location"):
+        // replying to that same person is what they asked for.
+        if (level == Level.ASK && tool.group == "comms" && target != null && samePerson(target, s.trustedReplyTo)) level = Level.AUTO
         // Safety net: after 40 unattended sends in a day, ask again.
         if (level == Level.AUTO && tool.group == "comms" && tool.sideEffect && Settings.autoSendToday >= 40) level = Level.ASK
         // After the user said No to something in this conversation, screen actions ask first too

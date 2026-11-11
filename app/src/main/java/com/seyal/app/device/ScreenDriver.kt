@@ -526,10 +526,20 @@ object ScreenDriver {
         val value = if (append && existing.isNotBlank() && !showingHint) existing + text else text
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }
         var ok = runCatching { field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+        var before = existing
+        if (ok) {
+            // Some apps (search boxes in shopping and food apps) accept set-text and then throw it away,
+            // so their search never sees the words. If the box doesn't show them, paste them instead.
+            delay(200)
+            if (runCatching { field.refresh() }.getOrDefault(false)) {
+                val shown = field.text?.toString()
+                if (shown != null && !shown.contains(value.take(24))) { ok = false; before = if (shown == hintOf(field)) "" else shown }
+            }
+        }
         if (!ok) {
             // Some fields reject set-text: select what's there, then paste over it.
-            if (existing.isNotEmpty() && !showingHint) {
-                val sel = Bundle().apply { putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0); putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, existing.length) }
+            if (before.isNotEmpty() && (before != existing || !showingHint)) {
+                val sel = Bundle().apply { putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0); putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, before.length) }
                 runCatching { field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel) }
             }
             val cm = s.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

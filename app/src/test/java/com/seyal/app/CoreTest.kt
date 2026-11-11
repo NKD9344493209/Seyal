@@ -2,6 +2,8 @@ package com.seyal.app
 
 import com.seyal.app.agent.Memory
 import com.seyal.app.ai.Llm
+import com.seyal.app.agent.Agent
+import com.seyal.app.tools.FileTools
 import com.seyal.app.agent.Skills
 import com.seyal.app.data.CallStatus
 import com.seyal.app.data.Msg
@@ -206,8 +208,43 @@ fun testLlm() {
     T.check("daily reset within a day", reset in 1..(25 * 3_600_000L), "$reset ms")
 }
 
+fun testTriggers() {
+    println("Message triggers")
+    val t = Trigger("notification", app = "WhatsApp", from = "Amma", contains = "where are you|where r u|enga irukka")
+    T.eq("Amma asking matches", null, t.misses("WhatsApp", "com.whatsapp", "Amma", "Where are you??"))
+    T.eq("extra words still match", null, t.misses("WhatsApp", "com.whatsapp", "Amma", "da where are you now"))
+    T.eq("another way of saying it", null, t.misses("WhatsApp", "com.whatsapp", "Amma", "enga irukka?"))
+    T.eq("Amma with a count in the title", null, t.misses("WhatsApp", "com.whatsapp", "Amma (2 messages)", "where r u"))
+    T.eq("Amma in a family group", null, t.misses("WhatsApp", "com.whatsapp", "Family", "Amma: where are you"))
+    T.eq("someone else asking is ignored", "from someone else", t.misses("WhatsApp", "com.whatsapp", "Ram Kumar", "where are you"))
+    T.eq("other words ignored", "other words", t.misses("WhatsApp", "com.whatsapp", "Amma", "Come home early today"))
+    T.eq("other app ignored", "other app", t.misses("Messages", "com.google.android.apps.messaging", "Amma", "where are you"))
+    T.eq("no words = any message from her", null, Trigger("notification", app = "WhatsApp", from = "Amma").misses("WhatsApp", "com.whatsapp", "Amma", "ok"))
+    T.eq("Tamil words match", null, Trigger("notification", contains = "எங்க இருக்க").misses("WhatsApp", "com.whatsapp", "Amma", "நீ எங்க இருக்க?"))
+    val round = Trigger.fromJson(t.toJson())
+    T.eq("from survives saving", "Amma", round.from)
+    T.check("describe names the sender", t.describe().contains("Amma"), t.describe())
+    T.check("same person", Agent.samePerson("amma", "Amma"))
+    T.check("same person with count", Agent.samePerson("amma (2 messages)", "Amma"))
+    T.check("different person", !Agent.samePerson("ram kumar", "Amma"))
+    T.check("no person set", !Agent.samePerson("amma", null))
+    T.eq("short chat title kept", "Book tickets for Ramayana", Agent.titleFrom("Book tickets for Ramayana"))
+    T.check("long chat title cut at a word", Agent.titleFrom("Find the cheapest buses from Coimbatore to Bangalore this Friday night and send them to Ram").let { it.length <= 50 && it.endsWith("…") && !it.contains("Banga…") })
+}
+
+fun testFiles() {
+    println("Files")
+    T.check("ramayana finds the movie file", FileTools.score("Ramayana.2026.1080p.WEB-DL.mkv", "ramayana movie") > 0)
+    T.check("all words rank higher", FileTools.score("Ramayana.Part1.mkv", "ramayana part1") > FileTools.score("Ramayana.Part2.mkv", "ramayana part1"))
+    T.eq("no words in common → no fit", 0, FileTools.score("Leo.2023.mkv", "ramayana"))
+    T.eq("top folder", "DCIM", FileTools.bucket("DCIM/Camera/") { it })
+    T.eq("app media folder by app name", "WhatsApp media (Android/media/com.whatsapp)", FileTools.bucket("Android/media/com.whatsapp/WhatsApp/Media/") { if (it == "com.whatsapp") "WhatsApp" else it })
+    T.eq("sizes read well", "1.5 GB", FileTools.human(1610612736L))
+    T.eq("file name words", listOf("ramayana", "2026", "1080p", "mkv"), FileTools.words("Ramayana.2026.1080p.mkv"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -216,7 +253,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

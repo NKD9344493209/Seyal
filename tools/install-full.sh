@@ -61,10 +61,18 @@ echo "Switching on screen control, notification access and special access ..."
 "$ADB" shell 'S=com.seyal.app/com.seyal.app.device.SeyalAccessibilityService; C=$(settings get secure enabled_accessibility_services); case x$C in *com.seyal.app*) ;; xnull|x) settings put secure enabled_accessibility_services $S ;; *) settings put secure enabled_accessibility_services $C:$S ;; esac; settings put secure accessibility_enabled 1' >/dev/null 2>&1
 "$ADB" shell cmd notification allow_listener $PKG/$PKG.device.SeyalNotificationListener >/dev/null 2>&1
 "$ADB" shell cmd notification allow_dnd $PKG >/dev/null 2>&1
-for op in GET_USAGE_STATS WRITE_SETTINGS SCHEDULE_EXACT_ALARM ACCESS_RESTRICTED_SETTINGS; do "$ADB" shell appops set $PKG $op allow >/dev/null 2>&1; done
+for op in GET_USAGE_STATS WRITE_SETTINGS SCHEDULE_EXACT_ALARM ACCESS_RESTRICTED_SETTINGS MANAGE_EXTERNAL_STORAGE RUN_IN_BACKGROUND RUN_ANY_IN_BACKGROUND; do "$ADB" shell appops set $PKG $op allow >/dev/null 2>&1; done
 "$ADB" shell dumpsys deviceidle whitelist +$PKG >/dev/null 2>&1
+# Xiaomi's own "Autostart" switch (op 10008): without it, automations stop when Seyal is closed.
+"$ADB" shell appops set $PKG 10008 allow >/dev/null 2>&1
+MAKER=$("$ADB" shell getprop ro.product.manufacturer 2>/dev/null | tr -d '\r' | tr 'A-Z' 'a-z')
 "$ADB" shell am start -n $PKG/.ui.MainActivity >/dev/null 2>&1
 
 if "$ADB" shell settings get secure enabled_accessibility_services 2>/dev/null | grep -q $PKG; then echo "  Screen control ......... ON"; else echo "  Screen control ......... turn it on in Seyal: the setup card at the top"; fi
 if "$ADB" shell settings get secure enabled_notification_listeners 2>/dev/null | grep -q $PKG; then echo "  Notification access .... ON"; else echo "  Notification access .... turn it on in Seyal: the setup card at the top"; fi
+case "$MAKER" in
+  *xiaomi*|*redmi*|*poco*) echo; echo "Xiaomi/Redmi/POCO: also open Settings > Apps > Seyal, turn ON \"Autostart\", and set Battery saver to \"No restrictions\"."; echo "Without these, automations (\"when Amma messages...\") stop working when Seyal is closed." ;;
+  *oppo*|*realme*|*vivo*|*oneplus*|*iqoo*) echo; echo "Oppo/Realme/Vivo/OnePlus: also open Settings > Apps > Seyal > Battery, allow background activity and auto-launch,"; echo "so automations keep working when Seyal is closed." ;;
+  *samsung*) echo; echo "Samsung: Settings > Apps > Seyal > Battery > Unrestricted, so automations keep working when Seyal is closed." ;;
+esac
 echo; echo "Done. Seyal is open on the phone. Add your AI key in Control > AI, then try it."

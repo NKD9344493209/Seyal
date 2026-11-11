@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -40,45 +41,25 @@ import com.seyal.app.util.Times
 fun SkillsScreen(goTo: (Tab) -> Unit) {
     val cs = MaterialTheme.colorScheme
     val skills by Skills.skills.collectAsState()
+    val triggerLog by Skills.triggerLog.collectAsState()
+    var showLog by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Skill?>(null) }
     var creating by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth().statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Skills", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+            if (skills.any { it.trigger?.type == "notification" || it.trigger?.type == "event" }) { SmallButton(if (showLog) "Skills" else "Trigger log", filled = false) { showLog = !showLog }; Spacer(Modifier.width(8.dp)) }
             SmallButton("New") { creating = true }
         }
         Text("Things Seyal does on its own: on a schedule, when an app notifies you, or when you say so. Ask in chat (\"every morning at 8…\") or tap New.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
-        if (skills.isEmpty()) Text("No skills yet.", color = cs.onSurfaceVariant, modifier = Modifier.padding(16.dp))
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(skills, key = { it.id }) { s ->
-                var code by remember(s.id) { mutableStateOf(false) }
-                Card {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(s.name, style = MaterialTheme.typography.titleMedium)
-                            Text(s.trigger?.describe() ?: "Manual", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-                        }
-                        Switch(checked = s.enabled, onCheckedChange = { Skills.setEnabled(s.id, it) })
-                    }
-                    if (s.description.isNotBlank() || s.goal.isNotBlank()) Text(s.description.ifBlank { s.goal }, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
-                    val meta = listOfNotNull(
-                        if (s.steps.isNotEmpty()) "${s.steps.size} recorded steps" else "agent decides",
-                        if (s.nextRun > 0 && s.enabled) "next ${Times.format(s.nextRun)}" else null,
-                        if (s.lastRun > 0) "last ${Times.format(s.lastRun)}" else null,
-                    ).joinToString(" · ")
-                    Text(meta, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
-                    Spacer(Modifier.height(10.dp))
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SmallButton("Run now") { Skills.run(s.id); goTo(Tab.HOME) }
-                        SmallButton("Edit", filled = false) { editing = s }
-                        SmallButton(if (code) "Card" else "Code", filled = false) { code = !code }
-                        SmallButton("Delete", filled = false, danger = true) { Skills.delete(s.id) }
-                    }
-                    if (code) Text(s.codeJson(), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 10.dp))
-                }
+        if (showLog) {
+            // What the message and event triggers saw since Seyal started, and why each did or didn't run.
+            LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (triggerLog.isEmpty()) item { Text("Nothing yet. Messages and phone events that a skill watches for show up here, with what ran.", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant) }
+                items(triggerLog) { line -> Text(line, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
             }
-        }
+        } else SkillList(skills, { editing = it }, goTo)
     }
 
     editing?.let { s ->
@@ -105,6 +86,7 @@ private fun TriggerDialog(title: String, name: String, goal: String, trigger: Tr
     var days by remember { mutableStateOf(trigger?.days ?: listOf(1, 2, 3, 4, 5)) }
     var app by remember { mutableStateOf(trigger?.app ?: "") }
     var contains by remember { mutableStateOf(trigger?.contains ?: "") }
+    var from by remember { mutableStateOf(trigger?.from ?: "") }
     var event by remember { mutableStateOf(trigger?.event?.ifBlank { "charging" } ?: "charging") }
 
     AlertDialog(
@@ -129,7 +111,8 @@ private fun TriggerDialog(title: String, name: String, goal: String, trigger: Tr
                     }
                     "notification" -> {
                         OutlinedTextField(app, { app = it }, label = { Text("From app (e.g. WhatsApp, Swiggy)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(contains, { contains = it }, label = { Text("Containing (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(from, { from = it }, label = { Text("From (name as in contacts, optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(contains, { contains = it }, label = { Text("Containing (optional; a|b for either)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         Text("Needs the Full edition with Notification access on.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                     }
                     "event" -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -143,7 +126,7 @@ private fun TriggerDialog(title: String, name: String, goal: String, trigger: Tr
             TextButton(onClick = {
                 val t = when (type) {
                     "time" -> Trigger("time", time.trim(), day.trim().ifBlank { null }, days, repeat)
-                    "notification" -> Trigger("notification", app = app.trim(), contains = contains.trim())
+                    "notification" -> Trigger("notification", app = app.trim(), contains = contains.trim(), from = from.trim())
                     "event" -> Trigger("event", event = event)
                     else -> null
                 }
@@ -152,4 +135,41 @@ private fun TriggerDialog(title: String, name: String, goal: String, trigger: Tr
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun SkillList(skills: List<Skill>, onEdit: (Skill) -> Unit, goTo: (Tab) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val activity = androidx.compose.ui.platform.LocalContext.current as? MainActivity
+    if (skills.isEmpty()) Text("No skills yet.", color = cs.onSurfaceVariant, modifier = Modifier.padding(16.dp))
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(skills, key = { it.id }) { s ->
+                var code by remember(s.id) { mutableStateOf(false) }
+                Card {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(s.name, style = MaterialTheme.typography.titleMedium)
+                            Text(s.trigger?.describe() ?: "Manual", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                        }
+                        Switch(checked = s.enabled, onCheckedChange = { Skills.setEnabled(s.id, it) })
+                    }
+                    if (s.description.isNotBlank() || s.goal.isNotBlank()) Text(s.description.ifBlank { s.goal }, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+                    val meta = listOfNotNull(
+                        if (s.steps.isNotEmpty()) "${s.steps.size} recorded steps" else "agent decides",
+                        if (s.nextRun > 0 && s.enabled) "next ${Times.format(s.nextRun)}" else null,
+                        if (s.lastRun > 0) "last ${Times.format(s.lastRun)}" else null,
+                    ).joinToString(" · ")
+                    Text(meta, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // The run shows in Activity (chats stay for conversations).
+                        SmallButton("Run now") { Skills.run(s.id)?.let { id -> activity?.openSessionId?.value = id } ?: goTo(Tab.HISTORY) }
+                        SmallButton("Edit", filled = false) { onEdit(s) }
+                        SmallButton(if (code) "Card" else "Code", filled = false) { code = !code }
+                        SmallButton("Delete", filled = false, danger = true) { Skills.delete(s.id) }
+                    }
+                    if (code) Text(s.codeJson(), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 10.dp))
+                }
+            }
+        }
 }

@@ -86,7 +86,8 @@ fun ControlScreen() {
             Text("Your data", style = MaterialTheme.typography.titleMedium)
             Text("On this phone: conversations, steps, results, skills, memory, your keys (encrypted).\nTo the AI provider you chose: each request and what a step needs (screen text or screenshots only while it works on your task).\nTo Seyal's makers: nothing. There is no Seyal server.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
-            Text("AI tokens used so far: ${Settings.tokensUsed}", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Text("AI requests today: ${Settings.aiRequestsToday} · tokens so far: ${Settings.tokensUsed}", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Llm.limitNote()?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Ink.amber) }
             Spacer(Modifier.height(8.dp))
             SmallButton("Delete all conversations and skills", filled = false, danger = true) { Agent.wipeAll() }
         }

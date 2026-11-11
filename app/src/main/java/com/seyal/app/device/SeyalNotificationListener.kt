@@ -20,7 +20,8 @@ import org.json.JSONObject
  */
 class SeyalNotificationListener : NotificationListenerService() {
     private val keywords = listOf("exam", "fees", "fee ", "deadline", "placement", "internship", "interview", "offer", "result", "hall ticket", "assignment", "submission", "timetable")
-    private val seen = ArrayDeque<String>()
+    /** The same message re-posted (apps update notifications often) counts once; sent again after 2 minutes, it counts again. */
+    private val seen = LinkedHashMap<String, Long>()
 
     override fun onListenerConnected() { instance = this; ScreenDriver.accessChanged() }
     override fun onListenerDisconnected() { if (instance === this) { instance = null; ScreenDriver.accessChanged() } }
@@ -34,8 +35,12 @@ class SeyalNotificationListener : NotificationListenerService() {
         val (title, text) = textOf(n)
         if (title.isBlank() && text.isBlank()) return
         val key = (sbn.packageName + title + text).hashCode().toString()
-        if (seen.contains(key)) return
-        seen.addLast(key); if (seen.size > 80) seen.removeFirst()
+        val now = System.currentTimeMillis()
+        synchronized(seen) {
+            if ((seen[key] ?: 0L) > now - 120_000) return
+            seen[key] = now
+            if (seen.size > 120) seen.keys.take(seen.size - 120).forEach { seen.remove(it) }
+        }
         val label = ScreenDriver.appLabel(this, sbn.packageName)
         Skills.onNotification(label, sbn.packageName, title, mask("$title $text").removePrefix("$title "))
 

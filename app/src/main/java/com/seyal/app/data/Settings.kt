@@ -134,6 +134,24 @@ object Settings {
         get() = plain.getLong("tokens_used", 0L)
         set(v) = plain.edit().putLong("tokens_used", v).apply()
 
+    /** AI requests sent today (Gemini's free limits count requests per day). */
+    var aiRequestsToday: Int
+        get() {
+            val day = plain.getString("ai_req_day", "")
+            return if (day == java.time.LocalDate.now().toString()) plain.getInt("ai_req_count", 0) else 0
+        }
+        set(v) = plain.edit().putString("ai_req_day", java.time.LocalDate.now().toString()).putInt("ai_req_count", v).apply()
+
+    /** Models resting until their daily limit resets, as {"model": untilMs}, so a restart remembers it. */
+    var aiRests: String
+        get() = str("ai_rests", "{}")
+        set(v) = put("ai_rests", v)
+
+    /** The user hid the setup card. */
+    var setupHidden: Boolean
+        get() = plain.getBoolean("setup_hidden", false)
+        set(v) = plain.edit().putBoolean("setup_hidden", v).apply()
+
     /** Daily cap on messages the agent sends by itself (WhatsApp/SMS/email), as a safety net. */
     var autoSendToday: Int
         get() {

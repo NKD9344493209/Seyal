@@ -52,9 +52,17 @@ object AgentTools {
 
             Tool(
                 "skill_save", "agent",
-                "Create an automation from a description. goal = what to do, in words (an agent works it out each run). steps (optional) = exact tool calls to replay without the AI; in a notification-triggered skill their text args may use {{sender}}, {{text}}, {{app}}. trigger_json (optional): " +
-                    "{\"type\":\"time\",\"repeat\":\"daily|weekly|once\",\"time\":\"HH:mm\",\"days\":[1-7 Mon-Sun],\"day\":\"YYYY-MM-DD\"} | {\"type\":\"notification\",\"app\":\"WhatsApp\",\"contains\":\"Amma\"} | {\"type\":\"event\",\"event\":\"charging|unplugged|boot|app_opened:YouTube\"}. " +
-                    "Examples: 'every morning at 8 give me AI news' → goal + daily time trigger, no steps. 'When Amma messages on WhatsApp reply I'm in class' → notification trigger + one step notification_reply {match:'{{sender}}', app:'WhatsApp', text:\"I'm in class\"}.",
+                "Create an automation from a description. goal = what to do, in words (an agent works it out each run, with the trigger's details). " +
+                    "steps (optional) = exact tool calls to replay without the AI, only when every value is fixed; in a notification-triggered skill their text args may use {{sender}}, {{text}}, {{app}}. trigger_json (optional): " +
+                    "{\"type\":\"time\",\"repeat\":\"daily|weekly|once\",\"time\":\"HH:mm\",\"days\":[1-7 Mon-Sun],\"day\":\"YYYY-MM-DD\"} | " +
+                    "{\"type\":\"notification\",\"app\":\"WhatsApp\",\"from\":\"Amma\",\"contains\":\"where are you|where r u|enga irukka\"} | " +
+                    "{\"type\":\"event\",\"event\":\"charging|unplugged|boot|app_opened:YouTube\"}. " +
+                    "Notification triggers: from = the person's name exactly as saved in contacts (look it up with contacts_search first: 'mom' may be saved as 'Amma'); contains = the words, with a few other ways of saying them separated by |, in the languages they'd use; leave contains empty for any message from them. " +
+                    "A skill started by a message may reply to that sender without asking (the user set it up). " +
+                    "Examples: 'every morning at 8 give me AI news' → goal + daily time trigger, no steps. " +
+                    "'When Amma messages on WhatsApp reply I'm in class' → notification trigger {app WhatsApp, from Amma} + one step notification_reply {match:'{{sender}}', app:'WhatsApp', text:\"I'm in class\"}. " +
+                    "'When mom asks where I am, send my location' → notification trigger {app WhatsApp, from Amma, contains 'where are you|where r u|enga irukka|engey irukka'} + goal 'Get my current location with location, then reply to the sender with notification_reply (match = the sender, app WhatsApp) saying where I am', no steps (the location changes each time). " +
+                    "Tell the user exactly when it will run.",
                 schema {
                     str("name", "Short name, e.g. 'Morning AI news'", required = true)
                     str("description", "One line on what it does")

@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Full edition only: these services make Play Protect block browser installs in India, so Full is installed over USB.
      Both are protected by a system-only permission: only Android itself can bind to them. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Sending SMS without opening the Messages app. -->
     <uses-permission android:name="android.permission.SEND_SMS" />
+    <!-- Every file (not only media) for finding documents and folder sizes; the USB installer allows it. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
 
     <application>
         <service

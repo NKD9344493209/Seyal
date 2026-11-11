@@ -3,7 +3,10 @@ package com.seyal.app.ui
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
+import android.content.Intent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -64,7 +67,8 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
             } else if (m.role == "assistant") {
                 if (m.text.isNotBlank()) {
                     // Text next to tool calls is the agent thinking aloud; text on its own is an answer.
-                    if (m.calls.isEmpty()) Rich(m.text) else Rich(m.text, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                    // Long-press to select and copy.
+                    SelectionContainer { if (m.calls.isEmpty()) Rich(m.text) else Rich(m.text, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant) }
                 }
                 if (m.calls.isNotEmpty()) {
                     val first = stepNo + 1
@@ -93,10 +97,18 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
                 SmallButton("Stop", filled = false) { Agent.cancel(s.id) }
             }
         } else {
-            if (s.status == SessionStatus.FAILED && !s.result.isNullOrBlank()) Text(s.result ?: "", style = MaterialTheme.typography.bodyLarge, color = Ink.red)
+            if (s.status == SessionStatus.FAILED && !s.result.isNullOrBlank()) SelectionContainer { Text(s.result ?: "", style = MaterialTheme.typography.bodyLarge, color = Ink.red) }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SessionPill(s.status)
                 Text(statsLine(s), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                // Every step with its details, to send to whoever is fixing a problem.
+                if (s.steps > 0) {
+                    val context = LocalContext.current
+                    Text("Share log", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.clickable {
+                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "Seyal log: ${s.title}").putExtra(Intent.EXTRA_TEXT, Agent.debugLog(s))
+                        runCatching { context.startActivity(Intent.createChooser(send, "Share log").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    })
+                }
                 Spacer(Modifier.weight(1f))
                 // Worth saving only when Seyal actually did something (not for questions it just answered).
                 val acted = s.messages.any { m -> m.calls.any { c -> s.calls[c.id]?.status == CallStatus.DONE && Toolbox.get(c.name)?.let { t -> t.sideEffect || t.group == "screen" } == true } }
@@ -126,7 +138,7 @@ fun UserBubble(m: Msg) {
         Column(
             Modifier.widthIn(max = 300.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            if (m.text.isNotBlank()) Text(m.text.removePrefix(Agent.MIDTASK).take(1200), style = MaterialTheme.typography.bodyLarge)
+            if (m.text.isNotBlank()) SelectionContainer { Text(m.text.removePrefix(Agent.MIDTASK).take(1200), style = MaterialTheme.typography.bodyLarge) }
             if (image != null) Thumb(image, 160)
         }
     }

@@ -23,10 +23,15 @@ adb shell settings put system screen_off_timeout 1800000
 adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard 2>/dev/null || true
 shot() { adb shell input keyevent KEYCODE_WAKEUP; adb exec-out screencap -p > "$1"; }
 
-for p in READ_CONTACTS POST_NOTIFICATIONS READ_CALENDAR WRITE_CALENDAR CALL_PHONE RECORD_AUDIO SEND_SMS ACCESS_COARSE_LOCATION ACCESS_FINE_LOCATION; do
+for p in READ_CONTACTS POST_NOTIFICATIONS READ_CALENDAR WRITE_CALENDAR CALL_PHONE RECORD_AUDIO SEND_SMS ACCESS_COARSE_LOCATION ACCESS_FINE_LOCATION READ_MEDIA_VIDEO READ_MEDIA_AUDIO READ_MEDIA_IMAGES; do
   adb shell pm grant "$PKG" "android.permission.$p" 2>/dev/null || true
 done
 adb shell appops set "$PKG" GET_USAGE_STATS allow 2>/dev/null || true
+adb shell appops set "$PKG" MANAGE_EXTERNAL_STORAGE allow 2>/dev/null || true
+# A short video and a document on the "phone", for the files tests (written through /sdcard, so Android indexes them).
+adb shell screenrecord --time-limit 3 /sdcard/Movies/Seyal_Test_Clip.mp4 >/dev/null 2>&1 || true
+adb shell "echo 'Ramayana notes for the test' > /sdcard/Download/Ramayana_notes.txt" 2>/dev/null || true
+sleep 2
 
 add_contact() { # name phone email
   adb shell content insert --uri content://com.android.contacts/raw_contacts --bind account_type:n: --bind account_name:n: >/dev/null 2>&1
@@ -93,6 +98,29 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   [ -z "$cmd" ] && continue
   case "$cmd" in \#*) continue ;; esac
   n=$((n + 1)); tag=$(printf "%02d" "$n")
+  # "!post Title|Text": a message notification arrives (from the Shell app); a skill that watches for it should run by itself.
+  case "$cmd" in "!post "*)
+    spec="${cmd#!post }"; ptitle="${spec%%|*}"; ptext="${spec#*|}"
+    echo "== [$tag] notification from $ptitle: $ptext"
+    pull; before=$(python3 "$HERE/e2e_state.py" count index.json)
+    start=$(date +%s)
+    adb shell "cmd notification post -S bigtext -t '$ptitle' seyaltrigger$n '$ptext'" >/dev/null 2>&1
+    state="no skill ran"
+    for i in $(seq 1 50); do
+      sleep 3; pull
+      if [ "$(python3 "$HERE/e2e_state.py" count index.json)" -gt "$before" ]; then
+        state=$(python3 "$HERE/e2e_state.py" newest index.json sessions)
+        # Answer anything it asks, like a user tapping the notification.
+        case "$state" in *WAITING_*) adb shell "am broadcast -n $RCV --ez approve_all true --es answer 'the first one'" >/dev/null ;; esac
+        case "${state%% *}" in DONE|FAILED|CANCELLED) break ;; esac
+      fi
+    done
+    secs=$(( $(date +%s) - start ))
+    printf "%s\t%s\t%s\n" "$cmd" "$secs" "$state" >> timings.tsv
+    echo "   -> $state in ${secs}s"
+    shot "e2e/$tag-end.png"; front; sleep 2
+    continue ;;
+  esac
   # A line starting with "> " is a follow-up in the same conversation.
   follow=0
   case "$cmd" in "> "*) follow=1; cmd="${cmd#> }" ;; esac

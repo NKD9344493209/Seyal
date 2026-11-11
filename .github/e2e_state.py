@@ -61,7 +61,9 @@ def main():
         details = []
         for i, e in enumerate(ordered, 1):
             s = session(dirname, e["id"])
-            cmd_text = e.get("title", "")
+            # The command as typed (titles are shortened); skills keep their name.
+            first = next((" ".join(p.get("text", "") for p in m.get("parts", []) if p.get("type") == "text") for m in s.get("messages", []) if m.get("role") == "user"), "")
+            cmd_text = first.split("\n")[0] if e.get("source") == "user" and first else e.get("title", "")
             secs = timings.get(cmd_text[:60], ("?", ""))[0]
             ai_s = round((s.get("llm_ms") or 0) / 1000, 1)
             result = (e.get("result") or "").replace("|", "/").replace("\n", " ")[:90]

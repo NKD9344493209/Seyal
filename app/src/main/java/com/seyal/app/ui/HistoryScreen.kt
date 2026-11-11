@@ -46,7 +46,7 @@ fun HistoryScreen(openSessionId: String?) {
     val activity = LocalContext.current as? MainActivity
     // Opened from a notification: show that conversation once, then forget the request.
     LaunchedEffect(openSessionId) {
-        if (openSessionId != null) { openId = openSessionId; Agent.open(openSessionId); activity?.openSessionId?.value = null }
+        if (openSessionId != null) { openId = openSessionId; Agent.open(openSessionId, asChat = false); activity?.openSessionId?.value = null }
     }
 
     val open = openId?.let { id -> sessions.firstOrNull { it.id == id } }
@@ -63,7 +63,7 @@ fun HistoryScreen(openSessionId: String?) {
             if (open == null) Text("Loading…", color = cs.onSurfaceVariant, modifier = Modifier.padding(16.dp))
             else Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Text("${Times.format(open.createdAt)} · ${open.source.replace(':', ' ')}", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(bottom = 10.dp))
-                SessionView(open, onOpenSession = { openId = it; Agent.open(it) })
+                SessionView(open, onOpenSession = { openId = it; Agent.open(it, asChat = false) })
                 Spacer(Modifier.padding(24.dp))
             }
         }
@@ -87,7 +87,7 @@ fun HistoryScreen(openSessionId: String?) {
         if (shown.isEmpty()) Text("Nothing here yet.", color = cs.onSurfaceVariant, modifier = Modifier.padding(16.dp))
         LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(shown, key = { it.id }) { e ->
-                Card(onClick = { openId = e.id; Agent.open(e.id) }) {
+                Card(onClick = { openId = e.id; Agent.open(e.id, asChat = false) }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(e.title.ifBlank { "(untitled)" }, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                         SessionPill(e.status)

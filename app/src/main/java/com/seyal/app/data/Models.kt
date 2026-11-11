@@ -130,6 +130,8 @@ class Session(
     var llmMs: Long = 0L
     /** Set when a child of delegate(). */
     var parentId: String? = null
+    /** A skill started by a message from this person may reply to them without asking (the user set it up). Not saved. */
+    @Volatile var trustedReplyTo: String? = null
     /** Follow-ups typed while a tool round is in flight; appended once the round's results are in (keeps the transcript valid). Not saved. */
     val queued: MutableList<Msg> = mutableListOf()
 
@@ -208,8 +210,11 @@ class Trigger(
     /** For type "time": "daily" | "weekly" | "once". */
     val repeat: String = "daily",
     val app: String = "",
+    /** For type "notification": words in the message; several ways of saying it separated by "|". */
     val contains: String = "",
     val event: String = "",
+    /** For type "notification": who it is from (the name the app shows), several separated by "|". */
+    val from: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("type", type); put("time", time); put("repeat", repeat)
@@ -217,7 +222,26 @@ class Trigger(
         if (days.isNotEmpty()) put("days", JSONArray(days))
         if (app.isNotBlank()) put("app", app)
         if (contains.isNotBlank()) put("contains", contains)
+        if (from.isNotBlank()) put("from", from)
         if (event.isNotBlank()) put("event", event)
+    }
+
+    /**
+     * Whether a notification sets this trigger off: the app, the sender and the words all fit. Forgiving
+     * about case, punctuation and extra words ("Where are you??" fits "where are you"); the sender also
+     * fits inside a group title ("Family: Amma") or a group message ("Amma: where are you").
+     * Returns null when it fits, else why not (for the trigger log).
+     */
+    fun misses(appLabel: String, pkg: String, title: String, text: String): String? {
+        if (type != "notification") return "not a notification trigger"
+        if (app.isNotBlank() && !appLabel.contains(app, true) && !pkg.contains(app, true)) return "other app"
+        val who = norm(title + " " + text.substringBefore(':', ""))
+        if (from.isNotBlank() && from.split('|').map { norm(it) }.none { it.isNotBlank() && who.contains(it) }) return "from someone else"
+        val body = norm("$title $text")
+        if (contains.isNotBlank() && contains.split('|').map { norm(it) }.none { alt ->
+                alt.isNotBlank() && (body.contains(alt) || alt.split(' ').all { w -> body.split(' ').contains(w) })
+            }) return "other words"
+        return null
     }
 
     fun describe(): String = when (type) {
@@ -229,7 +253,8 @@ class Trigger(
             }
             else -> "Once · ${day ?: "today"} $time"
         }
-        "notification" -> "When $app notifies" + (if (contains.isNotBlank()) " about \"$contains\"" else "")
+        "notification" -> if (from.isBlank()) "When ${app.ifBlank { "an app" }} notifies" + (if (contains.isNotBlank()) " about \"${contains.split('|').first()}\"" else "")
+            else "When ${from.replace("|", " or ")} messages" + (if (app.isNotBlank()) " on $app" else "") + (if (contains.isNotBlank()) " saying \"${contains.split('|').first()}\"" else "")
         "event" -> when {
             event == "charging" -> "When charging starts"
             event == "unplugged" -> "When unplugged"
@@ -255,9 +280,12 @@ class Trigger(
                 day = o.optString("day").ifBlank { null },
                 days = days,
                 repeat = if (legacy) rawType else o.optString("repeat", "daily"),
-                app = o.optString("app"), contains = o.optString("contains"), event = o.optString("event"),
+                app = o.optString("app"), contains = o.optString("contains"), event = o.optString("event"), from = o.optString("from"),
             )
         }
+
+        /** Lower case, letters and digits only (any script), single spaces. */
+        fun norm(s: String): String = s.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{N}]+"), " ").trim()
     }
 }
 
