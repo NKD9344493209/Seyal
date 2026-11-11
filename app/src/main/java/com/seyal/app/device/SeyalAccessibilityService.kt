@@ -43,6 +43,7 @@ class SeyalAccessibilityService : AccessibilityService() {
         val cls = e.className?.toString() ?: ""
         if (own && !cls.startsWith("com.seyal.app")) return
         ScreenDriver.noteChange()
+        AdSkipper.onScreenChanged(this, pkg)
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (ScreenDriver.noteForeground(pkg)) Skills.onEvent("app_opened:" + ScreenDriver.appLabel(this, pkg))
         }

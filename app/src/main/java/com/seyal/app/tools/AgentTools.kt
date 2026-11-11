@@ -20,7 +20,7 @@ object AgentTools {
         listOf(
             Tool(
                 "ask_user", "agent",
-                "Ask the user one short question and wait for the answer. Use only when something essential is missing or ambiguous (which person, what to say, which option). Offer 2-4 options when possible.",
+                "Ask the user and wait for the answer. Use when something essential is missing or ambiguous (which person, what to say, which option), and before any purchase, booking or order whose details the user didn't give: then put ALL the missing details in this one question as a numbered list (they answer in one line, e.g. \"chicken, 2, under 300\"). Offer 2-4 options when there is one choice.",
                 schema { str("question", "The question", required = true); strList("options", "Short options to tap") },
             ) { a, ctx ->
                 val opts = a.optJSONArray("options")?.let { arr -> (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() } } ?: emptyList()

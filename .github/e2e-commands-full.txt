@@ -27,3 +27,5 @@ Whenever any app shows a message from Amma asking where are you, tell me my curr
 !post Amma|Where are you?
 Play the oldest video from the YouTube channel @Google
 Find buses from Coimbatore to Bangalore this Friday night and give me the link to the list
+Order a biryani from a nearby hotel
+Where is the share log button in this app?

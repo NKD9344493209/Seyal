@@ -4,6 +4,7 @@ import com.seyal.app.agent.Memory
 import com.seyal.app.ai.Llm
 import com.seyal.app.agent.Agent
 import com.seyal.app.tools.FileTools
+import com.seyal.app.device.AdSkipper
 import com.seyal.app.agent.Skills
 import com.seyal.app.data.CallStatus
 import com.seyal.app.data.Msg
@@ -204,6 +205,13 @@ fun testLlm() {
     T.eq("first call without signature gets placeholder", "skip_thought_signature_validator", Llm.geminiSignature(null, firstCall = true, model = "gemini-flash-latest"))
     T.eq("later parallel call needs none", null, Llm.geminiSignature(null, firstCall = false, model = "gemini-flash-latest"))
     T.eq("Gemini 2 gets no signature", null, Llm.geminiSignature("abc", firstCall = true, model = "gemini-2.5-flash"))
+    T.check("flash-lite model is usable", Llm.usableFlash("gemini-3.5-flash-lite", listOf("generateContent", "countTokens")))
+    T.check("image model is not", !Llm.usableFlash("gemini-3.5-flash-image", listOf("generateContent")))
+    T.check("tts model is not", !Llm.usableFlash("gemini-3.5-flash-preview-tts", listOf("generateContent")))
+    T.check("embedding model is not", !Llm.usableFlash("gemini-embedding-001", listOf("embedContent")))
+    T.check("pro model is not a flash", !Llm.usableFlash("gemini-3.5-pro", listOf("generateContent")))
+    val detail = Llm.quotaDetail(JSONObject("""{"details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaValue":"250","quotaDimensions":{"model":"gemini-3.5-flash-lite"}}]}]}"""))
+    T.eq("quota detail for the log", "GenerateRequestsPerDayPerProjectPerModel-FreeTier = 250 (gemini-3.5-flash-lite)", detail)
     val reset = Llm.quotaResetAt() - System.currentTimeMillis()
     T.check("daily reset within a day", reset in 1..(25 * 3_600_000L), "$reset ms")
 }
@@ -221,6 +229,15 @@ fun testTriggers() {
     T.eq("other app ignored", "other app", t.misses("Messages", "com.google.android.apps.messaging", "Amma", "where are you"))
     T.eq("no words = any message from her", null, Trigger("notification", app = "WhatsApp", from = "Amma").misses("WhatsApp", "com.whatsapp", "Amma", "ok"))
     T.eq("Tamil words match", null, Trigger("notification", contains = "எங்க இருக்க").misses("WhatsApp", "com.whatsapp", "Amma", "நீ எங்க இருக்க?"))
+    T.eq("mom matches a contact saved as Amma", null, Trigger("notification", app = "WhatsApp", from = "Mom", contains = "where are you").misses("WhatsApp", "com.whatsapp", "Amma ❤️", "where are you"))
+    T.eq("Amma is not inside another word", "from someone else", Trigger("notification", from = "Amma").misses("WhatsApp", "com.whatsapp", "Rammakka", "where are you"))
+    T.check("skip ad button", AdSkipper.isAdButton("Skip ad", "com.google.android.youtube:id/skip_ad_button", false))
+    T.check("skip ads with a count", AdSkipper.isAdButton("Skip Ads", "", false))
+    T.check("ad close by id", AdSkipper.isAdButton("", "com.mxtech:id/ad_close", false))
+    T.check("plain close on an ad screen with an ad id", AdSkipper.isAdButton("Close", "x:id/interstitial_close_btn", true))
+    T.check("a normal Close is left alone", !AdSkipper.isAdButton("Close", "com.app:id/close", false))
+    T.check("Skip intro is left alone", !AdSkipper.isAdButton("Skip intro", "com.netflix:id/skip", false))
+    T.check("a tutorial Skip on a normal screen is left alone", !AdSkipper.isAdButton("Skip", "com.app:id/skip", false))
     val round = Trigger.fromJson(t.toJson())
     T.eq("from survives saving", "Amma", round.from)
     T.check("describe names the sender", t.describe().contains("Amma"), t.describe())

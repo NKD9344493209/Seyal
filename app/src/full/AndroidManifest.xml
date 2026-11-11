@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <!-- Every file (not only media) for finding documents and folder sizes; the USB installer allows it. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- Automations run with Seyal in the background ("when Amma asks, send my location"); the USB installer grants it. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <application>
         <service

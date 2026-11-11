@@ -125,7 +125,12 @@ class SchedulerReceiver : BroadcastReceiver() {
 class EventReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> { Scheduler.rescheduleAll(context); if (intent.action == Intent.ACTION_BOOT_COMPLETED) Skills.onEvent("boot") }
+            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                Scheduler.rescheduleAll(context)
+                if (intent.action == Intent.ACTION_BOOT_COMPLETED) Skills.onEvent("boot")
+                // Start watching again for message and event skills (allowed right after boot or an update).
+                com.seyal.app.device.WatchService.sync(context)
+            }
             Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED -> Scheduler.rescheduleAll(context)
             Intent.ACTION_POWER_CONNECTED -> Skills.onEvent("charging")
             Intent.ACTION_POWER_DISCONNECTED -> Skills.onEvent("unplugged")

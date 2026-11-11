@@ -37,12 +37,15 @@ object Skills {
     internal fun init() {
         list.clear(); list.addAll(Store.loadSkills())
         _skills.value = list.sortedByDescending { it.createdAt }.map { it.snapshot() }
+        runCatching { java.io.File(Agent.app.filesDir, "seyal/trigger-log.txt").takeIf { it.exists() }?.readLines()?.filter { it.isNotBlank() }?.take(60)?.let { _log.value = it } }
     }
 
     private fun publish() {
         _skills.value = list.sortedByDescending { it.createdAt }.map { it.snapshot() }
         val copy = list.toList()
         scope.launch { Store.saveSkills(copy) }
+        // Message and event skills need Seyal to keep running.
+        runCatching { com.seyal.app.device.WatchService.sync(Agent.app) }
     }
 
     fun all(): List<Skill> = list.toList()
@@ -102,10 +105,16 @@ object Skills {
     /** What the triggers saw lately, newest first: shown in Skills so it's clear why one did or didn't run. */
     val triggerLog: StateFlow<List<String>> = _log
 
+    /** Written to a file too, so it survives Seyal being stopped (the case that most needs explaining). */
     internal fun log(line: String) {
-        val t = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date())
-        _log.value = (listOf("$t  $line") + _log.value).take(30)
+        val t = java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.US).format(java.util.Date())
+        _log.value = (listOf("$t  $line") + _log.value).take(60)
+        val copy = _log.value
+        scope.launch { runCatching { java.io.File(Agent.app.filesDir, "seyal/trigger-log.txt").writeText(copy.joinToString("\n")) } }
     }
+
+    /** What the enabled message and event skills watch for, in words (for the "Watching" notification). */
+    fun watching(): List<String> = list.filter { it.enabled && (it.trigger?.type == "notification" || it.trigger?.type == "event") }.map { it.trigger!!.describe() }
 
     /** A notification arrived (Full edition): run skills that watch for it. Never blocks the caller. */
     fun onNotification(appLabel: String, pkg: String, title: String, text: String) {

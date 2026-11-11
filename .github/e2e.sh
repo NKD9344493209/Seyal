@@ -23,7 +23,7 @@ adb shell settings put system screen_off_timeout 1800000
 adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard 2>/dev/null || true
 shot() { adb shell input keyevent KEYCODE_WAKEUP; adb exec-out screencap -p > "$1"; }
 
-for p in READ_CONTACTS POST_NOTIFICATIONS READ_CALENDAR WRITE_CALENDAR CALL_PHONE RECORD_AUDIO SEND_SMS ACCESS_COARSE_LOCATION ACCESS_FINE_LOCATION READ_MEDIA_VIDEO READ_MEDIA_AUDIO READ_MEDIA_IMAGES; do
+for p in READ_CONTACTS POST_NOTIFICATIONS READ_CALENDAR WRITE_CALENDAR CALL_PHONE RECORD_AUDIO SEND_SMS ACCESS_COARSE_LOCATION ACCESS_FINE_LOCATION ACCESS_BACKGROUND_LOCATION READ_MEDIA_VIDEO READ_MEDIA_AUDIO READ_MEDIA_IMAGES; do
   adb shell pm grant "$PKG" "android.permission.$p" 2>/dev/null || true
 done
 adb shell appops set "$PKG" GET_USAGE_STATS allow 2>/dev/null || true
@@ -111,7 +111,7 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
       if [ "$(python3 "$HERE/e2e_state.py" count index.json)" -gt "$before" ]; then
         state=$(python3 "$HERE/e2e_state.py" newest index.json sessions)
         # Answer anything it asks, like a user tapping the notification.
-        case "$state" in *WAITING_*) adb shell "am broadcast -n $RCV --ez approve_all true --es answer 'the first one'" >/dev/null ;; esac
+        case "$state" in *WAITING_*) adb shell "am broadcast -n $RCV --ez approve_all true --es answer 'the first one; 2 people, any type, under 300 rupees each, you choose the rest'" >/dev/null ;; esac
         case "${state%% *}" in DONE|FAILED|CANCELLED) break ;; esac
       fi
     done
@@ -147,7 +147,7 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
     case "$state" in *WAITING_*) waiting=yes ;; esac
     if [ "$waiting" = "yes" ] && [ $approved -lt 12 ]; then
       case "$state" in *WAITING_USER*) [ $answered -lt 3 ] && shot "e2e/$tag-question$answered.png" ;; *) [ $approved -lt 1 ] && shot "e2e/$tag-approval.png" ;; esac
-      adb shell "am broadcast -n $RCV --ez approve_all true --es answer 'the first one'" >/dev/null
+      adb shell "am broadcast -n $RCV --ez approve_all true --es answer 'the first one; 2 people, any type, under 300 rupees each, you choose the rest'" >/dev/null
       approved=$((approved + 1)); answered=$((answered + 1)); continue
     fi
     # A screenshot mid-way shows the agent working inside another app (with its status pill).
@@ -167,6 +167,12 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
     if [ "$stale" -gt 0 ]; then echo "   !! screen out of date: $stale stale labels"; echo "$tag	$cmd	$stale" >> ui-stale.tsv; fi ;;
   esac
   sleep 2
+  # The key's free daily AI limit is used up: the rest would only fail the same way.
+  if grep -q "free AI limit" index.json 2>/dev/null; then
+    echo "   !! the AI key's daily limit is used up: stopping the test here"
+    echo "The AI key's free daily limit ran out at command $n ($cmd); the rest was not run. Run again after the limit resets (midnight Pacific time)." >> e2e-warnings.txt
+    break
+  fi
 done 3< "$CMDS"
 
 pull; pull_all

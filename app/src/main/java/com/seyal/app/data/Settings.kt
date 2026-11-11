@@ -147,6 +147,21 @@ object Settings {
         get() = str("ai_rests", "{}")
         set(v) = put("ai_rests", v)
 
+    /** Extra Gemini models found for this key (comma-separated), tried after the usual ones. */
+    var aiExtraModels: String
+        get() = str("ai_extra_models")
+        set(v) = put("ai_extra_models", v)
+
+    /** Keep running in the background (with a quiet notification) while a message or event skill is on. */
+    var keepWatching: Boolean
+        get() = plain.getBoolean("keep_watching", true)
+        set(v) = plain.edit().putBoolean("keep_watching", v).apply()
+
+    /** Press "Skip ad" and ad close buttons by itself, in any app (Full edition). */
+    var skipAds: Boolean
+        get() = plain.getBoolean("skip_ads", true)
+        set(v) = plain.edit().putBoolean("skip_ads", v).apply()
+
     /** The user hid the setup card. */
     var setupHidden: Boolean
         get() = plain.getBoolean("setup_hidden", false)

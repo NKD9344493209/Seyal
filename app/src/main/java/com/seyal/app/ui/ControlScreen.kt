@@ -46,6 +46,7 @@ import com.seyal.app.agent.Toolbox
 import com.seyal.app.ai.Llm
 import com.seyal.app.data.Level
 import com.seyal.app.data.Settings
+import com.seyal.app.device.AdSkipper
 import com.seyal.app.device.ScreenDriver
 import com.seyal.app.device.SeyalNotificationListener
 import com.seyal.app.ui.theme.Ink
@@ -287,6 +288,11 @@ private fun YouSection() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text("Speak answers", style = MaterialTheme.typography.bodyMedium); Text("Read the final answer aloud", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
             Switch(checked = speak, onCheckedChange = { speak = it; Settings.speak = it })
+        }
+        if (IS_FULL) Row(verticalAlignment = Alignment.CenterVertically) {
+            var skip by remember { mutableStateOf(Settings.skipAds) }
+            Column(Modifier.weight(1f)) { Text("Skip ads by itself", style = MaterialTheme.typography.bodyMedium); Text("Presses \"Skip ad\" and ad close buttons in YouTube, MX Player, VLC and other apps (${AdSkipper.skipped} skipped since start)", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
+            Switch(checked = skip, onCheckedChange = { skip = it; Settings.skipAds = it })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text("Quiet", style = MaterialTheme.typography.bodyMedium); Text("Notify only when something fails or needs you", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }

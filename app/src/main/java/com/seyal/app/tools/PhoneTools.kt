@@ -184,7 +184,7 @@ object PhoneTools {
                 schema { str("range", "today | week", enum = listOf("today", "week")) },
             ) { a, _ -> appUsage(a.optString("range", "today")) },
 
-            Tool("location", "phone", "Where the phone is now: lat, lon and the nearest place name.", noArgs) { _, _ -> location() },
+            Tool("location", "phone", "Where the phone is now: place name, lat, lon and map_link (a Google Maps link: send it when someone asks where the user is).", noArgs) { _, _ -> location() },
 
             Tool(
                 "clipboard", "phone", "Read the clipboard, or copy text to it.",
@@ -537,12 +537,36 @@ object PhoneTools {
         return ToolResult.Done(JSONObject().put("range", range).put("apps", arr).put("total_minutes", total / 60_000), "Top: ${arr.optJSONObject(0)?.optString("name") ?: "-"} ${arr.optJSONObject(0)?.optLong("minutes") ?: 0} min")
     }
 
-    private fun location(): ToolResult {
+    /** A fresh position (up to 12 s), else the newest one the phone already has. */
+    @android.annotation.SuppressLint("MissingPermission")
+    private suspend fun freshLocation(lm: LocationManager): android.location.Location? {
+        val known = runCatching { listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER).mapNotNull { p -> runCatching { lm.getLastKnownLocation(p) }.getOrNull() }.maxByOrNull { it.time } }.getOrNull()
+        if (known != null && System.currentTimeMillis() - known.time < 3 * 60_000) return known
+        if (Build.VERSION.SDK_INT >= 30) {
+            val provider = listOf(LocationManager.FUSED_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER).firstOrNull { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
+            if (provider != null) {
+                val fresh = kotlinx.coroutines.withTimeoutOrNull(12_000) {
+                    kotlinx.coroutines.suspendCancellableCoroutine<android.location.Location?> { cont ->
+                        val cancel = android.os.CancellationSignal()
+                        cont.invokeOnCancellation { cancel.cancel() }
+                        runCatching { lm.getCurrentLocation(provider, cancel, ctx.mainExecutor) { cont.resumeWith(Result.success(it)) } }
+                            .onFailure { if (cont.isActive) cont.resumeWith(Result.success(null)) }
+                    }
+                }
+                if (fresh != null) return fresh
+            }
+        }
+        return known
+    }
+
+    private suspend fun location(): ToolResult {
         if (!has(Manifest.permission.ACCESS_COARSE_LOCATION) && !has(Manifest.permission.ACCESS_FINE_LOCATION)) return ToolResult.Failed("Location permission not granted (Control → Phone permissions). Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val loc = runCatching { listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER).mapNotNull { p -> runCatching { lm.getLastKnownLocation(p) }.getOrNull() }.maxByOrNull { it.time } }.getOrNull()
-            ?: return ToolResult.Failed("No recent location fix. Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")
-        val place = runCatching { @Suppress("DEPRECATION") Geocoder(ctx).getFromLocation(loc.latitude, loc.longitude, 1)?.firstOrNull()?.let { listOfNotNull(it.subLocality, it.locality, it.adminArea).joinToString(", ") } }.getOrNull() ?: ""
-        return ToolResult.ok(place.ifBlank { "Location found" }, "lat" to loc.latitude, "lon" to loc.longitude, "place" to place, "age_min" to (System.currentTimeMillis() - loc.time) / 60_000)
+        val loc = freshLocation(lm)
+            ?: return ToolResult.Failed("No location fix (is Location on?). Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")
+        val place = runCatching { @Suppress("DEPRECATION") Geocoder(ctx).getFromLocation(loc.latitude, loc.longitude, 1)?.firstOrNull()?.let { a -> listOfNotNull(a.thoroughfare, a.subLocality, a.locality).distinct().joinToString(", ") } }.getOrNull() ?: ""
+        // A link anyone can open on a map: what to send when someone asks where you are.
+        val link = "https://maps.google.com/?q=${"%.6f".format(java.util.Locale.US, loc.latitude)},${"%.6f".format(java.util.Locale.US, loc.longitude)}"
+        return ToolResult.ok(place.ifBlank { "Location found" }, "lat" to loc.latitude, "lon" to loc.longitude, "place" to place, "map_link" to link, "age_min" to (System.currentTimeMillis() - loc.time) / 60_000)
     }
 }

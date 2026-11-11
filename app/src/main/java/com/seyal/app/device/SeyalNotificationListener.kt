@@ -23,8 +23,13 @@ class SeyalNotificationListener : NotificationListenerService() {
     /** The same message re-posted (apps update notifications often) counts once; sent again after 2 minutes, it counts again. */
     private val seen = LinkedHashMap<String, Long>()
 
-    override fun onListenerConnected() { instance = this; ScreenDriver.accessChanged() }
-    override fun onListenerDisconnected() { if (instance === this) { instance = null; ScreenDriver.accessChanged() } }
+    override fun onListenerConnected() {
+        instance = this; ScreenDriver.accessChanged()
+        if (Skills.watching().isNotEmpty()) { Skills.log("Notification reader started"); WatchService.sync(this) }
+    }
+    override fun onListenerDisconnected() {
+        if (instance === this) { instance = null; ScreenDriver.accessChanged(); if (Skills.watching().isNotEmpty()) Skills.log("Notification reader stopped by Android: messages are not seen until Seyal is opened") }
+    }
     override fun onDestroy() { if (instance === this) { instance = null; ScreenDriver.accessChanged() }; super.onDestroy() }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {

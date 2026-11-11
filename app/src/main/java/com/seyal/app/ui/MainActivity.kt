@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeTick.value = resumeTick.value + 1
+        com.seyal.app.device.WatchService.sync(this)
         // Notification access is granted but the reader isn't running (some phones stop it after an update or a
         // kill): ask Android to start it again instead of making the user switch it off and on.
         if (BuildConfig.FLAVOR == "full" && !SeyalNotificationListener.connected &&

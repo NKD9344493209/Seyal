@@ -236,7 +236,7 @@ class Trigger(
         if (type != "notification") return "not a notification trigger"
         if (app.isNotBlank() && !appLabel.contains(app, true) && !pkg.contains(app, true)) return "other app"
         val who = norm(title + " " + text.substringBefore(':', ""))
-        if (from.isNotBlank() && from.split('|').map { norm(it) }.none { it.isNotBlank() && who.contains(it) }) return "from someone else"
+        if (from.isNotBlank() && from.split('|').flatMap { relatives(norm(it)) }.none { it.isNotBlank() && Regex("(^| )${Regex.escape(it)}( |$)").containsMatchIn(who) }) return "from someone else"
         val body = norm("$title $text")
         if (contains.isNotBlank() && contains.split('|').map { norm(it) }.none { alt ->
                 alt.isNotBlank() && (body.contains(alt) || alt.split(' ').all { w -> body.split(' ').contains(w) })
@@ -283,6 +283,17 @@ class Trigger(
                 app = o.optString("app"), contains = o.optString("contains"), event = o.optString("event"), from = o.optString("from"),
             )
         }
+
+        /** The ways people save family in their contacts: "mom" may be "Amma", "Mummy" or "Mother". */
+        private val families = listOf(
+            setOf("mom", "mother", "amma", "mummy", "mum", "maa", "ammi", "mommy", "அம்மா"),
+            setOf("dad", "father", "appa", "daddy", "papa", "nanna", "அப்பா"),
+            setOf("brother", "anna", "thambi", "bro", "annan", "அண்ணா", "தம்பி"),
+            setOf("sister", "akka", "thangachi", "sis", "அக்கா", "தங்கச்சி"),
+            setOf("wife", "wifey", "pondatti", "manaivi"),
+            setOf("husband", "hubby", "purushan", "kanavar"),
+        )
+        internal fun relatives(name: String): List<String> = families.firstOrNull { name in it }?.toList() ?: listOf(name)
 
         /** Lower case, letters and digits only (any script), single spaces. */
         fun norm(s: String): String = s.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{N}]+"), " ").trim()

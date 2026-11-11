@@ -120,6 +120,15 @@
 
         <!-- Quick Settings tile "Ask Seyal". -->
         <service
+            android:name=".device.WatchService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Watches for the messages and phone events the user's automations react to" />
+        </service>
+
+        <service
             android:name=".device.SeyalTile"
             android:exported="true"
             android:icon="@drawable/ic_notify"

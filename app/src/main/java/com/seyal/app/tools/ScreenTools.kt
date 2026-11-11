@@ -27,15 +27,13 @@ object ScreenTools {
 
             Tool(
                 "screenshot", "screen",
-                "A picture of the screen, when the element list isn't enough (images, maps, seat layouts, games, charts, or an empty list). You will see the image. Then use screen_tap_at with pixel positions.",
+                "A picture of the screen, when the element list isn't enough (images, maps, seat layouts, games, charts, or an empty list). You will see the image. Then use screen_tap_at with positions on the 0-1000 scale of the picture.",
                 noArgs, available = screenOn,
             ) { _, _ ->
                 val shot = try { ScreenDriver.screenshot() } catch (e: Exception) { return@Tool ToolResult.Failed(e.message ?: "Screenshot failed", retryable = true) }
-                val scale = shot.screenWidth.toDouble() / shot.width.coerceAtLeast(1)
                 ToolResult.Done(
                     JSONObject().put("ok", true).put("app", ScreenDriver.currentAppLine())
-                        .put("image_size", "${shot.width}x${shot.height}").put("screen_size", "${shot.screenWidth}x${shot.screenHeight}")
-                        .put("note", "For screen_tap_at, multiply positions in the picture by ${"%.3f".format(scale)} to get screen pixels."),
+                        .put("note", "Positions for screen_tap_at / screen_swipe: x and y on a 0-1000 scale of this picture: (0,0) top-left, (1000,1000) bottom-right. Several taps you are sure of (seats) can go in one reply."),
                     "Took a screenshot", Part.Image(shot.mime, shot.b64),
                 )
             },
@@ -49,8 +47,8 @@ object ScreenTools {
             },
 
             Tool(
-                "screen_tap_at", "screen", "Tap a point on the screen (x,y in real screen pixels) when there is no element to target: a map, a seat, a canvas. $SCREEN_NOTE",
-                schema { int("x", "Pixels from the left", required = true); int("y", "Pixels from the top", required = true) },
+                "screen_tap_at", "screen", "Tap a point when there is no element to target (a seat, a map, a canvas): x,y on a 0-1000 scale of the screen, as in the screenshot (0,0 top-left, 1000,1000 bottom-right) and the @x,y of elements. $SCREEN_NOTE",
+                schema { int("x", "0-1000 from the left", required = true); int("y", "0-1000 from the top", required = true) },
                 available = screenOn, sideEffect = true,
             ) { a, _ -> wrap(ScreenDriver.tapAt(a.optInt("x"), a.optInt("y"))) { "Tapped at ${a.optInt("x")},${a.optInt("y")}" } },
 
@@ -76,7 +74,7 @@ object ScreenTools {
             ) { a, _ -> wrap(ScreenDriver.scroll(a.optString("direction", "down"), a.optInt("id").takeIf { it > 0 })) { "Scrolled ${it.optString("direction")}" } },
 
             Tool(
-                "screen_swipe", "screen", "Swipe from one point to another (real screen pixels): carousels, sliders, pull-to-refresh. $SCREEN_NOTE",
+                "screen_swipe", "screen", "Swipe from one point to another (0-1000 scale of the screen, like screen_tap_at): carousels, sliders, pull-to-refresh. $SCREEN_NOTE",
                 schema { int("x1", "Start x", required = true); int("y1", "Start y", required = true); int("x2", "End x", required = true); int("y2", "End y", required = true); int("ms", "Duration (default 300)") },
                 available = screenOn,
             ) { a, _ -> wrap(ScreenDriver.swipe(a.optInt("x1"), a.optInt("y1"), a.optInt("x2"), a.optInt("y2"), a.optInt("ms", 300))) { "Swiped" } },

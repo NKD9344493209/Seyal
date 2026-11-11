@@ -61,6 +61,8 @@ echo "Switching on screen control, notification access and special access ..."
 "$ADB" shell 'S=com.seyal.app/com.seyal.app.device.SeyalAccessibilityService; C=$(settings get secure enabled_accessibility_services); case x$C in *com.seyal.app*) ;; xnull|x) settings put secure enabled_accessibility_services $S ;; *) settings put secure enabled_accessibility_services $C:$S ;; esac; settings put secure accessibility_enabled 1' >/dev/null 2>&1
 "$ADB" shell cmd notification allow_listener $PKG/$PKG.device.SeyalNotificationListener >/dev/null 2>&1
 "$ADB" shell cmd notification allow_dnd $PKG >/dev/null 2>&1
+# Background location: for automations like "when Amma asks where I am, send my location".
+"$ADB" shell pm grant $PKG android.permission.ACCESS_BACKGROUND_LOCATION >/dev/null 2>&1
 for op in GET_USAGE_STATS WRITE_SETTINGS SCHEDULE_EXACT_ALARM ACCESS_RESTRICTED_SETTINGS MANAGE_EXTERNAL_STORAGE RUN_IN_BACKGROUND RUN_ANY_IN_BACKGROUND; do "$ADB" shell appops set $PKG $op allow >/dev/null 2>&1; done
 "$ADB" shell dumpsys deviceidle whitelist +$PKG >/dev/null 2>&1
 # Xiaomi's own "Autostart" switch (op 10008): without it, automations stop when Seyal is closed.

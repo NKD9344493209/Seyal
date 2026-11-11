@@ -307,12 +307,13 @@ object ScreenDriver {
             map[id] = e
             sb.append(id).append(" [").append(e.role).append("] ").append(e.text.replace('\n', ' '))
             if (e.extra.isNotBlank()) sb.append(" (").append(e.extra).append(')')
-            sb.append(" @").append(e.bounds.centerX()).append(',').append(e.bounds.centerY()).append('\n')
+            // Positions on a 0-1000 scale of the screen, the same scale as screenshots and screen_tap_at.
+            sb.append(" @").append(e.bounds.centerX() * 1000L / sw.coerceAtLeast(1)).append(',').append(e.bounds.centerY() * 1000L / sh.coerceAtLeast(1)).append('\n')
         }
         lastEls = map
         lastListing = sb.toString()
         lastPkg = pkg
-        return JSONObject().put("app", appLabel(s, pkg)).put("package", pkg).put("size", "${sw}x$sh")
+        return JSONObject().put("app", appLabel(s, pkg)).put("package", pkg)
             .put("scrollable", scrollable).put("elements", sb.toString().trimEnd())
             .also { if (els.size > kept.size) it.put("note", "${els.size - kept.size} more items not listed: scroll, or tap by text.") }
             .also { if (kept.isEmpty()) it.put("note", "Nothing readable here (a game, video, map or canvas?). Use screenshot to look, and screen_tap_at to tap.") }
@@ -460,14 +461,22 @@ object ScreenDriver {
     }
 
     /** Taps a point on screen (for things with no element: a map, a seat, a canvas). Same safety rules as tap. */
-    suspend fun tapAt(x: Int, y: Int): JSONObject = lock.withLock {
+    /** A position on the 0-1000 scale (left/top 0, right/bottom 1000) → real screen pixels. */
+    private fun toPixels(u: Int, v: Int): Pair<Int, Int> {
+        val (sw, sh) = screenSize(svc())
+        return (u.coerceIn(0, 1000) * sw / 1000) to (v.coerceIn(0, 1000) * sh / 1000)
+    }
+
+    /** Tap at [u],[v] on the 0-1000 scale of the screen (as in screenshots and the @x,y of elements). */
+    suspend fun tapAt(u: Int, v: Int): JSONObject = lock.withLock {
+        val (x, y) = toPixels(u, v)
         val under = nodeAt(x, y)
         if (under != null) {
             if (isPayment(under)) return@withLock blocked(pressLabel(under))
             if (isSecret(under)) return@withLock JSONObject().put("ok", false).put("error", "That point is a secret field (password/PIN/OTP). Only the user types there.")
         }
         if (screenLooksLikePayment()) return@withLock JSONObject().put("ok", false).put("blocked", true).put("error", "This screen asks for a PIN, OTP or card details. Seyal stops here: the user finishes it.")
-        withScreen(JSONObject().put("ok", gestureTap(x.toFloat(), y.toFloat(), 60)).put("tapped", under?.let { pressLabel(it).take(60) } ?: "$x,$y"))
+        withScreen(JSONObject().put("ok", gestureTap(x.toFloat(), y.toFloat(), 60)).put("tapped", under?.let { pressLabel(it).take(60) } ?: "$u,$v"))
     }
 
     /** A PIN pad, OTP box or card form is on screen (tapping by coordinates there is the user's job). */
@@ -604,7 +613,10 @@ object ScreenDriver {
         o
     }
 
-    suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, ms: Int): JSONObject = lock.withLock {
+    /** Swipe between two points on the 0-1000 scale of the screen. */
+    suspend fun swipe(u1: Int, v1: Int, u2: Int, v2: Int, ms: Int): JSONObject = lock.withLock {
+        val (x1, y1) = toPixels(u1, v1)
+        val (x2, y2) = toPixels(u2, v2)
         val start = nodeAt(x1, y1)
         if (start != null) {
             if (isPayment(start)) return@withLock blocked(pressLabel(start))

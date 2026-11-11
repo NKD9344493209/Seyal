@@ -46,7 +46,54 @@ object Llm {
      * Gemini models to fall back to, in order. Each model has its own limits, so when one is busy or has
      * used up its free requests, the next one usually still answers.
      */
-    private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash")
+    private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest")
+
+    /**
+     * More Flash models this key can use, each with its own free limits: the ones Google names when it
+     * retires a model ("use models/gemini-3.5-flash-lite"), and the ones its model list shows. Kept on disk.
+     */
+    private val extraModels: MutableList<String> by lazy {
+        java.util.concurrent.CopyOnWriteArrayList(Settings.aiExtraModels.split(',').map { it.trim() }.filter { it.isNotBlank() })
+    }
+    @Volatile private var discovered = false
+
+    private fun addModel(name: String) {
+        val m = name.removePrefix("models/").trim()
+        if (m.isBlank() || m in extraModels || m in geminiFallbacks) return
+        extraModels += m
+        Settings.aiExtraModels = extraModels.joinToString(",")
+        log("added model $m")
+    }
+
+    /** Which Flash models a model-list entry is worth trying: text chat with tools, not image/audio/live/embedding ones. */
+    internal fun usableFlash(name: String, methods: List<String>): Boolean {
+        val n = name.lowercase()
+        if (!n.contains("flash") || "generateContent" !in methods) return false
+        return listOf("image", "tts", "audio", "live", "embed", "native", "exp", "computer", "robotics").none { n.contains(it) }
+    }
+
+    /** Asks Google which models this key can use (once per app start, when the usual ones are used up). */
+    private fun discoverModels() {
+        if (discovered || Settings.provider != "gemini") return
+        discovered = true
+        runCatching {
+            val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000; readTimeout = 20_000
+                setRequestProperty("x-goog-api-key", Settings.apiKey)
+            }
+            val text = try { conn.inputStream.bufferedReader().readText() } finally { conn.disconnect() }
+            val arr = JSONObject(text).optJSONArray("models") ?: return
+            val found = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val methods = o.optJSONArray("supportedGenerationMethods")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
+                val name = o.optString("name").removePrefix("models/")
+                if (usableFlash(name, methods)) found += name
+            }
+            // Lite models first (bigger free limits), then the rest; newest first within each.
+            found.sortedWith(compareBy<String>({ !it.contains("lite") }, { it.contains("preview") }).thenByDescending { it }).take(6).forEach { addModel(it) }
+        }.onFailure { log("model list failed: ${it.message}") }
+    }
 
     /** A model that is resting (busy, hung, or at a limit) is skipped until this time; [coolWhy] says why. */
     private val coolUntil = ConcurrentHashMap<String, Long>()
@@ -77,7 +124,7 @@ object Llm {
     private fun models(): List<String> {
         val chosen = Settings.effectiveModel()
         return when (Settings.provider) {
-            "gemini" -> (listOf(chosen) + geminiFallbacks).distinct()
+            "gemini" -> (listOf(chosen) + geminiFallbacks + extraModels).distinct()
             else -> listOf(chosen)
         }
     }
@@ -86,7 +133,7 @@ object Llm {
     private fun syncKey() {
         val keyNow = (Settings.provider + Settings.apiKey).hashCode()
         if (keyNow == lastKey) return
-        coolUntil.clear(); coolWhy.clear()
+        coolUntil.clear(); coolWhy.clear(); discovered = false
         if (lastKey == 0 && Settings.provider == "gemini") runCatching {
             // First call since the app started: bring back daily rests for this same key.
             val o = JSONObject(Settings.aiRests)
@@ -123,7 +170,7 @@ object Llm {
         if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
         syncKey()
         val chosen = Settings.effectiveModel()
-        val all = models()
+        var all = models()
         var last: LlmException? = null
         val started = System.currentTimeMillis()
         var triedResting = false
@@ -131,7 +178,12 @@ object Llm {
         val backoff = longArrayOf(1500, 3500, 7000)
         while (true) {
             val now = System.currentTimeMillis()
+            all = models()
             var ready = all.filter { (coolUntil[it] ?: 0L) <= now }
+            // The usual models are used up for the day: find out what else this key can use.
+            if (ready.isEmpty() && Settings.provider == "gemini" && !discovered && all.any { coolWhy[it] == "daily" || coolWhy[it] == "missing" }) {
+                discoverModels(); all = models(); ready = all.filter { (coolUntil[it] ?: 0L) <= now }
+            }
             // Everything is resting after busy/slow spells: try those once anyway rather than fail at once.
             if (ready.isEmpty() && !triedResting) { triedResting = true; ready = all.filter { coolWhy[it] == "busy" } }
             if (ready.isEmpty()) {
@@ -144,7 +196,9 @@ object Llm {
                 continue
             }
             var minuteLimit = false
+            var progress = false
             for (model in ready) {
+                progress = true
                 for (attempt in 0..backoff.size) {
                     val t0 = System.currentTimeMillis()
                     Settings.aiRequestsToday = Settings.aiRequestsToday + 1
@@ -163,8 +217,12 @@ object Llm {
                         last = e
                         log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}, quota=${e.quota}, daily=${e.daily}): ${e.message?.take(160)}")
                         val end = System.currentTimeMillis()
-                        // A fallback this key can't use: skip it for a while.
-                        if (e.missing && model != chosen) { rest(model, end + 6 * 3_600_000L, "missing"); break }
+                        // A fallback this key can't use: skip it, and try the model Google names instead, if any.
+                        if (e.missing && model != chosen) {
+                            rest(model, end + 24 * 3_600_000L, "missing")
+                            Regex("use models/([A-Za-z0-9._-]+)").find(e.message ?: "")?.groupValues?.get(1)?.trimEnd('.')?.let { addModel(it) }
+                            break
+                        }
                         if (!e.busy) throw e
                         if (e.quota && e.daily) { rest(model, quotaResetAt(), "daily"); saveDailyRests(); break }
                         if (e.quota) { rest(model, end + e.retryAfterMs.coerceIn(15_000, 65_000), "minute"); minuteLimit = true; break }
@@ -173,12 +231,13 @@ object Llm {
                     }
                 }
             }
-            if (!minuteLimit) break
+            // New models were found while trying (a retired model named its successor): go round once more.
+            if (!minuteLimit && !(progress && models().any { it !in all })) break
         }
         val usable = all.filter { coolWhy[it] != "missing" }
         throw LlmException(
             when {
-                usable.isNotEmpty() && usable.all { coolWhy[it] == "daily" } ->
+                usable.isNotEmpty() && usable.none { (coolUntil[it] ?: 0L) <= System.currentTimeMillis() } && usable.any { coolWhy[it] == "daily" } ->
                     "Today's free AI limit on this key is used up. It starts again at ${clock(quotaResetAt())}. Until then you can add a key from another provider in Control → AI."
                 last?.quota == true -> "The AI's per-minute limit is still reached. Try again in a minute."
                 last?.slow == true -> "The AI isn't answering right now (it timed out). Try again in a minute."
@@ -469,6 +528,7 @@ object Llm {
                 val busy = code == 429 || code == 503 || code == 529 || code == 500 ||
                     (msg ?: text).contains("high demand", true) || (msg ?: text).contains("overloaded", true)
                 val (retryMs0, daily) = quotaInfo(err)
+                quotaDetail(err)?.let { log("quota: $it") }
                 var retryMs = retryMs0
                 if (retryMs == 0L) conn.getHeaderField("retry-after")?.toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() }
                 throw LlmException(
@@ -502,5 +562,20 @@ object Llm {
             for (j in 0 until v.length()) if (v.optJSONObject(j)?.optString("quotaId")?.contains("PerDay", ignoreCase = true) == true) daily = true
         }
         return retryMs to daily
+    }
+
+    /** Which limit was hit and how big it is, e.g. "GenerateRequestsPerDayPerProjectPerModel-FreeTier = 250 (gemini-3.5-flash-lite)". */
+    internal fun quotaDetail(err: JSONObject?): String? {
+        val d = err?.optJSONArray("details") ?: return null
+        val out = mutableListOf<String>()
+        for (i in 0 until d.length()) {
+            val v = d.optJSONObject(i)?.optJSONArray("violations") ?: continue
+            for (j in 0 until v.length()) {
+                val o = v.optJSONObject(j) ?: continue
+                val model = o.optJSONObject("quotaDimensions")?.optString("model").orEmpty()
+                out += "${o.optString("quotaId")} = ${o.optString("quotaValue")}" + if (model.isNotBlank()) " ($model)" else ""
+            }
+        }
+        return out.joinToString("; ").ifBlank { null }
     }
 }
