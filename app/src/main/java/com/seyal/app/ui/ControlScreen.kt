@@ -146,8 +146,9 @@ private fun ScreenSection() {
     val ctx = LocalContext.current
     val tick by Agent.tick.collectAsState()
     val resumed = (ctx as? MainActivity)?.resumeTick?.value ?: 0
-    val on = remember(tick, resumed) { ScreenDriver.available }
-    val listenerOn = remember(tick, resumed) { SeyalNotificationListener.connected }
+    val access by ScreenDriver.access.collectAsState()
+    val on = remember(tick, resumed, access) { ScreenDriver.available }
+    val listenerOn = remember(tick, resumed, access) { SeyalNotificationListener.connected }
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {

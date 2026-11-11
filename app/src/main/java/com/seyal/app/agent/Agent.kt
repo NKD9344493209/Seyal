@@ -70,6 +70,9 @@ object Agent {
     val currentId: StateFlow<String?> = _current
     private val _paused = MutableStateFlow(false)
     val paused: StateFlow<Boolean> = _paused
+    /** Marks a message the user sent while a task was running, so the AI reads it as their latest word. Not shown in the chat. */
+    const val MIDTASK = "[New message, sent while you were working] "
+
     private val _tick = MutableStateFlow(0L)
     /** Bumps on every change, for screens that want a cheap signal. */
     val tick: StateFlow<Long> = _tick
@@ -187,7 +190,10 @@ object Agent {
                 // The answer to the agent's question.
                 question != null -> { waits[question.callId]?.complete(msg); return@launch }
                 // The agent is mid-step: it picks this up as soon as the step's results are in (or when it finishes).
-                s.status.isOpen && jobs[s.id]?.isActive == true -> { s.queued += Msg("user", parts); touch(s); return@launch }
+                s.status.isOpen && jobs[s.id]?.isActive == true -> {
+                    parts[0] = Part.Text(MIDTASK + msg)
+                    s.queued += Msg("user", parts); touch(s); return@launch
+                }
                 // A finished, stopped or failed conversation carries on.
                 else -> { s.messages += Msg("user", parts); s.status = SessionStatus.RUNNING; touch(s); run(s) }
             }
@@ -252,7 +258,7 @@ object Agent {
                 ScreenDriver.freezeIds(s.id)
                 val t0 = System.currentTimeMillis()
                 val resp = try {
-                    Llm.chat(Prompts.system(s, tools), snapshot, decls, 2048)
+                    Llm.chat(Prompts.system(s, tools), snapshot, decls, 2048, onWait = { report(it) })
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -412,12 +418,13 @@ object Agent {
         val calls = s.messages.drop(lastUser + 1).filter { it.role == "assistant" }.flatMap { it.calls }
         val done = calls.mapNotNull { c -> s.calls[c.id]?.takeIf { it.status == CallStatus.DONE }?.line?.let { c to it } }
         if (done.isEmpty()) return SessionStatus.FAILED to why
-        val did = done.map { it.second }.distinct().takeLast(4).joinToString("; ")
+        val did = done.map { it.second.take(70) }.distinct().takeLast(3).joinToString("; ")
         val lastRound = s.messages.lastOrNull { it.role == "assistant" && it.calls.isNotEmpty() }?.calls.orEmpty()
         val lastOk = lastRound.isNotEmpty() && lastRound.all { s.calls[it.id]?.status == CallStatus.DONE }
         val acted = lastRound.any { Toolbox.get(it.name)?.sideEffect == true }
         return if (lastOk && acted) SessionStatus.DONE to "Done: $did."
-        else SessionStatus.FAILED to "Got this far: $did. Then: $why Send a message to continue."
+        // The reason goes first: the one-line result shown in lists is cut short.
+        else SessionStatus.FAILED to "$why Done so far: $did. Send a message to continue."
     }
 
     private fun report(text: String) {

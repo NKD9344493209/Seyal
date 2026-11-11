@@ -126,7 +126,7 @@ fun UserBubble(m: Msg) {
         Column(
             Modifier.widthIn(max = 300.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            if (m.text.isNotBlank()) Text(m.text.take(1200), style = MaterialTheme.typography.bodyLarge)
+            if (m.text.isNotBlank()) Text(m.text.removePrefix(Agent.MIDTASK).take(1200), style = MaterialTheme.typography.bodyLarge)
             if (image != null) Thumb(image, 160)
         }
     }

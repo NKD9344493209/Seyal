@@ -22,9 +22,9 @@ class SeyalNotificationListener : NotificationListenerService() {
     private val keywords = listOf("exam", "fees", "fee ", "deadline", "placement", "internship", "interview", "offer", "result", "hall ticket", "assignment", "submission", "timetable")
     private val seen = ArrayDeque<String>()
 
-    override fun onListenerConnected() { instance = this }
-    override fun onListenerDisconnected() { if (instance === this) instance = null }
-    override fun onDestroy() { if (instance === this) instance = null; super.onDestroy() }
+    override fun onListenerConnected() { instance = this; ScreenDriver.accessChanged() }
+    override fun onListenerDisconnected() { if (instance === this) { instance = null; ScreenDriver.accessChanged() } }
+    override fun onDestroy() { if (instance === this) { instance = null; ScreenDriver.accessChanged() }; super.onDestroy() }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return

@@ -15,8 +15,19 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
-/** busy = worth trying again or another model. slow = timed out, quota = rate/quota limit (neither clears in seconds). */
-class LlmException(message: String, val busy: Boolean = false, val slow: Boolean = false, val quota: Boolean = false, val retryAfterMs: Long = 0L) : IOException(message)
+/**
+ * busy = worth trying again or another model. slow = timed out. quota = a rate limit (per minute unless [daily]).
+ * daily = the model's quota for the day is used up. missing = this key can't use that model (404).
+ */
+class LlmException(
+    message: String,
+    val busy: Boolean = false,
+    val slow: Boolean = false,
+    val quota: Boolean = false,
+    val retryAfterMs: Long = 0L,
+    val daily: Boolean = false,
+    val missing: Boolean = false,
+) : IOException(message)
 
 /** A tool the model may call. [params] is a JSON-schema object: {type: object, properties: {...}, required: [...]}. */
 class ToolDecl(val name: String, val description: String, val params: JSONObject)
@@ -31,62 +42,107 @@ class LlmResponse(val text: String, val calls: List<Part.Call>, val tokens: Int,
 object Llm {
     private const val TAG = "SeyalAI"
 
-    /** Gemini models to fall back to, in order, when the chosen one is overloaded. */
-    private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest")
+    /**
+     * Gemini models to fall back to, in order. Each model has its own limits, so when one is busy or has
+     * used up its free requests, the next one usually still answers.
+     */
+    private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash")
 
-    /** A model that just hung or hit its quota is skipped until this time, so the next request doesn't wait on it again. */
+    /** A model that is resting (busy, hung, or at a limit) is skipped until this time; [coolWhy] says why. */
     private val coolUntil = ConcurrentHashMap<String, Long>()
+    private val coolWhy = ConcurrentHashMap<String, String>()
+
+    private fun rest(model: String, untilMs: Long, why: String) { coolUntil[model] = untilMs; coolWhy[model] = why }
+    @Volatile private var lastKey = 0
 
     /** How little each model may "think" before answering: minimal → low → (none, for models without the setting). Moves right when a model rejects a level. */
     private val thinkLevels = listOf("minimal", "low", null)
     private val thinkIndex = ConcurrentHashMap<String, Int>()
 
-    suspend fun chat(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048): LlmResponse = withContext(Dispatchers.IO) {
+    /** Gemini's free daily limits start again at midnight in California. */
+    fun quotaResetAt(): Long {
+        val la = java.time.ZoneId.of("America/Los_Angeles")
+        return java.time.ZonedDateTime.now(la).toLocalDate().plusDays(1).atStartOfDay(la).toInstant().toEpochMilli()
+    }
+
+    private fun clock(ms: Long): String =
+        java.time.format.DateTimeFormatter.ofPattern("h:mm a").format(java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()))
+
+    /**
+     * One answer from the AI. Tries the chosen model, then the fallbacks. A per-minute limit rests that model for
+     * the time the server asks and moves on; when every model is resting it waits for the first one back
+     * (telling [onWait]), for at most about 2½ minutes. A used-up daily limit rests the model until it resets.
+     */
+    suspend fun chat(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048, onWait: (String) -> Unit = {}): LlmResponse = withContext(Dispatchers.IO) {
         if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
+        // A new key or provider has its own limits: forget what the old one ran into.
+        val keyNow = (Settings.provider + Settings.apiKey).hashCode()
+        if (keyNow != lastKey) { coolUntil.clear(); coolWhy.clear(); lastKey = keyNow }
+        val chosen = Settings.effectiveModel()
         val all = when (Settings.provider) {
-            "gemini" -> (listOf(Settings.effectiveModel()) + geminiFallbacks).distinct()
-            else -> listOf(Settings.effectiveModel())
+            "gemini" -> (listOf(chosen) + geminiFallbacks).distinct()
+            else -> listOf(chosen)
         }
-        val now = System.currentTimeMillis()
-        val models = all.filter { (coolUntil[it] ?: 0L) <= now }.ifEmpty { all }
         var last: LlmException? = null
+        val started = System.currentTimeMillis()
+        var triedResting = false
         // "Busy" (503) spikes usually clear within seconds: wait a little longer each time.
         val backoff = longArrayOf(1500, 3500, 7000)
-        for (model in models) {
-            var waitedForLimit = false
-            for (attempt in 0..backoff.size) {
-                val t0 = System.currentTimeMillis()
-                try {
-                    val out = when (Settings.provider) {
-                        "anthropic" -> anthropic(system, messages, tools, maxTokens, model)
-                        "openai" -> openai(system, messages, tools, maxTokens, model)
-                        else -> gemini(system, messages, tools, maxTokens, model)
+        while (true) {
+            val now = System.currentTimeMillis()
+            var ready = all.filter { (coolUntil[it] ?: 0L) <= now }
+            // Everything is resting after busy/slow spells: try those once anyway rather than fail at once.
+            if (ready.isEmpty() && !triedResting) { triedResting = true; ready = all.filter { coolWhy[it] == "busy" } }
+            if (ready.isEmpty()) {
+                // Only per-minute limits clear soon. Wait for the first model back, within reason.
+                val soonest = all.filter { coolWhy[it] == "minute" }.minOfOrNull { coolUntil[it] ?: 0L } ?: break
+                val wait = (soonest - now).coerceAtLeast(0)
+                if (wait > 70_000 || now - started + wait > 150_000) break
+                onWait("AI limit reached · waiting ${(wait + 999) / 1000} s")
+                delay(wait + 300)
+                continue
+            }
+            var minuteLimit = false
+            for (model in ready) {
+                for (attempt in 0..backoff.size) {
+                    val t0 = System.currentTimeMillis()
+                    try {
+                        val out = when (Settings.provider) {
+                            "anthropic" -> anthropic(system, messages, tools, maxTokens, model)
+                            "openai" -> openai(system, messages, tools, maxTokens, model)
+                            else -> gemini(system, messages, tools, maxTokens, model)
+                        }
+                        log("$model try ${attempt + 1}: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
+                        coolUntil.remove(model); coolWhy.remove(model)
+                        Settings.tokensUsed = Settings.tokensUsed + out.tokens
+                        return@withContext out
+                    } catch (e: LlmException) {
+                        last = e
+                        log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}, quota=${e.quota}, daily=${e.daily}): ${e.message?.take(160)}")
+                        val end = System.currentTimeMillis()
+                        // A fallback this key can't use: skip it for a while.
+                        if (e.missing && model != chosen) { rest(model, end + 6 * 3_600_000L, "missing"); break }
+                        if (!e.busy) throw e
+                        if (e.quota && e.daily) { rest(model, quotaResetAt(), "daily"); break }
+                        if (e.quota) { rest(model, end + e.retryAfterMs.coerceIn(15_000, 65_000), "minute"); minuteLimit = true; break }
+                        if (e.slow || attempt == backoff.size) { if (all.size > 1) rest(model, end + 3 * 60_000L, "busy"); break }
+                        delay(backoff[attempt])
                     }
-                    log("$model try ${attempt + 1}: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
-                    coolUntil.remove(model)
-                    Settings.tokensUsed = Settings.tokensUsed + out.tokens
-                    return@withContext out
-                } catch (e: LlmException) {
-                    last = e
-                    log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}): ${e.message?.take(160)}")
-                    if (!e.busy) throw e
-                    // A per-minute limit says how long to wait: wait that long if it's short.
-                    if (e.quota && !waitedForLimit && e.retryAfterMs in 1..40_000) { waitedForLimit = true; delay(e.retryAfterMs + 500); continue }
-                    if (e.slow || e.quota || attempt == backoff.size) {
-                        if (models.size > 1) coolUntil[model] = System.currentTimeMillis() + (if (e.quota) 15 else 5) * 60_000L
-                        break
-                    }
-                    delay(backoff[attempt])
                 }
             }
+            if (!minuteLimit) break
         }
+        val usable = all.filter { coolWhy[it] != "missing" }
         throw LlmException(
             when {
-                last?.quota == true -> "Your AI key has hit its usage limit for now. Wait a bit, or add another key in Control → AI."
-                last?.slow == true -> "Google's AI isn't answering right now (it timed out). Try again in a minute."
-                else -> "Google's AI is overloaded right now. Try again in a minute."
+                usable.isNotEmpty() && usable.all { coolWhy[it] == "daily" } ->
+                    "Today's free AI limit on this key is used up. It starts again at ${clock(quotaResetAt())}. Until then you can add a key from another provider in Control → AI."
+                last?.quota == true -> "The AI's per-minute limit is still reached. Try again in a minute."
+                last?.slow == true -> "The AI isn't answering right now (it timed out). Try again in a minute."
+                else -> "The AI is overloaded right now. Try again in a minute."
             },
             busy = true,
+            quota = last?.quota == true,
         )
     }
 
@@ -109,6 +165,21 @@ object Llm {
         } else throw e
     }
 
+    /** Gemini 2.x models: thinking is set by budget, and they neither need nor know Gemini 3's thought signatures. */
+    internal fun isGemini2(model: String) = Regex("gemini-2(\\.|-)").containsMatchIn(model)
+
+    /**
+     * The thought signature to send back with a function call. Gemini 3 insists on one for the first call of
+     * each step; a step that another model answered (a fallback, or another provider) has none, so it gets the
+     * documented placeholder. Gemini 2.x gets none at all.
+     */
+    internal fun geminiSignature(own: String?, firstCall: Boolean, model: String): String? = when {
+        isGemini2(model) -> null
+        own != null -> own
+        firstCall -> "skip_thought_signature_validator"
+        else -> null
+    }
+
     private fun geminiCall(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int, model: String, think: String?): LlmResponse {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val contents = JSONArray()
@@ -119,7 +190,11 @@ object Llm {
                     m.parts.forEach { p ->
                         when (p) {
                             is Part.Text -> if (p.text.isNotBlank()) parts.put(JSONObject().put("text", p.text))
-                            is Part.Call -> parts.put(JSONObject().put("functionCall", JSONObject().put("name", p.name).put("args", p.args)).also { o -> p.signature?.let { o.put("thoughtSignature", it) } })
+                            is Part.Call -> {
+                                val o = JSONObject().put("functionCall", JSONObject().put("name", p.name).put("args", p.args))
+                                geminiSignature(p.signature, firstCall = (0 until parts.length()).none { parts.getJSONObject(it).has("functionCall") }, model = model)?.let { o.put("thoughtSignature", it) }
+                                parts.put(o)
+                            }
                             else -> {}
                         }
                     }
@@ -169,7 +244,8 @@ object Llm {
                 put("temperature", 0.2)
                 put("maxOutputTokens", maxOf(maxTokens, 4096))
                 // Phone tasks need little "thinking"; high thinking made every step take a minute.
-                if (think != null) put("thinkingConfig", JSONObject().put("thinkingLevel", think))
+                if (isGemini2(model)) put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+                else if (think != null) put("thinkingConfig", JSONObject().put("thinkingLevel", think))
             })
         }
         val res = post(url, body, mapOf("x-goog-api-key" to Settings.apiKey))
@@ -347,11 +423,13 @@ object Llm {
                 val msg = err?.optString("message")
                 val busy = code == 429 || code == 503 || code == 529 || code == 500 ||
                     (msg ?: text).contains("high demand", true) || (msg ?: text).contains("overloaded", true)
-                // Gemini says how long to wait on a per-minute limit: error.details[].retryDelay = "23s".
-                var retryMs = 0L
-                err?.optJSONArray("details")?.let { d -> for (i in 0 until d.length()) d.optJSONObject(i)?.optString("retryDelay")?.removeSuffix("s")?.toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() } }
+                val (retryMs0, daily) = quotaInfo(err)
+                var retryMs = retryMs0
                 if (retryMs == 0L) conn.getHeaderField("retry-after")?.toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() }
-                throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy, quota = code == 429, retryAfterMs = retryMs)
+                throw LlmException(
+                    if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}",
+                    busy, quota = code == 429, retryAfterMs = retryMs, daily = code == 429 && daily, missing = code == 404,
+                )
             }
             return JSONObject(text)
         } catch (e: java.net.SocketTimeoutException) {
@@ -361,5 +439,23 @@ object Llm {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * From a Gemini error: how long it asks us to wait (error.details[].retryDelay = "23s"), and whether the
+     * limit hit is the daily one (QuotaFailure violations with a quotaId like "…PerDay…"). A daily limit
+     * also comes with a short retryDelay, which must not be believed.
+     */
+    internal fun quotaInfo(err: JSONObject?): Pair<Long, Boolean> {
+        var retryMs = 0L
+        var daily = false
+        val d = err?.optJSONArray("details") ?: return 0L to false
+        for (i in 0 until d.length()) {
+            val o = d.optJSONObject(i) ?: continue
+            o.optString("retryDelay").removeSuffix("s").toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() }
+            val v = o.optJSONArray("violations") ?: continue
+            for (j in 0 until v.length()) if (v.optJSONObject(j)?.optString("quotaId")?.contains("PerDay", ignoreCase = true) == true) daily = true
+        }
+        return retryMs to daily
     }
 }

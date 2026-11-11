@@ -56,8 +56,12 @@ object ScreenDriver {
 
     val available: Boolean get() = service != null
 
-    internal fun attach(s: SeyalAccessibilityService) { service = s; main.post { renderPill() } }
-    internal fun detach(s: SeyalAccessibilityService) { if (service === s) { main.post { removePill(s) }; service = null } }
+    /** Ticks whenever screen control or notification access starts or stops, so setup screens update by themselves. */
+    val access = kotlinx.coroutines.flow.MutableStateFlow(0)
+    fun accessChanged() { access.value = access.value + 1 }
+
+    internal fun attach(s: SeyalAccessibilityService) { service = s; main.post { renderPill() }; accessChanged() }
+    internal fun detach(s: SeyalAccessibilityService) { if (service === s) { main.post { removePill(s) }; service = null; accessChanged() } }
     internal fun noteChange() { lastChange = System.currentTimeMillis() }
 
     // ---------------------------------------------------------------- safety rules
@@ -331,17 +335,46 @@ object ScreenDriver {
 
     // ---------------------------------------------------------------- finding
 
-    /** The element the AI meant by [id], if it is still the same thing in the same place. */
-    private fun nodeById(id: Int): AccessibilityNodeInfo? {
+    /** The element the AI meant by [id], if it is still the same thing (see [resolve]). */
+    private fun nodeById(id: Int): AccessibilityNodeInfo? = resolve(id)?.first
+
+    /**
+     * The element the AI meant by [id]. Apps redraw all the time (a keyboard opens, a toolbar slides,
+     * a video preview starts), so a changed screen doesn't mean the element is gone:
+     * 1. the same node, same text, same place → it;
+     * 2. otherwise the screen is read again, and exactly one element with the same role and label → that one;
+     *    a field is also found again by its hint, or as the only field on screen.
+     * Anything else (it's gone, or there are several look-alikes, like the "Add" buttons of a list that
+     * scrolled) → null, and the AI picks again from the new screen.
+     * second = true when it had to be found again.
+     */
+    private fun resolve(id: Int): Pair<AccessibilityNodeInfo, Boolean>? {
         val e = modelEls[id] ?: lastEls[id] ?: return null
         val n = e.node
-        if (!runCatching { n.refresh() }.getOrDefault(false)) return null
-        val r = Rect(); n.getBoundsInScreen(r)
-        if (r != e.bounds || rawOf(n) != e.raw || !n.isVisibleToUser) return null
-        return n
+        if (runCatching { n.refresh() }.getOrDefault(false) && n.isVisibleToUser && rawOf(n) == e.raw) {
+            val r = Rect(); n.getBoundsInScreen(r)
+            if (r == e.bounds) return n to false
+        }
+        runCatching { describe(90) }.getOrNull() ?: return null
+        val now = lastEls.values
+        val labelled = e.text.isNotBlank() && e.text != "(unlabeled)"
+        if (labelled) {
+            val same = now.filter { it.role == e.role && it.text == e.text }
+            val exact = same.filter { it.extra == e.extra }
+            (if (exact.size == 1) exact else same).singleOrNull()?.let { return it.node to true }
+        }
+        if (e.role == "field") {
+            val fields = now.filter { it.role == "field" }
+            val hint = Regex("hint: ([^,]+)").find(e.extra)?.groupValues?.get(1)
+            // A field with a hint is only found again by that hint (a form's next field is not the same field).
+            if (hint != null) fields.filter { it.extra.contains("hint: $hint") }.singleOrNull()?.let { return it.node to true }
+            else fields.singleOrNull()?.let { return it.node to true }
+        }
+        return null
     }
 
     private fun labelOf(id: Int): String? = (modelEls[id] ?: lastEls[id])?.text
+    private fun roleOf(id: Int): String? = (modelEls[id] ?: lastEls[id])?.role
 
     private fun clickableUp(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var cur: AccessibilityNodeInfo? = n
@@ -393,7 +426,7 @@ object ScreenDriver {
     private fun center(n: AccessibilityNodeInfo): Pair<Float, Float> { val r = Rect(); n.getBoundsInScreen(r); return r.exactCenterX() to r.exactCenterY() }
 
     private fun changed(id: Int): JSONObject = JSONObject().put("ok", false)
-        .put("error", "Element #$id is no longer what it was on the screen you saw (the screen changed). Here is the screen now: pick again.")
+        .put("error", "Element #$id is not on the screen any more (the screen changed). Here is the screen now: pick from it.")
         .put("screen", runCatching { describe(90) }.getOrNull())
 
     // ---------------------------------------------------------------- acting
@@ -404,9 +437,13 @@ object ScreenDriver {
      */
     suspend fun tap(id: Int?, text: String?, long: Boolean = false, exactOnly: Boolean = false, returnScreen: Boolean = true, pkg: String? = null): JSONObject = lock.withLock {
         if (pkg != null && frontPackage() != pkg) return@withLock JSONObject().put("ok", false).put("error", "The expected app is not in front any more.")
-        val byId = id != null && id > 0
+        var byId = id != null && id > 0
+        var refound = false
         val node: AccessibilityNodeInfo = if (byId) {
-            nodeById(id!!) ?: return@withLock changed(id)
+            val hit = resolve(id!!)
+            refound = hit?.second == true
+            // The id is stale but the AI also said what it wanted: tap that text if it is on screen.
+            hit?.first ?: (if (!text.isNullOrBlank()) findByText(text, exactOnly = true)?.also { byId = false; refound = true } else null) ?: return@withLock changed(id)
         } else {
             (if (!text.isNullOrBlank()) findByText(text, exactOnly) else null)
                 ?: return@withLock JSONObject().put("ok", false).put("error", "Nothing called \"$text\" on screen. Here is the screen now.").put("screen", runCatching { describe(90) }.getOrNull())
@@ -418,6 +455,7 @@ object ScreenDriver {
         var ok = runCatching { target.performAction(if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
         if (!ok) { val (x, y) = center(node); ok = gestureTap(x, y, if (long) 700 else 60) }
         val o = JSONObject().put("ok", ok).put("tapped", label).also { if (!ok) it.put("error", "The tap did not register") }
+        if (refound && ok) o.put("note", "The screen had changed since you looked; found \"$label\" again and tapped it.")
         if (returnScreen) withScreen(o) else o
     }
 
@@ -454,9 +492,19 @@ object ScreenDriver {
     suspend fun type(text: String, id: Int?, enter: Boolean, append: Boolean): JSONObject = lock.withLock {
         val s = svc()
         var node: AccessibilityNodeInfo? = null
+        var note: String? = null
         if (id != null && id > 0) {
-            val n = nodeById(id) ?: return@withLock changed(id)
-            if (n.isEditable) node = n else {
+            val n = nodeById(id)
+            // The AI picked a search icon or bar, and the screen changed under it (the search box opened):
+            // if a field has the cursor, or there is only one field, that is where the text goes.
+            // (A field it picked that is gone is not replaced by another field.)
+            if (n == null && roleOf(id) != null && roleOf(id) != "field") {
+                val focused = s.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable && it.isVisibleToUser }
+                val only = if (focused == null) lastEls.values.filter { it.role == "field" }.singleOrNull()?.node else null
+                node = focused ?: only ?: return@withLock changed(id)
+                note = "The screen had changed since you looked; typed into the ${if (focused != null) "field with the cursor" else "only field on screen"}."
+            } else if (n == null) return@withLock changed(id)
+            else if (n.isEditable) node = n else {
                 // A search icon or bar that opens the real field when tapped.
                 if (isPayment(n)) return@withLock blocked(labelOf(id) ?: "#$id")
                 runCatching { (clickableUp(n) ?: n).performAction(AccessibilityNodeInfo.ACTION_CLICK) }
@@ -489,6 +537,7 @@ object ScreenDriver {
             ok = runCatching { field.performAction(AccessibilityNodeInfo.ACTION_PASTE) }.getOrDefault(false)
         }
         val o = JSONObject().put("ok", ok).put("typed", text.take(80)).also { if (!ok) it.put("error", "Could not type here") }
+        if (ok && note != null) o.put("note", note)
         if (ok && enter) {
             delay(250)
             if (screenLooksLikePayment()) {

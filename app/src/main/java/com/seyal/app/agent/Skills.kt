@@ -130,7 +130,7 @@ object Skills {
         class Turn(val ask: String, val calls: MutableList<Part.Call> = mutableListOf())
         val turns = mutableListOf<Turn>()
         for (m in session.messages) {
-            if (m.role == "user") turns += Turn(m.text)
+            if (m.role == "user") turns += Turn(m.text.removePrefix(Agent.MIDTASK))
             else if (m.role == "assistant") turns.lastOrNull()?.calls?.addAll(m.calls)
         }
         fun worked(c: Part.Call): Boolean { val r = results[c.id] ?: return false; return !r.isError && r.output.optBoolean("ok", true) }

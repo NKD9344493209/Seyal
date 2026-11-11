@@ -41,7 +41,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.seyal.app.data.Part
 import com.seyal.app.data.Settings
+import com.seyal.app.BuildConfig
 import com.seyal.app.device.Images
+import com.seyal.app.device.SeyalNotificationListener
 import com.seyal.app.ui.theme.SeyalTheme
 
 class MainActivity : ComponentActivity() {
@@ -75,6 +77,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeTick.value = resumeTick.value + 1
+        // Notification access is granted but the reader isn't running (some phones stop it after an update or a
+        // kill): ask Android to start it again instead of making the user switch it off and on.
+        if (BuildConfig.FLAVOR == "full" && !SeyalNotificationListener.connected &&
+            androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
+        ) runCatching { android.service.notification.NotificationListenerService.requestRebind(android.content.ComponentName(this, SeyalNotificationListener::class.java)) }
     }
 
     private fun handle(intent: Intent?) {

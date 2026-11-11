@@ -230,6 +230,7 @@ private fun SetupCard(goTo: (Tab) -> Unit) {
     // Reading these makes the card refresh when the user comes back from a permission or settings screen.
     val resumed = activity?.resumeTick?.value ?: 0
     val tick by Agent.tick.collectAsState()
+    val access by ScreenDriver.access.collectAsState()
     val full = BuildConfig.FLAVOR == "full"
     val granted: (String) -> Boolean = { p -> ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED }
     val open: (String) -> Unit = { action -> runCatching { context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
@@ -237,8 +238,8 @@ private fun SetupCard(goTo: (Tab) -> Unit) {
     val hasKey = remember(resumed, tick) { Settings.hasKey }
     val contacts = remember(resumed) { granted(Manifest.permission.READ_CONTACTS) }
     val notif = remember(resumed) { Build.VERSION.SDK_INT < 33 || granted(Manifest.permission.POST_NOTIFICATIONS) }
-    val screen = remember(resumed, tick) { ScreenDriver.available }
-    val listener = remember(resumed, tick) { SeyalNotificationListener.connected }
+    val screen = remember(resumed, tick, access) { ScreenDriver.available }
+    val listener = remember(resumed, tick, access) { SeyalNotificationListener.connected }
     val done = hasKey && contacts && notif && (!full || (screen && listener))
     if (done) return
 

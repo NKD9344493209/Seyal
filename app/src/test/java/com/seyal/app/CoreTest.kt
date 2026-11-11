@@ -1,6 +1,7 @@
 package com.seyal.app
 
 import com.seyal.app.agent.Memory
+import com.seyal.app.ai.Llm
 import com.seyal.app.agent.Skills
 import com.seyal.app.data.CallStatus
 import com.seyal.app.data.Msg
@@ -180,8 +181,33 @@ fun testMemory() {
     T.check("memory capped", long.length <= Memory.MAX)
 }
 
+fun testLlm() {
+    println("AI limits")
+    fun err(quotaId: String, delay: String) = JSONObject(
+        """{"code":429,"status":"RESOURCE_EXHAUSTED","details":[
+           {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"$quotaId"}]},
+           {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"$delay"}]}""",
+    )
+    val day = Llm.quotaInfo(err("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "13s"))
+    T.check("daily limit seen as daily", day.second)
+    T.eq("daily limit retry delay read", 13_000L, day.first)
+    val minute = Llm.quotaInfo(err("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "41.5s"))
+    T.check("minute limit not daily", !minute.second)
+    T.eq("minute limit retry delay", 41_500L, minute.first)
+    T.eq("no details → nothing", 0L to false, Llm.quotaInfo(JSONObject("{\"code\":429}")))
+    T.check("2.5 is Gemini 2", Llm.isGemini2("gemini-2.5-flash-lite"))
+    T.check("latest alias is not Gemini 2", !Llm.isGemini2("gemini-flash-lite-latest"))
+    T.check("Gemini 3 is not Gemini 2", !Llm.isGemini2("gemini-3-flash-preview"))
+    T.eq("own signature kept", "abc", Llm.geminiSignature("abc", firstCall = true, model = "gemini-flash-latest"))
+    T.eq("first call without signature gets placeholder", "skip_thought_signature_validator", Llm.geminiSignature(null, firstCall = true, model = "gemini-flash-latest"))
+    T.eq("later parallel call needs none", null, Llm.geminiSignature(null, firstCall = false, model = "gemini-flash-latest"))
+    T.eq("Gemini 2 gets no signature", null, Llm.geminiSignature("abc", firstCall = true, model = "gemini-2.5-flash"))
+    val reset = Llm.quotaResetAt() - System.currentTimeMillis()
+    T.check("daily reset within a day", reset in 1..(25 * 3_600_000L), "$reset ms")
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -190,7 +216,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }
