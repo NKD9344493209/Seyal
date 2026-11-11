@@ -118,6 +118,8 @@ object Agent {
     /** Call under [lock]: records a change to [s] and schedules a disk save. */
     private fun touch(s: Session) {
         s.updatedAt = System.currentTimeMillis()
+        // An open task waits for the user whenever any of its steps does (even while another step runs).
+        if (s.status.isOpen) s.status = if (s.calls.values.any { it.status.isWaiting }) SessionStatus.WAITING else SessionStatus.RUNNING
         val e = index.firstOrNull { it.optString("id") == s.id }
         if (e != null) { e.put("status", s.status.name); e.put("title", s.title); e.put("updated_at", s.updatedAt); e.put("steps", s.steps); s.result?.let { e.put("result", it) } }
         publish()
@@ -256,7 +258,9 @@ object Agent {
                 } catch (e: Exception) {
                     if (softFail && stepsThisRun == 0) { finish(s, SessionStatus.DONE, "Done: ${s.title}"); return }
                     val why = if (e is LlmException) e.message ?: "The AI did not answer." else "AI error: ${e.message?.take(160) ?: e.javaClass.simpleName}"
-                    finish(s, SessionStatus.FAILED, why)
+                    // If the work itself got done, say what was done rather than just "failed".
+                    val (status, text) = lock.withLock { afterAiFailure(s, stepsThisRun, why) }
+                    finish(s, status, text)
                     return
                 }
                 val parts = mutableListOf<Part>()
@@ -306,7 +310,7 @@ object Agent {
         lock.withLock {
             if (s.status == SessionStatus.CANCELLED) return
             s.status = status
-            s.result = text.lines().map { it.trim().trimStart('-', '*', '•', ' ') }.firstOrNull { it.isNotBlank() }?.take(140) ?: "Done"
+            s.result = plain(text).lines().map { it.trim().trimStart('-', '•', ' ') }.firstOrNull { it.isNotBlank() }?.take(140) ?: "Done"
             s.calls.values.forEach { if (!it.status.isFinished) { it.status = CallStatus.CANCELLED } }
             if (s.queued.isNotEmpty()) { s.messages += s.queued; s.queued.clear(); s.status = SessionStatus.RUNNING; run(s) }
             if (!s.status.isOpen) ScreenDriver.release(s.id)
@@ -394,9 +398,31 @@ object Agent {
     /** Grows with every status report, so an older "all done" never clears a newer task's status. */
     private val activity = java.util.concurrent.atomic.AtomicLong(0)
 
+    /** Markdown marks out, for one-line places (pill, notifications, lists). */
+    private fun plain(t: String) = t.replace("**", "").replace("`", "").replace(Regex("^#+\\s*", RegexOption.MULTILINE), "")
+
+    /**
+     * The AI stopped answering mid-task. If this turn's actions all worked and the last one changed
+     * something (a message sent, an alarm set…), the task is effectively done: report what was done.
+     * Otherwise it failed, and the user hears both what got done and why it stopped.
+     */
+    private fun afterAiFailure(s: Session, steps: Int, why: String): Pair<SessionStatus, String> {
+        if (steps == 0) return SessionStatus.FAILED to why
+        val lastUser = s.messages.indexOfLast { it.role == "user" }
+        val calls = s.messages.drop(lastUser + 1).filter { it.role == "assistant" }.flatMap { it.calls }
+        val done = calls.mapNotNull { c -> s.calls[c.id]?.takeIf { it.status == CallStatus.DONE }?.line?.let { c to it } }
+        if (done.isEmpty()) return SessionStatus.FAILED to why
+        val did = done.map { it.second }.distinct().takeLast(4).joinToString("; ")
+        val lastRound = s.messages.lastOrNull { it.role == "assistant" && it.calls.isNotEmpty() }?.calls.orEmpty()
+        val lastOk = lastRound.isNotEmpty() && lastRound.all { s.calls[it.id]?.status == CallStatus.DONE }
+        val acted = lastRound.any { Toolbox.get(it.name)?.sideEffect == true }
+        return if (lastOk && acted) SessionStatus.DONE to "Done: $did."
+        else SessionStatus.FAILED to "Got this far: $did. Then: $why Send a message to continue."
+    }
+
     private fun report(text: String) {
         val g = activity.incrementAndGet()
-        ScreenDriver.status(text)
+        ScreenDriver.status(plain(text))
         AgentService.working(app, text, g)
     }
 
@@ -405,7 +431,7 @@ object Agent {
         scope.launch {
             val g = lock.withLock { if (live.values.any { it.status.isOpen }) return@launch; activity.get() }
             AgentService.idle(g)
-            if (lastWords != null) { ScreenDriver.status(lastWords.take(70)); delay(4500) }
+            if (lastWords != null) { ScreenDriver.status(plain(lastWords).take(70)); delay(4500) }
             lock.withLock { if (activity.get() == g && live.values.none { it.status.isOpen }) ScreenDriver.status(null) }
         }
     }
@@ -496,7 +522,9 @@ object Agent {
             state.endedAt = System.currentTimeMillis()
             val out = when (val r = result) {
                 is ToolResult.Done -> {
-                    state.status = CallStatus.DONE; state.line = r.line; state.error = null
+                    // A screen action that didn't work still hands the AI the screen (not an error for it), but shows as failed.
+                    if (r.output.optBoolean("ok", true)) { state.status = CallStatus.DONE; state.line = r.line; state.error = null }
+                    else { state.status = CallStatus.FAILED; state.error = r.output.optString("error").ifBlank { r.line }; state.line = null }
                     if (tool.sideEffect && tool.group == "comms") Settings.autoSendToday = Settings.autoSendToday + 1
                     Part.Result(call.id, call.name, cap(r.output), false, r.image)
                 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.seyal.app.agent.Agent
 import com.seyal.app.agent.Prompts
 import com.seyal.app.agent.Skills
+import com.seyal.app.agent.Toolbox
 import com.seyal.app.data.CallState
 import com.seyal.app.data.CallStatus
 import com.seyal.app.data.Msg
@@ -97,8 +98,9 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
                 SessionPill(s.status)
                 Text(statsLine(s), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
-                val actions = s.calls.values.count { it.status == CallStatus.DONE }
-                if (s.status == SessionStatus.DONE && actions > 0 && s.source == "user") {
+                // Worth saving only when Seyal actually did something (not for questions it just answered).
+                val acted = s.messages.any { m -> m.calls.any { c -> s.calls[c.id]?.status == CallStatus.DONE && Toolbox.get(c.name)?.let { t -> t.sideEffect || t.group == "screen" } == true } }
+                if (s.status == SessionStatus.DONE && acted && s.source == "user") {
                     var saved by remember(s.id) { mutableStateOf(false) }
                     if (saved) Text("Saved to Skills", style = MaterialTheme.typography.labelMedium, color = Ink.green)
                     else SmallButton("Save as skill", filled = false) { saved = Skills.fromSession(s) != null }
@@ -112,7 +114,7 @@ private fun statsLine(s: Session): String {
     val secs = ((s.updatedAt - s.createdAt) / 1000).coerceAtLeast(0)
     val t = if (secs < 60) "${secs}s" else if (secs < 3600) "${secs / 60}m ${secs % 60}s" else "${secs / 3600}h"
     val parts = mutableListOf<String>()
-    if (s.steps > 0) parts += "${s.steps} steps"
+    if (s.steps > 0) parts += if (s.steps == 1) "1 step" else "${s.steps} steps"
     parts += t
     return parts.joinToString(" · ")
 }

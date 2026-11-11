@@ -101,7 +101,7 @@ USING THE SCREEN
             "weather" -> "Weather ${s("place")}".trim()
             "wikipedia" -> "Look up ${s("query")}"
             "open_app" -> "Open ${s("name")}"
-            "open_url" -> "Open ${s("url").take(60)}"
+            "open_url" -> "Open " + s("url").let { u -> if (u.startsWith("http")) u.substringAfter("://").substringBefore("/").removePrefix("www.") + (if (u.contains("search?q=") || u.contains("query=")) " search" else "") else u.substringBefore(":") + " link" }
             "apps_list" -> "List installed apps"
             "phone_state" -> "Check phone status"
             "set_setting" -> "Set ${s("name")} to ${s("value")}"
@@ -113,8 +113,8 @@ USING THE SCREEN
             "wait" -> "Wait ${a.optInt("seconds")} s"
             "screen_read" -> "Look at the screen"
             "screenshot" -> "Take a screenshot"
-            "screen_tap" -> "Tap ${s("text").ifBlank { "#" + a.optInt("id") }}"
-            "screen_long_press" -> "Long-press #${a.optInt("id")}"
+            "screen_tap" -> if (s("text").isNotBlank()) "Tap \"${s("text").take(40)}\"" else "Tap on screen"
+            "screen_long_press" -> if (s("text").isNotBlank()) "Long-press \"${s("text").take(40)}\"" else "Long-press on screen"
             "screen_type" -> "Type \"${s("text").take(40)}\""
             "screen_scroll" -> "Scroll ${s("direction")}"
             "screen_swipe" -> "Swipe"

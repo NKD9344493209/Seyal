@@ -715,19 +715,19 @@ object ScreenDriver {
                 val d = s.resources.displayMetrics.density
                 fun dp(v: Int) = (v * d).toInt()
                 val label = TextView(s).apply {
-                    setTextColor(Color.WHITE); textSize = 13f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                    maxWidth = dp(230)
+                    setTextColor(Color.WHITE); textSize = 12f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                    maxWidth = dp(220)
                     setOnClickListener { onOpen?.invoke() }
                 }
                 val stop = TextView(s).apply {
-                    this.text = "Stop"; setTextColor(Color.parseColor("#FFB4A8")); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
-                    setPadding(dp(14), 0, 0, 0)
+                    this.text = "Stop"; setTextColor(Color.parseColor("#FFB4A8")); textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(12), 0, 0, 0)
                     setOnClickListener { onStop?.invoke() }
                 }
                 val box = LinearLayout(s).apply {
                     orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(14), dp(8), dp(14), dp(8))
-                    background = GradientDrawable().apply { setColor(Color.parseColor("#E61F1E1D")); cornerRadius = dp(20).toFloat() }
+                    setPadding(dp(12), dp(4), dp(12), dp(4))
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#F01F1E1D")); cornerRadius = dp(14).toFloat() }
                     addView(label); addView(stop)
                 }
                 val lp = WindowManager.LayoutParams(
@@ -735,7 +735,8 @@ object ScreenDriver {
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT,
-                ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(34) }
+                // Sits in the status-bar strip (like a call pill), so it doesn't cover the app's own top bar.
+                ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(2) }
                 (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).addView(box, lp)
                 pill = box; pillLabel = label
             }

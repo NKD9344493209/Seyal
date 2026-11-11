@@ -11,6 +11,7 @@ Amma ku call pannu
 What notifications do I have right now?
 Open the Calculator app and work out 48 times 12 using the screen, then tell me the answer
 > Save this as a skill called Multiply
+Run my Multiply skill
 Open Settings, find the Android version of this phone and tell me
 Open Chrome, search for Broadway Cinemas Coimbatore and tell me the title of the first result
 Open the Clock app and add an alarm for 7:15 AM using its screen

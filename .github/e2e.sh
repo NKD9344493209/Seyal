@@ -115,7 +115,9 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
     state=$(python3 "$HERE/e2e_state.py" newest index.json sessions)
     status=${state%% *}
     # Anything waiting (this task, or a sub-task of it): approve it / answer it, like a user would.
-    if [ "$(python3 "$HERE/e2e_state.py" anywaiting index.json)" = "yes" ] && [ $approved -lt 12 ]; then
+    waiting=$(python3 "$HERE/e2e_state.py" anywaiting index.json)
+    case "$state" in *WAITING_*) waiting=yes ;; esac
+    if [ "$waiting" = "yes" ] && [ $approved -lt 12 ]; then
       case "$state" in *WAITING_USER*) [ $answered -lt 3 ] && shot "e2e/$tag-question$answered.png" ;; *) [ $approved -lt 1 ] && shot "e2e/$tag-approval.png" ;; esac
       adb shell "am broadcast -n $RCV --ez approve_all true --es answer 'the first one'" >/dev/null
       approved=$((approved + 1)); answered=$((answered + 1)); continue

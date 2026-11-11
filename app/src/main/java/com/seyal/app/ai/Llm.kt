@@ -16,7 +16,7 @@ import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
 /** busy = worth trying again or another model. slow = timed out, quota = rate/quota limit (neither clears in seconds). */
-class LlmException(message: String, val busy: Boolean = false, val slow: Boolean = false, val quota: Boolean = false) : IOException(message)
+class LlmException(message: String, val busy: Boolean = false, val slow: Boolean = false, val quota: Boolean = false, val retryAfterMs: Long = 0L) : IOException(message)
 
 /** A tool the model may call. [params] is a JSON-schema object: {type: object, properties: {...}, required: [...]}. */
 class ToolDecl(val name: String, val description: String, val params: JSONObject)
@@ -37,8 +37,9 @@ object Llm {
     /** A model that just hung or hit its quota is skipped until this time, so the next request doesn't wait on it again. */
     private val coolUntil = ConcurrentHashMap<String, Long>()
 
-    /** Models that rejected thinkingConfig, so we stop sending it to them. */
-    private val noThinking = ConcurrentHashMap.newKeySet<String>()
+    /** How little each model may "think" before answering: minimal → low → (none, for models without the setting). Moves right when a model rejects a level. */
+    private val thinkLevels = listOf("minimal", "low", null)
+    private val thinkIndex = ConcurrentHashMap<String, Int>()
 
     suspend fun chat(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048): LlmResponse = withContext(Dispatchers.IO) {
         if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
@@ -49,9 +50,11 @@ object Llm {
         val now = System.currentTimeMillis()
         val models = all.filter { (coolUntil[it] ?: 0L) <= now }.ifEmpty { all }
         var last: LlmException? = null
+        // "Busy" (503) spikes usually clear within seconds: wait a little longer each time.
+        val backoff = longArrayOf(1500, 3500, 7000)
         for (model in models) {
-            // A quick "busy" often clears within seconds: one retry. A hang or a quota error doesn't: move on.
-            for (attempt in 0 until 2) {
+            var waitedForLimit = false
+            for (attempt in 0..backoff.size) {
                 val t0 = System.currentTimeMillis()
                 try {
                     val out = when (Settings.provider) {
@@ -67,15 +70,24 @@ object Llm {
                     last = e
                     log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}): ${e.message?.take(160)}")
                     if (!e.busy) throw e
-                    if (e.slow || e.quota || attempt == 1) {
+                    // A per-minute limit says how long to wait: wait that long if it's short.
+                    if (e.quota && !waitedForLimit && e.retryAfterMs in 1..40_000) { waitedForLimit = true; delay(e.retryAfterMs + 500); continue }
+                    if (e.slow || e.quota || attempt == backoff.size) {
                         if (models.size > 1) coolUntil[model] = System.currentTimeMillis() + (if (e.quota) 15 else 5) * 60_000L
                         break
                     }
-                    delay(1500L)
+                    delay(backoff[attempt])
                 }
             }
         }
-        throw LlmException(last?.message ?: "The AI is overloaded right now. Try again in a minute.", busy = true)
+        throw LlmException(
+            when {
+                last?.quota == true -> "Your AI key has hit its usage limit for now. Wait a bit, or add another key in Control → AI."
+                last?.slow == true -> "Google's AI isn't answering right now (it timed out). Try again in a minute."
+                else -> "Google's AI is overloaded right now. Try again in a minute."
+            },
+            busy = true,
+        )
     }
 
     /** Plain text in, plain text out (titles, summaries, the key test). */
@@ -87,16 +99,17 @@ object Llm {
     // ---------------------------------------------------------------- Gemini
 
     private fun gemini(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int, model: String): LlmResponse = try {
-        geminiCall(system, messages, tools, maxTokens, model, thinkLow = model !in noThinking)
+        geminiCall(system, messages, tools, maxTokens, model, thinkLevels[thinkIndex[model] ?: 0])
     } catch (e: LlmException) {
-        // Older models don't know thinkingLevel: retry once without it.
-        if (model !in noThinking && !e.busy && (e.message ?: "").contains("think", ignoreCase = true)) {
-            noThinking += model
-            geminiCall(system, messages, tools, maxTokens, model, thinkLow = false)
+        val i = thinkIndex[model] ?: 0
+        if (!e.busy && i < thinkLevels.size - 1 && (e.message ?: "").contains("think", ignoreCase = true)) {
+            thinkIndex[model] = i + 1
+            log("$model rejected thinking level ${thinkLevels[i]}, using ${thinkLevels[i + 1] ?: "none"}")
+            gemini(system, messages, tools, maxTokens, model)
         } else throw e
     }
 
-    private fun geminiCall(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int, model: String, thinkLow: Boolean): LlmResponse {
+    private fun geminiCall(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int, model: String, think: String?): LlmResponse {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val contents = JSONArray()
         for (m in messages) {
@@ -156,7 +169,7 @@ object Llm {
                 put("temperature", 0.2)
                 put("maxOutputTokens", maxOf(maxTokens, 4096))
                 // Phone tasks need little "thinking"; high thinking made every step take a minute.
-                if (thinkLow) put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
+                if (think != null) put("thinkingConfig", JSONObject().put("thinkingLevel", think))
             })
         }
         val res = post(url, body, mapOf("x-goog-api-key" to Settings.apiKey))
@@ -173,7 +186,9 @@ object Llm {
         }
         val stop = cand.optString("finishReason", "")
         if (text.isBlank() && calls.isEmpty() && stop == "SAFETY") throw LlmException("Gemini declined (safety filter)")
-        val tokens = res.optJSONObject("usageMetadata")?.optInt("totalTokenCount", 0) ?: 0
+        val usage = res.optJSONObject("usageMetadata")
+        val tokens = usage?.optInt("totalTokenCount", 0) ?: 0
+        usage?.optInt("thoughtsTokenCount", 0)?.takeIf { it > 0 }?.let { log("$model thought for $it tokens (level ${think ?: "none"})") }
         return LlmResponse(text.toString().trim(), calls, tokens, model, stop)
     }
 
@@ -316,7 +331,7 @@ object Llm {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
-            readTimeout = 60_000
+            readTimeout = 35_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("User-Agent", "Seyal/2.0")
@@ -328,10 +343,15 @@ object Llm {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.readText() ?: ""
             if (code !in 200..299) {
-                val msg = runCatching { JSONObject(text).optJSONObject("error")?.optString("message") }.getOrNull()
+                val err = runCatching { JSONObject(text).optJSONObject("error") }.getOrNull()
+                val msg = err?.optString("message")
                 val busy = code == 429 || code == 503 || code == 529 || code == 500 ||
                     (msg ?: text).contains("high demand", true) || (msg ?: text).contains("overloaded", true)
-                throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy, quota = code == 429)
+                // Gemini says how long to wait on a per-minute limit: error.details[].retryDelay = "23s".
+                var retryMs = 0L
+                err?.optJSONArray("details")?.let { d -> for (i in 0 until d.length()) d.optJSONObject(i)?.optString("retryDelay")?.removeSuffix("s")?.toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() } }
+                if (retryMs == 0L) conn.getHeaderField("retry-after")?.toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() }
+                throw LlmException(if (busy) "AI busy ($code): ${msg ?: "try again"}" else "AI error $code: ${msg ?: text.take(200)}", busy, quota = code == 429, retryAfterMs = retryMs)
             }
             return JSONObject(text)
         } catch (e: java.net.SocketTimeoutException) {
