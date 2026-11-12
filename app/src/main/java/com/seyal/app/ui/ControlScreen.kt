@@ -371,10 +371,18 @@ private fun LessonsSection() {
             else "${lessons.size} notes from your tasks, in ${lessons.map { it.app }.distinct().size} apps. Seyal reads an app's notes before working in it.",
             style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
         )
+        var routines by remember { mutableStateOf(com.seyal.app.agent.Routines.count()) }
+        if (routines > 0) {
+            Text(
+                "It also remembers how it did $routines request${if (routines == 1) "" else "s"}: ${com.seyal.app.agent.Routines.instant()} of them now run instantly without the AI when you ask the same thing again; the rest give it a head start.",
+                style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp),
+            )
+            if (lessons.isEmpty()) SmallButton("Forget these", filled = false, danger = true) { com.seyal.app.agent.Routines.clear(); routines = 0 }
+        }
         if (lessons.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SmallButton(if (open) "Hide" else "Show", filled = false) { open = !open }
-                SmallButton("Forget all", filled = false, danger = true) { com.seyal.app.agent.Lessons.clear() }
+                SmallButton("Forget all", filled = false, danger = true) { com.seyal.app.agent.Lessons.clear(); com.seyal.app.agent.Routines.clear(); routines = 0 }
             }
             if (open) lessons.sortedBy { it.app }.forEach { l ->
                 Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.Top) {

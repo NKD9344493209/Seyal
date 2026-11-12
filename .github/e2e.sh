@@ -187,7 +187,12 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
 done 3< "$CMDS"
 
 pull; pull_all
-python3 "$HERE/e2e_state.py" report index.json sessions timings.tsv > e2e-report.md
+# The score first: how many commands went the way they must (see e2e-expect*.txt).
+EXPECT="$HERE/e2e-expect.txt"; [ "$FULL" = "full" ] && EXPECT="$HERE/e2e-expect-full.txt"
+python3 "$HERE/e2e_score.py" index.json sessions timings.tsv "$EXPECT" > e2e-score.md || true
+cat e2e-score.md > e2e-report.md
+python3 "$HERE/e2e_state.py" report index.json sessions timings.tsv >> e2e-report.md
+head -1 e2e-score.md
 {
   echo; echo "## Screen check"
   if [ -s ui-stale.tsv ]; then echo "Cards still showing working/queued after the session finished:"; echo '```'; cat ui-stale.tsv; echo '```'

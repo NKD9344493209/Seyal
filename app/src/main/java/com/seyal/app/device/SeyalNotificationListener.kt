@@ -24,7 +24,24 @@ class SeyalNotificationListener : NotificationListenerService() {
     private val seen = LinkedHashMap<String, Long>()
     private var lastCallKey: String? = null
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification) { if (sbn.key == lastCallKey) lastCallKey = null }
+    private var lastCaller: String? = null
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        if (sbn.key != lastCallKey) return
+        lastCallKey = null
+        // The ringing stopped. If a "missed call" notice shows up, nobody answered: busy mode may text the caller.
+        val who = lastCaller ?: return
+        lastCaller = null
+        if (!Busy.active()) return
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val missed = runCatching { activeNotifications }.getOrNull()?.any { m ->
+                val n = m.notification ?: return@any false
+                val (t, x) = textOf(n)
+                m.postTime > System.currentTimeMillis() - 30_000 && (n.category == "missed_call" || Regex("missed call|தவறிய அழைப்பு", RegexOption.IGNORE_CASE).containsMatchIn("$t $x"))
+            } == true
+            if (missed) Busy.onMissed(this, who)
+        }, 4_000)
+    }
 
     override fun onListenerConnected() {
         instance = this; ScreenDriver.accessChanged()
@@ -42,7 +59,7 @@ class SeyalNotificationListener : NotificationListenerService() {
         if (n.category == Notification.CATEGORY_CALL && sbn.key != lastCallKey) {
             val (who, what) = textOf(n)
             // Only a call coming in, not one the user is making or already on.
-            if (who.isNotBlank() && !Regex("dialing|calling|ongoing|on hold|missed", RegexOption.IGNORE_CASE).containsMatchIn("$who $what")) { lastCallKey = sbn.key; Skills.onEvent("call_from:$who") }
+            if (who.isNotBlank() && !Regex("dialing|calling|ongoing|on hold|missed", RegexOption.IGNORE_CASE).containsMatchIn("$who $what")) { lastCallKey = sbn.key; lastCaller = who; Skills.onEvent("call_from:$who"); runCatching { Busy.onCall(this, who) } }
         }
         // Group summaries and ongoing things (music, downloads, calls) are not news.
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0 || sbn.isOngoing) return
@@ -57,6 +74,16 @@ class SeyalNotificationListener : NotificationListenerService() {
         }
         val label = ScreenDriver.appLabel(this, sbn.packageName)
         Skills.onNotification(label, sbn.packageName, title, mask("$title $text").removePrefix("$title "), isGroup(sbn), sbn.key)
+        // Deadlines, bills and renewals in what just arrived: caught on the phone (no AI), and only the user is told.
+        if (Settings.catchMessages && !Settings.paused) runCatching {
+            val now = System.currentTimeMillis()
+            com.seyal.app.agent.Catcher.scan(label, title, text, now)?.let { c ->
+                if (com.seyal.app.agent.Inbox.add(c, now) && com.seyal.app.agent.Background.mayNotify()) {
+                    com.seyal.app.agent.Inbox.told(c.id, now)
+                    Notify.caught(this, c, when (c.kind) { "deadline" -> "Deadline"; "bill" -> "Bill"; "renewal" -> "Auto-charge"; "recharge" -> "Recharge"; else -> "Return" })
+                }
+            }
+        }
 
         if (sbn.packageName == "com.google.android.gm") {
             val all = "$title $text".lowercase()

@@ -1,0 +1,22 @@
+# What must be true of each command's run (see e2e_score.py). Commands not listed only have to end DONE.
+Torch on => done; noai; under:15
+What is the weather in Coimbatore today? => done; tool:weather
+Order a biryani from a nearby hotel => asks
+Book 2 tickets for Ramayana at Broadway Cinemas Coimbatore tomorrow evening, maximum 250 per ticket => asks; no:send_whatsapp
+Make a PowerPoint about the benefits of rooftop solar power for homes, 6 slides => done; tool:doc_create; under:60
+Email it to priya@example.com => done; tool:send_file|send_email
+Make a PDF with a packing list for a 2 day trip to Ooty => done; tool:doc_create
+!gpost Family|Amma:Where are you? => nothing
+!gpost CSE Final Year|Placement Cell: TCS drive registration. Fill the form before tomorrow 5 PM https://forms.gle/AbCd123 => nothing
+What deadlines do I have? => done; tool:inbox_list; says:TCS|form|deadline|1
+List the videos on this phone and send the list to priya@example.com as a PPT => done; tool:doc_create
+Tell me when the page https://example.com says Book tickets => done; tool:watch_add
+What are you watching for me? => done; tool:watch_list
+I am in class till 4 pm, tell people who call that I will call back after 4 => tool:busy_mode
+End busy mode => done; tool:busy_mode
+Give me my summary for today => done; tool:daily_brief
+Set the brightness to 30 percent and turn on do not disturb => done; tool:set_setting
+Set the brightness to 30 percent and turn on do not disturb. => done; noai; under:20
+Tomorrow at 8 am send a WhatsApp to my dad saying good morning => done; tool:skill_save
+Give me todays top AI news in 5 points => done
+Every morning at 8, give me AI news => done; tool:skill_save

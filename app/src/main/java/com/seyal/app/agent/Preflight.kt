@@ -27,7 +27,7 @@ object Preflight {
         ),
         TRAVEL(
             "book a bus, train or flight",
-            "1) from where  2) to where  3) which day  4) what time of day  5) how many people  6) seat type (sleeper / seater, AC / non-AC)  7) budget per seat",
+            "1) from where  2) to where  3) which day  4) what time of day  5) how many people  6) seat type (sleeper / seater, AC / non-AC)  7) budget per seat  8) boarding point, if the city has several (or 'any')",
             listOf("redBus", "AbhiBus", "IRCTC", "ixigo", "MakeMyTrip", "ConfirmTkt", "Goibibo", "Zingbus", "Cleartrip", "EaseMyTrip", "TNSTC", "Paytm"), "people",
         ),
         CAB(
@@ -170,10 +170,10 @@ NOW: ${Times.nowText()}. Home city: ${Settings.homeCity.ifBlank { "unknown" }}.
 APPS ON THIS PHONE FOR THIS: ${if (apps.isEmpty()) "(none found)" else apps.joinToString(", ")}. The app is not a detail to ask about: the one the user named is used, otherwise the first of these.
 KNOWN ABOUT THE USER: ${Memory.text().ifBlank { "(nothing)" }.take(600)}
 
-Go through NEEDED one by one against what the user wrote in this conversation (things known about the user count):
+Go through NEEDED one by one against the user's LATEST request and their answers since. Earlier requests in this chat are finished: their numbers, days and places do not carry over. What is known about the user may fill in a favourite place or app, never how many, which day, what time or what price:
 - A detail counts as given only if the user said it. Never fill one in yourself: not the number of tickets or items, not the time, not the price, not the language.
 - If one or more are missing: call ask_user ONCE. Its question lists every missing detail as a numbered line with two or three example choices, and ends with: "Answer in one line, or say 'you choose'." Do not ask for anything already given. Leave options empty.
-- If nothing is missing, or the user said to choose for them: call details_complete.
+- If nothing is missing, or the user said to choose for them: call details_complete, writing each detail exactly as the user gave it (the date as YYYY-MM-DD worked out from NOW; empty or 0 for what they left open).
 Write the question in the language the user wrote in.
         """.trimIndent()
     }

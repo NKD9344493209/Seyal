@@ -92,6 +92,9 @@ object Lessons {
             "Zomato asks for the delivery location first: \"Use current location\" (allow location while using the app), then confirm the address shown. Filters under the search results sort by rating and price.",
         ),
         "bookmyshow" to listOf(
+            "Theatre: after opening the film, the show list has many theatres. Find the one the user named by its NAME (scroll the list, or use the search icon on that list); the first one listed is usually a big multiplex and is NOT the one asked for. If the user's theatre is not in the list, it has no show for that film or day on this app: ask the user (say so, and name two nearby theatres that do), never book another one by yourself.",
+            "Day: the date strip at the top of the show list starts on today. Tap the user's day BEFORE picking a show time, and read the day back from the review screen.",
+            "How many: the \"How many seats?\" sheet opens with a number already chosen, often left from last time. Tap the user's number (the row of 1 to 10) and check the picture changed, then Select Seats. On the seat map tap exactly that many seats; the bar at the bottom must show that many.",
             "Search the movie by name and open its page, check the title, then Book tickets. Pick the date at the top; theatres are listed with their show times: find the theatre the user named and tap the time they want.",
             "A \"How many seats?\" sheet opens before the seat map: tap the number the user asked for (it defaults to 2, never leave a wrong number), then Select Seats.",
             "If the film runs in several languages or formats (Tamil / Hindi / English, 2D / 3D), a sheet asks which: pick what the user said. If they did not say, ask them; never pick one yourself.",
@@ -99,6 +102,9 @@ object Lessons {
             "After tapping, the bar at the bottom shows the selected seats and the price (e.g. \"A5, A6 · Pay ₹380\"): read it, call seats_check with those labels, and fix the selection if they are not together or the count is wrong. No row has enough seats together in budget → ask the user (say what is free) before taking separate seats. Then stop at Pay.",
         ),
         "redbus" to listOf(
+            "Seats: the seat page is a drawing (Lower and Upper deck for sleepers). Take ONE screenshot: free seats are white or outlined, sold are grey, pink is for women. Tap free seats that touch each other for people travelling together (a double berth, or two in the same row), with screen_tap_at. The bar at the bottom then shows the seat numbers and the fare: read it, and tap again if the count is wrong.",
+            "After seats: choose the boarding point and the dropping point (the one the user named; if they named none and there are several, ask), then passenger details. Name, age and gender come from the user: saved passengers can be ticked, otherwise ask_user once for all of them. Call order_check on the review page, and stop at Proceed to Pay.",
+            "Filters at the top of the bus list (AC, Sleeper, departure time, price) are faster than scrolling: set what the user asked for first.",
             "Search link: https://www.redbus.in/bus-tickets/FROM-to-TO?fromCityName=From&toCityName=To&onward=DD-Mon-YYYY (e.g. coimbatore-to-bangalore, onward=14-Nov-2026). There is no link for one bus: share the search link with the bus name, time and price.",
             "Cheapest first: Sort → Price low to high. Each row shows operator, departure, duration, seat type and price.",
         ),

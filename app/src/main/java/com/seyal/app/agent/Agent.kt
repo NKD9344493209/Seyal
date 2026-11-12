@@ -87,6 +87,14 @@ object Agent {
         s.messages.filter { fromUser(it) }.map { it.text.removePrefix(MIDTASK) } +
             s.messages.filter { it.role == "tool" }.flatMap { it.results }.filter { it.name == "ask_user" }.map { it.output.optString("answer") }.filter { it.isNotBlank() }
 
+    /** What the user said for the request in hand only: their latest message and their answers since (never an older request's "6 tickets"). */
+    internal fun requestWords(s: Session): List<String> {
+        val from = s.messages.indexOfLast { fromUser(it) }
+        if (from < 0) return emptyList()
+        return listOf(s.messages[from].text.removePrefix(MIDTASK)) +
+            s.messages.drop(from + 1).filter { it.role == "tool" }.flatMap { it.results }.filter { it.name == "ask_user" }.map { it.output.optString("answer") }.filter { it.isNotBlank() }
+    }
+
     /** What was done since the user's latest message, for [Checks]. */
     internal fun didSince(s: Session): List<Did> {
         val from = s.messages.indexOfLast { fromUser(it) }
@@ -132,6 +140,11 @@ object Agent {
         _current.value = index.firstOrNull { it.optString("source") == "user" }?.optString("id")
         Skills.init()
         Lessons.init(context.filesDir)
+        Routines.init(context.filesDir)
+        Inbox.init(context.filesDir); Watchers.init(context.filesDir)
+        Inbox.onChange = { runCatching { Scheduler.syncBackground(app) } }
+        Watchers.onChange = { runCatching { Scheduler.syncBackground(app) } }
+        runCatching { Scheduler.syncBackground(context) }
         // Which apps are on the phone (by the name on their icon), looked up at most once a minute.
         var labels: List<String> = emptyList(); var labelsAt = 0L
         Preflight.appLabels = {
@@ -360,20 +373,39 @@ object Agent {
                                 return
                             }
                         }
+                        // 1b. Asked before, done the same way: repeat the steps that worked, with no AI at all.
+                        val known = if (quick == null && Preflight.kind(said) == null) Routines.exact(said)?.takeIf { r -> r.steps.all { byName[it.name] != null } } else null
+                        if (known != null) {
+                            report("Doing it the way that worked last time…")
+                            val steps = known.steps.map { Part.Call(newId(), it.name, JSONObject(it.args.toString())) }
+                            if (replay(s, steps)) {
+                                s.steps += steps.size; s.replayed = true
+                                val lines = lock.withLock {
+                                    val from = s.messages.indexOfLast { fromUser(it) }
+                                    s.messages.drop(from + 1).filter { it.role == "assistant" }.flatMap { it.calls }.mapNotNull { s.calls[it.id]?.line }.filter { it.isNotBlank() }
+                                }
+                                finish(s, SessionStatus.DONE, lines.joinToString("\n").ifBlank { "Done." })
+                                return
+                            }
+                            // It did not work this time: forget the shortcut and let the AI look at what happened.
+                            Routines.distrust(said)
+                            if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
+                            lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + "The steps above were repeated from last time and one did not work. Finish the request yourself: $said"))); touch(s) }
+                        }
                         // 2. Buying, booking or ordering: the user gives the details before anything is opened.
-                        val kind = if (quick == null) Preflight.kind(said) else null
+                        val kind = if (quick == null && known == null) Preflight.kind(said) else null
                         val ask = byName["ask_user"]
                         if (kind != null && ask != null) {
                             report("Checking what I need to know…")
                             val pre = try {
-                                Llm.chat(Preflight.system(kind, said), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Preflight.complete), 700, forceTool = true, onWait = { report(it) })
+                                Llm.chat(Preflight.system(kind, said), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Order.decl(kind)), 700, forceTool = true, onWait = { report(it) })
                             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
                             lock.withLock { s.llmCalls++; s.tokens += pre?.tokens ?: 0; touch(s) }
                             var question = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
                             if (question == null) {
                                 // The AI did not ask. That is only right when the user really gave the details: check the one
                                 // that costs most when guessed (how many), and ask it ourselves if nobody said it.
-                                val words = lock.withLock { userWords(s) }
+                                val words = lock.withLock { requestWords(s) }
                                 val saidComplete = pre?.calls?.any { it.name == "details_complete" } == true
                                 val leaves = Preflight.leavesChoice(words)
                                 val needCount = kind.unit.isNotBlank() && !Preflight.saysHowMany(words)
@@ -389,6 +421,24 @@ object Agent {
                                 }
                             }
                             if (question != null) { runSynthetic(s, question, ask); s.steps++; stepsThisRun++ }
+                            // 3. Write the order down once, in the user's terms. Every later step is held to it.
+                            var written = pre?.calls?.firstOrNull { it.name == "details_complete" }?.args?.takeIf { question == null }
+                            if (written == null && question != null) {
+                                report("Noting your details…")
+                                written = try {
+                                    Llm.chat(Preflight.system(kind, said) + "\nThe user has answered. Call details_complete now.", lock.withLock { repair(s); forModel(s) }, listOf(Order.decl(kind)), 500, forceTool = true, onWait = { report(it) })
+                                        .also { r -> lock.withLock { s.llmCalls++; s.tokens += r.tokens; touch(s) } }
+                                        .calls.firstOrNull { it.name == "details_complete" }?.args
+                                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
+                            }
+                            val words = lock.withLock { requestWords(s) }
+                            val byAi = written?.let { Order.fromJson(JSONObject(it.toString()).put("kind", kind.name)) }
+                            val byWords = Order.fromWords(kind, words)
+                            // A number the user plainly said beats whatever the AI wrote down.
+                            s.order = if (byAi == null) byWords.takeIf { !it.isEmpty } else Order.fromJson(byAi.toJson().apply {
+                                if (byWords.count > 0) put("count", byWords.count)
+                                if (byWords.maxEach > 0) put("max_each", byWords.maxEach)
+                            })
                         }
                     }
                 }
@@ -421,11 +471,11 @@ object Agent {
                 }
                 if (resp.calls.isEmpty()) {
                     // "Done" has to mean done: compare what was asked with what happened, and send the AI back once per gap.
-                    val gap = if (s.source == "user" && s.parentId == null && s.checked.size < 3) lock.withLock {
+                    val gap = if (s.source == "user" && s.parentId == null && s.checked.size < 5) lock.withLock {
                         val said = lastSaid(s)
                         val words = userWords(s)
                         val one = Regex("\\b(1|one|single|just me|only me|myself|alone)\\b", RegexOption.IGNORE_CASE).containsMatchIn(words.joinToString(" ")) && !Regex("\\b([2-9]|two|three|four|five|six)\\s*(tickets?|seats?|people|persons?)", RegexOption.IGNORE_CASE).containsMatchIn(words.joinToString(" "))
-                        Checks.beforeDone(said, Preflight.kind(said) ?: Preflight.kind(words.firstOrNull().orEmpty()).takeIf { said.length < 40 }, didSince(s), s.checked, manyPeople = !one)
+                        Checks.beforeDone(said, Preflight.kind(said) ?: Preflight.kind(words.firstOrNull().orEmpty()).takeIf { said.length < 40 }, didSince(s), s.checked, manyPeople = !one, hasOrder = s.order != null)
                     } else null
                     if (gap != null) {
                         s.checked += gap.key
@@ -500,6 +550,15 @@ object Agent {
         }
         save(s)
         if (s.status.isOpen) return
+        // Remember how it was done, so the same request is instant next time and a similar one starts ahead.
+        if (status == SessionStatus.DONE && s.parentId == null && s.source == "user" && !s.replayed) runCatching {
+            val said = lastSaid(s)
+            val from = s.messages.indexOfLast { fromUser(it) }
+            val calls = s.messages.drop(from + 1).filter { it.role == "assistant" }.flatMap { it.calls }
+            val allOk = calls.isNotEmpty() && calls.all { s.calls[it.id]?.status == CallStatus.DONE } && s.checked.isEmpty()
+            if (said.isNotBlank() && Quick.match(said) == null) Routines.learn(said, calls.map { Routines.Step(it.name, it.args) }, allOk, wantsAnswer(said), System.currentTimeMillis())
+        }
+        s.replayed = false
         // Learn from it: what would make the same kind of task quicker next time in that app.
         if (status == SessionStatus.DONE && s.parentId == null && Settings.hasKey) s.workApp?.let { pkg ->
             scope.launch { runCatching { Lessons.learnFrom(s, ScreenDriver.appLabel(app, pkg)) } }
@@ -562,11 +621,17 @@ object Agent {
                 else Part.Result(r.callId, r.name, JSONObject(r.output.toString()).apply { remove("screen"); remove("elements"); put("screen_omitted", "older screen removed; a later result has a newer one (or call screen_read)") }, r.isError, null)
             }, m.at)
         }
-        fun size(m: Msg) = m.parts.sumOf { p -> if (p is Part.Result) p.output.toString().length + (p.image?.b64?.length ?: 0) / 8 else if (p is Part.Text) p.text.length else 0 }
+        // Earlier requests in this chat are finished business: keep what was said and what came of it, not every
+        // result in full. (A long chat otherwise makes each step slower and eats the per-minute limit.)
+        // The request just before this one stays whole: "email it", "add one more slide" point straight back at it.
+        val asks = msgs.indices.filter { fromUser(msgs[it]) }
+        val keepFrom = asks.getOrNull(asks.size - 2) ?: 0
+        for (i in 0 until keepFrom) msgs[i] = History.shrink(msgs[i]) { id -> s.calls[id]?.line }
+        fun size(m: Msg) = m.parts.sumOf { p -> if (p is Part.Result) p.output.toString().length + (p.image?.b64?.length ?: 0) / 8 else if (p is Part.Text) p.text.length else if (p is Part.Call) p.args.toString().length else 0 }
         var total = msgs.sumOf { size(it) }
-        if (total < 70_000) return msgs
+        if (total < 40_000) return msgs
         for (i in toolIdx.dropLast(4)) {
-            if (total < 45_000) break
+            if (total < 26_000) break
             val m = msgs[i]
             val slim = Msg("tool", m.results.map { r ->
                 val line = s.calls[r.callId]?.line ?: ""
@@ -897,6 +962,7 @@ object Agent {
         saveJobs.values.forEach { it.cancel() }; saveJobs.clear()
         lock.withLock {
             live.clear(); index.clear()
+            Routines.clear(); Inbox.clear(); Watchers.clear()
             Skills.wipe()
             Lessons.clear()
             Store.wipe()
@@ -961,5 +1027,32 @@ object Agent {
             if (r.isError || r.output.optBoolean("ok", true) == false) return false
         }
         return true
+    }
+}
+
+/** Making finished parts of a conversation small before they are sent to the AI again. */
+object History {
+    /** Values a later request may point back to ("email it", "call that number", "open the link"). */
+    private val keep = setOf("uri", "path", "link", "url", "map_link", "file", "name", "id", "to", "number", "phone", "email", "answer", "title", "sent", "saved", "place")
+
+    /**
+     * A message from an earlier request, cut down: a result keeps its one-line summary and the short
+     * values worth pointing back to; a call keeps its name and short arguments.
+     */
+    fun shrink(m: Msg, line: (String) -> String?): Msg = when (m.role) {
+        "tool" -> Msg("tool", m.results.map { r ->
+            if (r.output.toString().length <= 300 && r.image == null) r
+            else {
+                val o = JSONObject().put("earlier_result", line(r.callId)?.takeIf { it.isNotBlank() } ?: if (r.isError) "failed" else "done")
+                r.output.keys().forEach { k -> val v = r.output.opt(k); if (k in keep && (v is Number || v is Boolean || (v is String && v.length <= 300))) o.put(k, v) }
+                if (r.isError) r.output.optString("error").takeIf { it.isNotBlank() }?.let { o.put("error", it.take(200)) }
+                Part.Result(r.callId, r.name, o, r.isError)
+            }
+        }, m.at)
+        "assistant" -> if (m.calls.none { it.args.toString().length > 400 }) m else Msg("assistant", m.parts.map { p ->
+            if (p !is Part.Call || p.args.toString().length <= 400) p
+            else Part.Call(p.id, p.name, JSONObject().apply { p.args.keys().forEach { k -> val v = p.args.opt(k); put(k, if (v is String && v.length > 160) v.take(160) + "…" else if (v is org.json.JSONArray && v.toString().length > 200) "(${v.length()} items, sent earlier)" else v) } }, p.signature)
+        }, m.at)
+        else -> m
     }
 }

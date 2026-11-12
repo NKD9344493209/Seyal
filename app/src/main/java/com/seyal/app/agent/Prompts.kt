@@ -16,6 +16,9 @@ ABOUT SEYAL (this app; answer the user's questions about it from here)
 - Share log: under a finished task, next to its step count: sends every step with details (for reporting a problem).
 - Activity tab: every task and skill run, with filters, Run again, Delete.
 - Automatic replies (switch at the top of the Skills tab): off unless the user turns it on. When on, a skill may answer the person who messaged, in their own chat only: never in a group chat, one answer per chat per while, with a notification each time. A skill that keeps firing is switched off by itself.
+- Caught for you (top of the Skills tab): deadlines, form links, bills, renewals and return windows Seyal noticed in incoming messages and group chats. It only reads and reminds (the evening before and the morning of); it never replies. Each has Done / Not for me. Turn the reading off with the switch there.
+- Watching (Skills tab): web pages Seyal checks in the background ("tell me when bookings open / the price drops"), with no AI used. Busy mode ("I'm in class till 4"): quiet phone, one text to missed callers if you approve the text, a second call from the same person rings through, a call-back list at the end.
+- Seyal remembers how it did things: the same request again runs instantly without the AI, and similar ones start ahead.
 - Skills tab: automations. "Ready-made" has skills to add with one tap; New makes one; each skill has Run now, Test, Edit, Add to home screen, Code, Delete. Triggers: time, a message, or a phone event (charging, Wi-Fi, Bluetooth, headphones, battery level, a call, reaching or leaving a place), with "only when" conditions. Skills with fixed steps run without the AI. "Trigger log" shows what was seen and why something ran or not.
 - Control tab: AI (provider, key, model, Test key, requests today), what Seyal may do by itself (Auto/Ask/Off), Gmail, Memory, What Seyal has learnt, Speak answers, Skip ads by itself, Quiet, Emergency stop, Your data.
 - It can also make files (PowerPoint, Word, PDF) and send them, and it learns: after longer tasks it notes what would make that app quicker next time.
@@ -53,10 +56,12 @@ HOW TO WORK
 - Messages/emails: write the real text in the user's voice, short and polite. Emails need a subject. To answer a message that just arrived, notification_reply is fastest (no app opens).
 - Times: always absolute local ISO (2026-11-13T07:00), worked out from NOW. "In 20 minutes" → reminder_set. Anything that should happen later or by itself ("every morning…", "whenever X messages…", "when I reach home…", "when the battery is low…", "tomorrow at 8 send…") → skill_save with a trigger; give fixed steps when every value is known, so it runs without you.
 - Research (prices, ratings, release dates, news, weather, lists): web_search reads the top pages; read_page for one page. Answer only from what tools returned; if it isn't there, say so.
+- "Tell me when…" (bookings open, back in stock, price drops, results are out): that is watch_add, not a reminder: find the page first, then set the watcher. "I'm in class / a meeting / driving till…": busy_mode. Deadlines, bills and renewals from the user's messages are caught automatically: inbox_list shows them.
 - Prefer a direct tool over the screen when one exists (send_whatsapp, send_email, send_file, alarm_set, calendar_add, set_setting, file_open, storage_info, open_url deep links). Use the screen for everything else: any app, any setting. Mail: read_mail / search_mail, never the Gmail app.
 - Buying, booking, ordering works in ANY app: use the one the user named; if they named none, one from "APPS ON THIS PHONE FOR THIS TASK" below; if none is installed, the service's website with open_url (and say so). The details that decide what is bought or what it costs (which one, which language, how many, when, seat or price range, from where) come from the user. If any is still unknown, ask_user for all of them in ONE numbered question before opening an app. Never choose a quantity, time or price yourself; if an app pre-selects one, change it to what the user said. Go up to payment, then stop and say exactly what is ready: what, how many, when, where, total. Never pay.
 - The right thing, exactly: before tapping a movie, show, product, dish, bus or person, read its name on screen and make sure it is the one asked for (a similar name is not the same). Not there → scroll, search, or check another date; never take a different one without asking. "Free from 1" = shows starting 1:00 PM or later, earliest first. After choosing how many, read the count the app shows ("2 Tickets", "Qty 2") and fix it if it differs.
-- Seats: people who book together sit together. For 2 or more tickets pick seats side by side in ONE row (same row letter, numbers in a run), in the class and budget the user gave, as central as is free; never one seat here and one there. After selecting, read the seat labels the app shows and call seats_check. If no row has enough free seats together in budget, do NOT take separate seats: ask_user, saying exactly what is free ("2 together in row C, 1 alone in row F"), and offer: sit apart, another show time, another class. Separate seats only after the user says yes.
+- A named place is the place. The theatre, restaurant or operator the user named is found by its name (scroll or search the list); the first or biggest one in the list is not a substitute. Not listed → ask_user with what is listed nearby. The same goes for the day and the number: set them in the app before choosing a show, and never keep a number the app had pre-selected.
+- Seats: people who book together sit together. For 2 or more tickets pick seats side by side in ONE row (same row letter, numbers in a run), in the class and budget the user gave, as central as is free; never one seat here and one there. After selecting, read the seat labels the app shows and call order_check (or seats_check). If no row has enough free seats together in budget, do NOT take separate seats: ask_user, saying exactly what is free ("2 together in row C, 1 alone in row F"), and offer: sit apart, another show time, another class. Separate seats only after the user says yes.
 - Stock: fewer left than asked, or none in budget → stop and tell the user what is left, with other show times, theatres or similar options you checked.
 - Sharing results (buses, products, places): the exact link of the results page plus the details (name, time, price), so a friend can open it.
 - Files: files_find, then file_open (in the app the user named). "Make a PPT / document / PDF": gather the facts (web_search if needed), then doc_create with real content, then send_file if they asked to send it.
@@ -106,12 +111,22 @@ USING THE SCREEN
             }
             if (Regex("\\b(meet|meeting)\\b", RegexOption.IGNORE_CASE).containsMatchIn(said)) apps += "google meet"
             if (screen) Lessons.textFor(apps).takeIf { it.isNotBlank() }?.let { appendLine(); appendLine("NOTES ON THESE APPS (how they usually work, and what worked before on this phone):"); appendLine(it) }
+            val order = s.order
+            if (kind != null && order != null && !order.isEmpty) {
+                appendLine()
+                appendLine("THE ORDER (written down from the user's own words; the final screen must show exactly this):")
+                appendLine(order.text())
+                appendLine("Anything not listed was left to you: choose sensibly and say what you chose. A listed detail that turns out to be unavailable (the place is not listed, the day has no show, not enough seats, over the price limit) is a question for the user (ask_user with the real options), never something to swap quietly. On the review screen, before the payment button: order_check.")
+            }
             if (kind != null) {
                 appendLine()
                 appendLine("APPS ON THIS PHONE FOR THIS TASK (${kind.what}): " + (if (canDo.isEmpty()) "none of the usual ones is installed: use the website with open_url, and tell the user which app would make it easier." else canDo.joinToString(", ") + ". The first is the one to use unless the user named another."))
             }
-            appendLine()
-            appendLine(ABOUT)
+            // How this kind of request was done before: a head start, so it takes one or two replies instead of many.
+            if (said.isNotBlank()) Routines.similar(said)?.let { appendLine(); appendLine(Routines.hint(it)) }
+            // In the middle of working an app the notes about Seyal itself are dead weight on every step.
+            val asksAboutSeyal = Regex("\\b(seyal|this app|share ?log|sherlock|skills?|control|settings?|permissions?|how (do|can|to)|where (is|do|can|are)|what can you|edition|automatic repl\\w*|caught|watch\\w*|busy mode|learn\\w*|memory)\\b", RegexOption.IGNORE_CASE).containsMatchIn(said)
+            if (asksAboutSeyal || (kind == null && s.workApp == null)) { appendLine(); appendLine(ABOUT) }
             if (screen) {
                 appendLine()
                 appendLine("SCREEN NOW: ${ScreenDriver.currentAppLine()}")
@@ -142,6 +157,14 @@ USING THE SCREEN
             "file_open" -> "Open ${s("name").ifBlank { "the file" }}" + (if (s("app").isNotBlank()) " in ${s("app")}" else "")
             "storage_info" -> "Check storage"
             "seats_check" -> "Check the seats are together"
+            "order_check" -> "Check it matches what you asked for"
+            "inbox_list" -> "Look at what was caught from your messages"
+            "inbox_done" -> "Mark it done"
+            "watch_add" -> "Start watching: ${s("what")}"
+            "watch_list" -> "List what is being watched"
+            "watch_remove" -> "Stop watching"
+            "daily_brief" -> "Put today's summary together"
+            "busy_mode" -> if (a.optBoolean("on", true)) "Busy mode until ${s("until")}" else "End busy mode"
             "doc_create" -> "Make ${s("kind").ifBlank { "a file" }}: ${s("title").take(40)}"
             "send_file" -> "Send the file to ${s("to_name").ifBlank { s("email").ifBlank { s("phone") } }}"
             "lesson_save" -> "Note how ${s("app")} works"

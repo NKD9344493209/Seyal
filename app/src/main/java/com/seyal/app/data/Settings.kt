@@ -170,6 +170,21 @@ object Settings {
         get() = plain.getBoolean("auto_replies", false)
         set(v) = plain.edit().putBoolean("auto_replies", v).apply()
 
+    /** Busy mode's state (see device/Busy): until when, the message, who called. Empty = not busy. */
+    var busyState: String
+        get() = str("busy_state", "")
+        set(v) = put("busy_state", v)
+
+    /** Whether incoming messages are read for deadlines, bills and renewals (the user is only told; nothing is sent). */
+    var catchMessages: Boolean
+        get() = plain.getBoolean("catch_messages", true)
+        set(v) = plain.edit().putBoolean("catch_messages", v).apply()
+
+    /** How many "caught" notifications were shown today, as "yyyy-MM-dd:n" (a daily cap keeps them from becoming noise). */
+    var caughtToday: String
+        get() = str("caught_today", "")
+        set(v) = put("caught_today", v)
+
     /** The user hid the setup card. */
     var setupHidden: Boolean
         get() = plain.getBoolean("setup_hidden", false)

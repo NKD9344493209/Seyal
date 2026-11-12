@@ -53,6 +53,52 @@ object Notify {
         NotificationManagerCompat.from(ctx).notify((sessionId ?: text).hashCode(), n)
     }
 
+    /** Something caught from a message (a deadline, a bill): what, when, where from, with Done / Open / Not for me. */
+    fun caught(ctx: Context, c: com.seyal.app.agent.Caught, lead: String) {
+        if (!allowed(ctx)) return
+        val now = System.currentTimeMillis()
+        val whenText = com.seyal.app.agent.Catcher.whenText(c.due, c.hasTime, now)
+        fun act(action: String) = PendingIntent.getBroadcast(
+            ctx, (action + c.id).hashCode(),
+            Intent(ctx, com.seyal.app.agent.ActionReceiver::class.java).setAction(action).putExtra("caught", c.id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val b = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("$lead · due $whenText".take(70))
+            .setContentText(c.title)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${c.title}\n${c.source}\n\n${c.text.take(300)}"))
+            .setContentIntent(openApp(ctx))
+            .setAutoCancel(true)
+            .addAction(0, "Done", act("com.seyal.app.CAUGHT_DONE"))
+        if (c.link.isNotBlank()) runCatching {
+            val open = PendingIntent.getActivity(ctx, ("open" + c.id).hashCode(), Intent(Intent.ACTION_VIEW, android.net.Uri.parse(c.link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            b.addAction(0, if (c.kind == "deadline") "Open form" else "Open", open)
+        }
+        b.addAction(0, "Not for me", act("com.seyal.app.CAUGHT_DROP"))
+        NotificationManagerCompat.from(ctx).notify("caught${c.id}".hashCode(), b.build())
+    }
+
+    /** A watcher's news, or anything else with a page to open: tap opens [url]. */
+    fun alert(ctx: Context, id: String, title: String, text: String, url: String) {
+        if (!allowed(ctx)) return
+        val pi = runCatching {
+            PendingIntent.getActivity(ctx, id.hashCode(), Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        }.getOrNull() ?: openApp(ctx)
+        val n = NotificationCompat.Builder(ctx, CH_ALARM)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(60))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pi)
+            .addAction(0, "Open", pi)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(id.hashCode(), n)
+    }
+
     /** "Tap to run it now": for a skill that could not run at its time (the phone was locked). */
     fun runSkill(ctx: Context, skillId: String, title: String, text: String) {
         if (!allowed(ctx)) return

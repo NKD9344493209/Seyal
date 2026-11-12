@@ -176,6 +176,49 @@ object AgentTools {
                 )
             },
 
+            Tool(
+                "order_check", "agent",
+                "For anything being bought or booked: when the review / summary screen is showing and BEFORE the payment step, report exactly what the screen shows. It is compared with what the user asked for (THE ORDER) and tells you what to fix. Report what you read on the screen, not what was asked.",
+                schema {
+                    str("place", "The theatre, restaurant, shop or operator named on the screen")
+                    str("date", "The day shown, as YYYY-MM-DD")
+                    int("count", "How many tickets / seats / items the screen shows")
+                    int("price_each", "The price of ONE, in rupees, as shown")
+                    int("total", "The total shown, in rupees")
+                    strList("seats", "The selected seats as shown, e.g. [\"A5\", \"A6\"] or [\"L3\", \"L4\"]")
+                    str("from", "Trips: where it starts, as shown"); str("to", "Trips: where it ends, as shown")
+                    strList("user_agreed", "Only if the user has since agreed to a change: which of place, date, count, price, seats_apart")
+                },
+            ) { a, ctx ->
+                val s = com.seyal.app.agent.Agent.session(ctx.sessionId)
+                val order = s?.order ?: return@Tool ToolResult.ok("Nothing to compare with", "note" to "No order details were written down for this task. Make sure yourself that it matches what the user asked.")
+                val agreed = a.optJSONArray("user_agreed")?.let { arr -> (0 until arr.length()).map { arr.optString(it).lowercase() } }.orEmpty()
+                val seatsRaw = a.optJSONArray("seats")?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }.orEmpty().flatMap { com.seyal.app.agent.Seats.split(it) }
+                val shown = JSONObject(a.toString())
+                if (shown.optInt("count", 0) <= 0 && seatsRaw.isNotEmpty()) shown.put("count", seatsRaw.size)
+                // What the user has agreed to change is no longer held against the screen.
+                val held = com.seyal.app.agent.Order.fromJson(order.toJson().apply {
+                    if ("place" in agreed) remove("place"); if ("date" in agreed) remove("date"); if ("count" in agreed) remove("count"); if ("price" in agreed) remove("max_each")
+                })
+                val unread = mutableListOf<String>()
+                val problems = held.mismatches(shown, unread).toMutableList()
+                // Seats: the right number, and for a theatre side by side in one row.
+                if (seatsRaw.isNotEmpty()) {
+                    val want = held.count.takeIf { it > 0 } ?: seatsRaw.size
+                    if (seatsRaw.all { com.seyal.app.agent.Seats.parse(it) != null }) {
+                        val v = com.seyal.app.agent.Seats.check(seatsRaw, want)
+                        if (!v.ok || (!v.together && "seats_apart" !in agreed && order.kind == "MOVIE")) problems += v.message
+                    } else if (seatsRaw.size != want) problems += "${seatsRaw.size} seats are selected (${seatsRaw.joinToString(", ")}), but the user wants $want. Select exactly $want, next to each other."
+                } else if (order.kind == "MOVIE" || order.kind == "TRAVEL") unread += "seats (the seat labels shown as selected)"
+                if (problems.isNotEmpty()) return@Tool ToolResult.Failed("This does NOT match what the user asked for:\n" + problems.mapIndexed { i, p -> "${i + 1}. $p" }.joinToString("\n"))
+                // Something was not read off the screen: ask for it once, then accept what could be read.
+                if (unread.isNotEmpty() && s.checked.add("unread")) return@Tool ToolResult.Failed("Not checked yet, because these were not reported: ${unread.joinToString("; ")}. Read them from the screen (screen_read, or a screenshot) and call order_check again with them. If the screen truly does not show one, call again without it.")
+                ToolResult.Done(
+                    JSONObject().put("ok", true).put("fine", true).put("result", "This matches what the user asked for. Stop at the payment button and tell the user it is ready: place, day and time, how many, seats and the amount."),
+                    "Checked: it matches what you asked for",
+                )
+            },
+
             Tool("skill_run", "agent", "Run a saved skill now by name.", schema { str("name", "Skill name", required = true) }) { a, _ ->
                 val s = Skills.byName(a.optString("name")) ?: return@Tool ToolResult.Failed("No skill called \"${a.optString("name")}\"")
                 val id = Skills.run(s.id) ?: return@Tool ToolResult.Failed("\"${s.name}\" is already running or Seyal is paused")

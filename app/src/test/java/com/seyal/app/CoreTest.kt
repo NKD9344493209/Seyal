@@ -11,6 +11,15 @@ import com.seyal.app.agent.AutoGuard
 import com.seyal.app.agent.Checks
 import com.seyal.app.agent.Did
 import com.seyal.app.agent.Seats
+import com.seyal.app.agent.Order
+import com.seyal.app.agent.Routines
+import com.seyal.app.agent.History
+import com.seyal.app.agent.Catcher
+import com.seyal.app.agent.Inbox
+import com.seyal.app.agent.Watcher
+import com.seyal.app.agent.Watchers
+import com.seyal.app.device.BusyRules
+import com.seyal.app.util.Dates
 import com.seyal.app.device.TapRules
 import com.seyal.app.agent.Quick
 import com.seyal.app.agent.Lessons
@@ -523,8 +532,199 @@ fun testPhase3() {
     T.check("the self-check is not from the user", !Agent.fromUser(s.messages.last()))
 }
 
+fun testPhase4() {
+    val zone = java.time.ZoneId.systemDefault()
+    val nowDt = java.time.LocalDateTime.of(2026, 11, 12, 10, 0) // a Thursday
+    val now = nowDt.atZone(zone).toInstant().toEpochMilli()
+    fun at(y: Int, m: Int, d: Int, h: Int = 23, min: Int = 59) = java.time.LocalDateTime.of(y, m, d, h, min)
+
+    println("The order is written down")
+    T.eq("'2 tickets' is 2", 2, Order.countIn(listOf("Sangeetha Somanur, book 2 tickets, max 250 per ticket")))
+    T.eq("'rendu ticket' is 2", 2, Order.countIn(listOf("rendu ticket venum")))
+    T.eq("a bare '3' answer is 3", 3, Order.countIn(listOf("book tickets for Leo", "3, balcony")))
+    T.eq("a bare 'two' answer is 2", 2, Order.countIn(listOf("book tickets for Leo", "two")))
+    val chat = Session("t9", 1L)
+    chat.messages += Msg("user", listOf(Part.Text("Book 6 tickets for Leo at PVR")))
+    chat.messages += Msg("assistant", listOf(Part.Text("Ready at the payment step.")))
+    chat.messages += Msg("user", listOf(Part.Text("Book tickets for Ramayana at Sangeetha Somanur")))
+    T.eq("an older request's number is not this request's", 0, Order.countIn(Agent.requestWords(chat)))
+    T.check("…so the count is asked again", !Preflight.saysHowMany(Agent.requestWords(chat)))
+    T.eq("the newest answer wins", 4, Order.countIn(listOf("2 tickets", "make it 4 tickets")))
+    T.eq("a time is not a count", 0, Order.countIn(listOf("book tickets after 6 pm at Broadway")))
+    T.eq("'max 250 per ticket' is the limit", 250, Order.budgetIn(listOf("Maximum I can spend 250 per ticket")))
+    T.eq("'under ₹300' is the limit", 300, Order.budgetIn(listOf("2 tickets under ₹300")))
+    T.eq("no limit said", 0, Order.budgetIn(listOf("2 tickets for tonight")))
+    val order = Order.fromJson(JSONObject("""{"kind":"MOVIE","item":"Ramayana","place":"Sangeetha Somanur","date":"2026-11-13","count":2,"max_each":250,"seat":"any"}"""))
+    T.eq("'any' seat means left open", "", order.seat)
+    T.check("the order text names the place and the count", order.text().let { it.contains("Sangeetha Somanur") && it.contains("exactly 2") })
+    T.check("Sangeeta / Sangeetha are the same place", Order.samePlace("Sangeetha Somanur", "Sangeeta Cinemas, Somanur"))
+    T.check("PVR is not Sangeetha", !Order.samePlace("Sangeetha Somanur", "PVR: Brookefields Mall, Coimbatore"))
+    T.check("Broadway matches Broadway Cinemas Coimbatore", Order.samePlace("Broadway", "Broadway Cinemas: Coimbatore"))
+    T.check("KG is not Broadway", !Order.samePlace("Broadway Cinemas", "KG Cinemas"))
+    val wrong = order.mismatches(JSONObject("""{"place":"PVR Brookefields","date":"2026-11-15","count":6,"price_each":190}"""))
+    T.eq("wrong theatre, day and count are all caught", 3, wrong.size)
+    T.check("the count message says what to do", wrong.any { it.contains("exactly 2") })
+    T.eq("the right booking passes", 0, order.mismatches(JSONObject("""{"place":"Sangeetha Cinemas Somanur","date":"2026-11-13","count":2,"price_each":190}""")).size)
+    T.eq("a booking fee on top is fine", 0, order.mismatches(JSONObject("""{"place":"Sangeetha Cinemas Somanur","date":"2026-11-13","count":2,"price_each":285}""")).size)
+    T.eq("a dearer class is caught", 1, order.mismatches(JSONObject("""{"place":"Sangeetha Cinemas Somanur","date":"2026-11-13","count":2,"price_each":450}""")).size)
+    val unread = mutableListOf<String>()
+    order.mismatches(JSONObject("""{"count":2}"""), unread)
+    T.eq("what was not read off the screen is asked for", 3, unread.size)
+    T.eq("total / count gives the price of one", 0, order.mismatches(JSONObject("""{"place":"Sangeetha Somanur","date":"2026-11-13","count":2,"total":400}""")).size)
+    T.eq("bus seat 'L5' is a seat", "L5", Seats.any("L5"))
+    T.eq("bus seat '12' is a seat", "12", Seats.any("12"))
+    T.eq("'premium' is not a seat", null, Seats.any("premium"))
+    val atPay = listOf(Did("open_app", true), Did("screen_tap", false, JSONObject().put("error", "\"Pay\" is a payment or final-confirmation step.")))
+    T.eq("with an order, payment step unchecked is caught", "verify", Checks.beforeDone("book 2 tickets", Preflight.Kind.MOVIE, atPay, emptySet(), hasOrder = true)?.key)
+    T.eq("a failed order check is caught", "mismatch", Checks.beforeDone("book 2 tickets", Preflight.Kind.MOVIE, atPay + Did("order_check", false), setOf("verify"), hasOrder = true)?.key)
+    T.eq("a passed order check is done", null, Checks.beforeDone("book 2 tickets", Preflight.Kind.MOVIE, atPay + Did("order_check", false) + Did("order_check", true), emptySet(), hasOrder = true))
+    T.check("the movie notes cover theatre, day and count", Lessons.textFor(listOf("BookMyShow")).let { it.contains("by its NAME") && it.contains("date strip") && it.contains("already chosen") })
+    T.check("the bus notes cover seats and boarding", Lessons.textFor(listOf("redBus")).let { it.contains("Lower and Upper") && it.contains("boarding point") })
+
+    println("The brain: done before, done faster")
+    val dir = java.io.File(System.getProperty("java.io.tmpdir"), "seyal-test-" + System.nanoTime()).apply { mkdirs() }
+    Routines.init(dir)
+    T.eq("politeness and case don't matter", Routines.normalise("torch on"), Routines.normalise("Please, Torch ON!"))
+    fun step(n: String, vararg kv: Pair<String, Any>) = Routines.Step(n, JSONObject().apply { kv.forEach { put(it.first, it.second) } })
+    val dnd = listOf(step("set_setting", "name" to "dnd", "value" to "on"), step("set_setting", "name" to "brightness", "value" to "30"))
+    Routines.learn("Turn on do not disturb and set brightness to 30", dnd, true, false, now)
+    T.check("the same words again run without the AI", Routines.exact("turn on Do Not Disturb and set brightness to 30 please")?.steps?.size == 2)
+    T.eq("different words do not", null, Routines.exact("turn off do not disturb"))
+    Routines.learn("Send good morning to dad on WhatsApp", listOf(step("contacts_search", "name" to "dad"), step("send_whatsapp", "phone" to "+919876500001", "text" to "Good morning")), true, false, now)
+    T.check("a fixed message to a fixed person can be repeated", Routines.exact("send good morning to dad on whatsapp") != null)
+    Routines.learn("Set an alarm for 7 am tomorrow", listOf(step("alarm_set", "time" to "2026-11-13T07:00")), true, false, now)
+    T.eq("anything with a day in it is not repeated blindly", null, Routines.exact("set an alarm for 7 am tomorrow"))
+    Routines.learn("What is the weather in Coimbatore", listOf(step("weather", "place" to "Coimbatore")), true, true, now)
+    T.eq("a question is always asked fresh", null, Routines.exact("what is the weather in coimbatore"))
+    Routines.learn("Send it to him", listOf(step("send_whatsapp", "phone" to "1", "text" to "x")), true, false, now)
+    T.eq("'it' and 'him' are never remembered", null, Routines.similar("send it to him", 0.99))
+    Routines.learn("Open YouTube and play lofi music", listOf(step("open_app", "name" to "YouTube"), step("screen_tap", "label" to "Search"), step("screen_type", "text" to "lofi music")), true, false, now)
+    T.eq("screen work is not repeated blindly", null, Routines.exact("open youtube and play lofi music"))
+    T.check("…but a similar request gets a head start", Routines.similar("Open YouTube and play tamil songs")?.said?.contains("lofi") == true)
+    T.check("the head start lists the steps", Routines.hint(Routines.similar("Open YouTube and play tamil songs")!!).contains("screen_tap"))
+    T.eq("an unrelated request gets none", null, Routines.similar("how much storage is free"))
+    Routines.learn("Order a biryani", listOf(step("ask_user", "question" to "which"), step("open_app", "name" to "Swiggy"), step("order_check", "count" to 1)), true, false, now)
+    T.eq("questions and checks are left out of what is remembered", 1, Routines.similar("order a biryani")?.steps?.size)
+    Routines.learn("Make a note file", listOf(step("doc_create", "kind" to "txt", "text" to "x".repeat(900))), true, false, now)
+    T.eq("a step too long to keep whole is not repeated blindly", null, Routines.exact("make a note file"))
+    Routines.learn("Lower the volume", listOf(step("set_setting", "name" to "volume_media", "value" to "20")), false, false, now)
+    T.eq("a run where something failed is not remembered", null, Routines.exact("lower the volume"))
+    Routines.distrust("Turn on do not disturb and set brightness to 30")
+    T.eq("a shortcut that failed is no longer used", null, Routines.exact("turn on do not disturb and set brightness to 30"))
+    Routines.init(dir)
+    T.check("it survives a restart", Routines.count() >= 4)
+
+    println("Old parts of a chat are made small")
+    val big = Msg("tool", listOf(Part.Result("c1", "web_search", JSONObject().put("ok", true).put("results", "x".repeat(4000)).put("link", "https://example.com/a"))))
+    val small = History.shrink(big) { "Searched the web" }
+    T.check("a long old result becomes a line", small.results[0].output.toString().length < 200 && small.results[0].output.optString("earlier_result") == "Searched the web")
+    T.eq("…but keeps the link someone may point back to", "https://example.com/a", small.results[0].output.optString("link"))
+    val tiny = Msg("tool", listOf(Part.Result("c2", "doc_create", JSONObject().put("ok", true).put("uri", "content://x/1").put("name", "Solar.pptx"))))
+    T.check("a short result is left alone", History.shrink(tiny) { null }.results[0].output.optString("uri") == "content://x/1")
+    val call = Msg("assistant", listOf(Part.Call("c3", "doc_create", JSONObject().put("kind", "pptx").put("title", "Solar").put("sections", org.json.JSONArray(List(8) { "y".repeat(100) })), "sig")))
+    val cut = History.shrink(call) { null }
+    T.check("a long old call keeps its name and loses its bulk", cut.calls[0].name == "doc_create" && cut.calls[0].args.toString().length < 200 && cut.calls[0].signature == "sig")
+
+    println("Dates in messages")
+    fun d(text: String) = Dates.find(text, nowDt)?.at
+    T.eq("15/11", at(2026, 11, 15), d("Last date 15/11"))
+    T.eq("15-11-2026", at(2026, 11, 15), d("submit before 15-11-2026"))
+    T.eq("20th Nov", at(2026, 11, 20), d("Fee payment due on 20th Nov"))
+    T.eq("November 20, 5 pm", at(2026, 11, 20, 17, 0), d("Registration closes on November 20 at 5 pm"))
+    T.eq("tomorrow", at(2026, 11, 13), d("Record submission tomorrow"))
+    T.eq("naalaikku", at(2026, 11, 13), d("naalaikku last date da"))
+    T.eq("today 4.30pm", at(2026, 11, 12, 16, 30), d("fill the form by today 4.30pm"))
+    T.eq("Friday", at(2026, 11, 13), d("Assignment to be submitted by Friday"))
+    T.eq("next Thursday", at(2026, 11, 19), d("test on next Thursday"))
+    T.eq("January is next year", at(2027, 1, 5), d("apply before 5 Jan"))
+    T.eq("in 3 days", at(2026, 11, 15), d("your trial ends in 3 days"))
+    T.eq("no date", null, d("please check the group"))
+    T.eq("a version number is not a date", null, d("update to version 3.5 now"))
+    T.eq("the date after the deadline word wins", at(2026, 11, 18), Dates.find("Exam on 25/11. Last date to pay fee: 18/11", nowDt, "Exam on 25/11. ".length)?.at)
+
+    println("Deadlines and bills caught from messages")
+    var n = 0
+    fun scan(app: String, chat: String, text: String) = Catcher.scan(app, chat, text, now) { "id${n++}" }
+    val form = scan("WhatsApp", "CSE Final Year: Placement Cell", "TCS drive registration\nAll eligible students fill the form before 14/11 5 PM\nhttps://forms.gle/AbCd123")
+    T.eq("a placement form in a group is a deadline", "deadline", form?.kind)
+    T.eq("…with its link", "https://forms.gle/AbCd123", form?.link)
+    T.eq("…and its time", at(2026, 11, 14, 17, 0).atZone(zone).toInstant().toEpochMilli(), form?.due)
+    T.eq("…titled by its first line", "TCS drive registration", form?.title)
+    T.eq("exam fee last date", "deadline", scan("WhatsApp", "Class 3B: Staff", "Exam fee last date is 20 Nov. Pay in the office.")?.kind)
+    T.eq("an electricity bill", "bill", scan("Messages", "TNEB", "Your EB bill of Rs. 1,240 is due on 18/11/2026. Pay to avoid disconnection.")?.kind)
+    T.eq("…with the amount", 1240, scan("Messages", "TNEB-2", "Your EB bill of Rs. 1,240 is due on 19/11/2026.")?.amount)
+    T.eq("a trial about to charge", "renewal", scan("Gmail", "Hotstar", "Your free trial ends on 14 Nov. You will be charged ₹299 after that.")?.kind)
+    T.eq("a plan expiring", "recharge", scan("Messages", "Jio", "Your plan expires tomorrow. Recharge now to continue.")?.kind)
+    T.eq("a return window", "return", scan("Flipkart", "Flipkart", "Return window for your order closes on 15 Nov.")?.kind)
+    T.eq("an OTP is never read", null, scan("Messages", "Bank", "OTP 123456 for payment due on 15/11. Do not share."))
+    T.eq("a sale is not a deadline", null, scan("Messages", "Shop", "Big sale! 50% off. Offer ends on 15/11. Register now"))
+    T.eq("chat without a date is nothing", null, scan("WhatsApp", "Ram", "did you submit the assignment?"))
+    T.eq("ordinary talk is nothing", null, scan("WhatsApp", "Amma", "Come home early today, we have guests"))
+    T.eq("a deadline long past is not news", null, scan("WhatsApp", "Class", "Last date was 01/11 for registration"))
+    val day = 24 * 3600_000L
+    val due = at(2026, 11, 14, 17, 0).atZone(zone).toInstant().toEpochMilli()
+    val times = Catcher.reminderTimes(due, true, now)
+    T.eq("reminders: evening before, morning of, two hours before", 3, times.size)
+    T.eq("the first is 6 pm the day before", at(2026, 11, 13, 18, 0).atZone(zone).toInstant().toEpochMilli(), times[0])
+    T.eq("none after the deadline", 0, Catcher.reminderTimes(due, true, due + 1).size)
+    T.eq("'tomorrow' is said as tomorrow", "tomorrow", Catcher.whenText(now + day, false, now))
+    Inbox.init(dir)
+    T.check("a new catch is added", Inbox.add(form!!, now))
+    T.check("the same form again is not", !Inbox.add(Catcher.scan("WhatsApp", "Another group", "Reminder: fill the form before 14/11 https://forms.gle/AbCd123", now)!!, now))
+    T.eq("one thing waiting", 1, Inbox.open(now).size)
+    Inbox.told(form.id, now)
+    T.eq("nothing to remind right after telling", 0, Inbox.dueReminders(now + 60_000).size)
+    T.eq("the next reminder is the evening before", times[0], Inbox.nextReminder(now))
+    T.eq("…and it is due then", 1, Inbox.dueReminders(times[0]).size)
+    Inbox.mark(form.id, "done")
+    T.eq("done things stop reminding", null, Inbox.nextReminder(now))
+    T.eq("…and leave the list", 0, Inbox.open(now).size)
+
+    println("Watching pages")
+    fun w(mode: String, value: String, near: String = "", last: String = "") = Watcher("w1", "test", "https://example.com", mode, value, near, lastSeen = last)
+    val page = "Leo (Tamil) Broadway Cinemas Coming soon. Notify me. Phone X Pro 128GB ₹27,999 Buy now. Phone Y ₹14,499. " + "More about films, shows, phones and prices on this page. ".repeat(4)
+    T.check("words not there yet: no news", !Watchers.evaluate(w("contains", "Book tickets"), page).hit)
+    T.check("words appeared: news", Watchers.evaluate(w("contains", "book tickets"), page.replace("Coming soon", "Book tickets")).hit)
+    T.check("'Coming soon' gone: news", Watchers.evaluate(w("gone", "Coming soon"), page.replace("Coming soon", "Book tickets")).hit)
+    T.eq("the price after the product's name", 27999, Watchers.priceIn(page, "Phone X Pro"))
+    T.eq("the first price when no name is given", 27999, Watchers.priceIn(page, ""))
+    T.check("price above the limit: no news", !Watchers.evaluate(w("price_below", "25000", "Phone X Pro"), page).hit)
+    T.check("price at the limit: news", Watchers.evaluate(w("price_below", "28000", "Phone X Pro"), page).hit)
+    T.check("the right product's price is used", Watchers.evaluate(w("price_below", "15000", "Phone Y"), page).hit)
+    val first = Watchers.evaluate(w("changed", "", "Leo (Tamil)"), page)
+    T.check("the first look only notes the page", !first.hit && first.seen.isNotBlank())
+    T.check("the same page later: no news", !Watchers.evaluate(w("changed", "", "Leo (Tamil)", first.seen), page).hit)
+    T.check("a changed page: news", Watchers.evaluate(w("changed", "", "Leo (Tamil)", first.seen), page.replace("Coming soon", "Book tickets")).hit)
+    T.check("an empty page cannot be watched", !Watchers.readable("Loading…"))
+    Watchers.init(dir)
+    val watch = w("contains", "Book tickets"); Watchers.add(watch)
+    T.eq("no news is no notification", null, Watchers.record(watch, page, now))
+    T.check("news is told", Watchers.record(watch, page.replace("Coming soon", "Book tickets"), now + 3600_000)?.contains("Book tickets") == true)
+    T.check("…and that watcher is finished", !watch.enabled && Watchers.nextCheck(now) == null)
+    val flaky = Watcher("w2", "flaky", "https://example.com", "contains", "x", everyMin = 30); Watchers.add(flaky)
+    var said: String? = null
+    repeat(Watchers.MAX_FAILS) { said = Watchers.record(flaky, "Loading…", now) }
+    T.check("a page that stays unreadable is given up, and the user is told", said != null && !flaky.enabled)
+    val offline = Watcher("w3", "offline", "https://example.com", "contains", "x", everyMin = 30); Watchers.add(offline)
+    repeat(Watchers.MAX_FAILS + 2) { Watchers.record(offline, null, now) }
+    T.check("no network for a while is not a reason to stop", offline.enabled)
+    T.eq("the next check is half an hour on", now + 30 * 60_000L, Watchers.nextCheck(now))
+
+    println("Busy mode")
+    T.check("two calls in ten minutes are urgent", BusyRules.urgent(listOf(now - 4 * 60_000, now), now))
+    T.check("two calls an hour apart are not", !BusyRules.urgent(listOf(now - 60 * 60_000, now), now))
+    T.check("one call is not", !BusyRules.urgent(listOf(now), now))
+    T.check("a saved contact may be texted once", BusyRules.mayText("Amma", emptySet(), 0))
+    T.check("…not twice", !BusyRules.mayText("Amma", setOf("amma"), 1))
+    T.check("an unknown number is never texted", !BusyRules.mayText("+91 98765 00001", emptySet(), 0))
+    T.check("'Unknown' is never texted", !BusyRules.mayText("Unknown caller", emptySet(), 0))
+    T.check("there is a cap on texts", !BusyRules.mayText("Ram", emptySet(), BusyRules.MAX_TEXTS))
+    T.eq("the call-back list", "Amma (2), Ram", BusyRules.summary(mapOf("Ram" to 1, "Amma" to 2)))
+    dir.deleteRecursively()
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -533,7 +733,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

@@ -110,7 +110,7 @@ jobs:
           mkdir -p out
           cp shots/*.png out/ 2>/dev/null || true
           for f in e2e/*.png; do [ -s "$f" ] && cp "$f" "out/e2e-$(basename "$f")"; done || true
-          for f in e2e-report.md index.json timings.tsv e2e-crash.txt e2e-ai-log.txt e2e-warnings.txt; do [ -s "$f" ] && cp "$f" out/; done || true
+          for f in e2e-report.md e2e-score.md index.json timings.tsv e2e-crash.txt e2e-ai-log.txt e2e-warnings.txt; do [ -s "$f" ] && cp "$f" out/; done || true
           [ -d sessions ] && (cd sessions && zip -q ../out/sessions.zip *.json) || true
           for f in logcat.txt crash.txt app-errors.txt; do [ -s "$f" ] && cp "$f" out/; done; true
           ls out

@@ -3,7 +3,7 @@ Torch on
 What is the weather in Coimbatore today?
 > And tomorrow?
 Order a biryani from a nearby hotel
-Book tickets for Ramayana at Broadway Cinemas Coimbatore, I am free from 1 pm today
+Book 2 tickets for Ramayana at Broadway Cinemas Coimbatore tomorrow evening, maximum 250 per ticket
 Make a PowerPoint about the benefits of rooftop solar power for homes, 6 slides
 > Email it to priya@example.com
 Make a PDF with a packing list for a 2 day trip to Ooty
@@ -12,6 +12,13 @@ Find the video called Seyal Test Clip on my phone and play it
 Whenever any app shows a message from Amma asking where are you, tell me my current location
 !post Amma|Where are you?
 !gpost Family|Amma:Where are you?
+!gpost CSE Final Year|Placement Cell: TCS drive registration. Fill the form before tomorrow 5 PM https://forms.gle/AbCd123
+What deadlines do I have?
+Tell me when the page https://example.com says Book tickets
+What are you watching for me?
+I am in class till 4 pm, tell people who call that I will call back after 4
+End busy mode
+Give me my summary for today
 List the videos on this phone and send the list to priya@example.com as a PPT
 When the battery goes below 20 percent after 9 pm, set the brightness to 10
 Tomorrow at 8 am send a WhatsApp to my dad saying good morning
@@ -31,4 +38,5 @@ Give me todays top AI news in 5 points
 What notifications do I have right now?
 Remember that my favourite theatre is Broadway Cinemas
 Set the brightness to 30 percent and turn on do not disturb
+Set the brightness to 30 percent and turn on do not disturb.
 Every morning at 8, give me AI news

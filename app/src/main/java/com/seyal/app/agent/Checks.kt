@@ -42,7 +42,7 @@ object Checks {
      * What is still missing, or null when the answer may go out. [said]: the user's request; [kind]: the
      * purchase kind, if it is one; [already]: checks made earlier in this run; [manyPeople]: more than one ticket.
      */
-    fun beforeDone(said: String, kind: Preflight.Kind?, did: List<Did>, already: Set<String>, manyPeople: Boolean = true): Check? {
+    fun beforeDone(said: String, kind: Preflight.Kind?, did: List<Did>, already: Set<String>, manyPeople: Boolean = true, hasOrder: Boolean = false): Check? {
         fun ok(name: String) = did.any { it.name == name && it.ok }
         val refused = did.any { it.denied }
         val usedScreen = did.any { it.name.startsWith("screen_") || it.name == "open_app" || it.name == "open_url" }
@@ -73,6 +73,20 @@ object Checks {
                     "A different app or the website (open_url) is fine if this one will not work. Stop only at the payment / place-order button, " +
                     "or for a real blocker (the user must log in, the item or show is not available, the shop is closed, the user told you to stop): then say exactly that, and what you already did.",
             )
+        } else if (kind != null && hasOrder && usedScreen) {
+            // At the payment step: is what is on the screen what the user asked for?
+            val checks = did.filter { it.name == "order_check" }
+            if (checks.isEmpty()) {
+                if ("verify" !in already) return Check(
+                    "verify",
+                    "Before you finish: check the order against THE ORDER. Read the review / summary screen as it is now (screen_read, or a screenshot if it is a picture) and call order_check with exactly what it shows: " +
+                        "the place (theatre, restaurant or operator), the date (YYYY-MM-DD), how many, the price of one, and the selected seats if there are seats. Report what the screen shows, not what was asked.",
+                )
+            } else if (!checks.last().ok && "mismatch" !in already) return Check(
+                "mismatch",
+                "Before you finish: order_check found that the screen does not match what the user asked for. Fix it as its message says and call order_check again. " +
+                    "If it cannot be fixed (the place, day or seats are not available), tell the user plainly what differs and what the options are. Never present a different theatre, day or number of tickets as done.",
+            )
         } else if (kind == Preflight.Kind.MOVIE && manyPeople && usedScreen && "seats" !in already && !did.any { it.name == "seats_check" }) {
             return Check(
                 "seats",
@@ -92,10 +106,19 @@ object Seats {
     class Seat(val row: String, val number: Int) { override fun toString() = "$row$number" }
 
     private val pattern = Regex("^(?:row\\s*)?([A-Za-z]{1,2})\\s*[-–: ]?\\s*(?:seat\\s*)?(\\d{1,3})$", RegexOption.IGNORE_CASE)
+    /** Bus and train seats: "12", "12A", "L5", "U12", "SL3", "DU4". */
+    private val vehicle = Regex("^(?:seat\\s*)?([A-Za-z]{0,3})\\s*[-–]?\\s*(\\d{1,3})\\s*([A-Za-z]?)$", RegexOption.IGNORE_CASE)
 
     fun parse(label: String): Seat? {
         val m = pattern.find(label.trim()) ?: return null
         return Seat(m.groupValues[1].uppercase(), m.groupValues[2].toInt())
+    }
+
+    /** A seat label of any kind (theatre, bus, train), tidied; null when it is not one. */
+    fun any(label: String): String? {
+        parse(label)?.let { return it.toString() }
+        val m = vehicle.find(label.trim()) ?: return null
+        return (m.groupValues[1] + m.groupValues[2] + m.groupValues[3]).uppercase()
     }
 
     /** Splits "A5, A6 and A7" / "A5 A6" into labels. */

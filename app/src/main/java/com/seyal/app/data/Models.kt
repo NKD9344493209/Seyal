@@ -142,6 +142,10 @@ class Session(
     @Volatile var replyKey: String? = null
     /** Started by an incoming message or call, with nobody watching. Sending anything needs "Automatic replies" on. Not saved. */
     @Volatile var unattended: Boolean = false
+    /** This run repeated remembered steps without the AI (see agent/Routines). Not saved. */
+    @Volatile var replayed: Boolean = false
+    /** What the user asked to buy or book, written down before any app is opened (see agent/Order). Not saved. */
+    @Volatile var order: com.seyal.app.agent.Order? = null
     /** Self-checks already made before saying "done" in this run (each is made once). Not saved. */
     val checked: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
     /** Follow-ups typed while a tool round is in flight; appended once the round's results are in (keeps the transcript valid). Not saved. */

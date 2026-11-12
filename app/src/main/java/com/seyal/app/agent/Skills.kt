@@ -121,6 +121,8 @@ object Skills {
 
     val templates: List<Template> = listOf(
         Template("Morning briefing", "Weather, today's calendar and the top news, every morning", "Tell me today's weather for my city, what is on my calendar today, and the top 3 news headlines, in 6 short lines.", Trigger("time", "07:30")),
+        Template("Morning summary", "Weather, today's calendar, deadlines and bills due, watched pages, calls to return. Runs without the AI", "Morning digest as a notification.", Trigger("time", "07:15"),
+            listOf("daily_brief" to args("notify" to true))),
         Template("AI news every morning", "Five short points of fresh AI news", "Give me today's top AI news in 5 short points.", Trigger("time", "08:00")),
         Template("Low battery saver", "Below 20%: dims the screen and tells you. Runs without the AI", "Lower the brightness and warn me that the battery is low.", Trigger("event", event = "battery_below:20"),
             listOf("set_setting" to args("name" to "brightness", "value" to "20"), "notify" to args("text" to "Battery below 20%: brightness lowered"))),

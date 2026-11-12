@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -47,6 +48,7 @@ fun SkillsScreen(goTo: (Tab) -> Unit) {
     var showGallery by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Skill?>(null) }
     var creating by remember { mutableStateOf(false) }
+    var showCaught by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth().statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -57,7 +59,25 @@ fun SkillsScreen(goTo: (Tab) -> Unit) {
             SmallButton("New") { creating = true }
         }
         Text("Things Seyal does on its own: on a schedule, when an app notifies you, or when you say so. Ask in chat (\"every morning at 8…\") or tap New.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
-        if (com.seyal.app.BuildConfig.FLAVOR == "full" && !showGallery && !showLog) {
+        if (!showGallery && !showLog) {
+            // What Seyal noticed in incoming messages, and the pages it is watching: one row that opens the list.
+            val now = System.currentTimeMillis()
+            val open = com.seyal.app.agent.Inbox.open(now)
+            val soon = open.count { it.due < now + 3L * 24 * 3600_000L }
+            val watching = com.seyal.app.agent.Watchers.active().size
+            Row(Modifier.fillMaxWidth().clickable { showCaught = !showCaught }.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (showCaught) "Caught for you  ▾" else "Caught for you  ▸", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        (if (open.isEmpty()) "No deadlines or bills waiting" else "${open.size} waiting" + (if (soon > 0) ", $soon due within 3 days" else "")) +
+                            (if (watching > 0) " · watching $watching page${if (watching == 1) "" else "s"}" else "") + (if (com.seyal.app.device.Busy.active()) " · busy mode on" else ""),
+                        style = MaterialTheme.typography.bodySmall, color = if (soon > 0) cs.primary else cs.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (showCaught && !showGallery && !showLog) CaughtList()
+        else if (com.seyal.app.BuildConfig.FLAVOR == "full" && !showGallery && !showLog) {
             // Answering people by itself is the one thing that can embarrass the user: it has its own switch, off by default.
             var auto by remember { mutableStateOf(com.seyal.app.data.Settings.autoReplies) }
             val waiting = skills.count { it.enabled && it.trigger?.type == "notification" && Skills.sendsOut(it) }
@@ -97,7 +117,7 @@ fun SkillsScreen(goTo: (Tab) -> Unit) {
                 if (triggerLog.isEmpty()) item { Text("Nothing yet. Messages and phone events that a skill watches for show up here, with what ran.", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant) }
                 items(triggerLog) { line -> Text(line, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
             }
-        } else SkillList(skills, { editing = it }, goTo)
+        } else if (!showCaught) SkillList(skills, { editing = it }, goTo)
     }
 
     editing?.let { s ->
@@ -252,4 +272,71 @@ private fun pinSkill(activity: MainActivity, s: Skill) {
     val info = android.content.pm.ShortcutInfo.Builder(activity, "skill_${s.id}").setShortLabel(s.name.take(24)).setLongLabel("Run ${s.name}".take(40))
         .setIcon(android.graphics.drawable.Icon.createWithResource(activity, com.seyal.app.R.mipmap.ic_launcher)).setIntent(intent).build()
     runCatching { sm.requestPinShortcut(info, null) }
+}
+
+/** Deadlines, bills and renewals caught from messages; watched pages; busy mode. Everything here was found without the AI. */
+@Composable
+private fun CaughtList() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var version by remember { mutableStateOf(0) }
+    var reading by remember { mutableStateOf(com.seyal.app.data.Settings.catchMessages) }
+    val now = System.currentTimeMillis()
+    val caught = remember(version) { com.seyal.app.agent.Inbox.open(now) }
+    val watchers = remember(version) { com.seyal.app.agent.Watchers.all() }
+    val busy = remember(version) { com.seyal.app.device.Busy.active() }
+    fun open(url: String) = runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Read my messages for deadlines and bills", style = MaterialTheme.typography.bodyLarge)
+                    Text("Form links, last dates, fees, bills, renewals and return windows in notifications and group chats. Seyal only reads and reminds you: it never replies. Nothing leaves the phone.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+                Switch(checked = reading, onCheckedChange = { reading = it; com.seyal.app.data.Settings.catchMessages = it })
+            }
+        }
+        if (busy) item {
+            Card {
+                Text("Busy mode is on until ${com.seyal.app.util.Times.format(com.seyal.app.device.Busy.until())}", style = MaterialTheme.typography.titleMedium)
+                com.seyal.app.device.Busy.message().takeIf { it.isNotBlank() }?.let { Text("Missed callers get: \"$it\"", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
+                com.seyal.app.device.Busy.missed().takeIf { it.isNotEmpty() }?.let { Text("Missed so far: ${com.seyal.app.device.BusyRules.summary(it)}", style = MaterialTheme.typography.bodySmall) }
+                Spacer(Modifier.height(6.dp))
+                SmallButton("End now", filled = false) { com.seyal.app.device.Busy.stop(ctx); version++ }
+            }
+        }
+        if (caught.isEmpty()) item { Text(if (reading) "Nothing waiting. When a message has a deadline, a form to fill, a bill or a renewal, it shows up here and you get a reminder." else "Reading is off.", color = cs.onSurfaceVariant) }
+        items(caught, key = { it.id }) { c ->
+            Card {
+                Text(c.title, style = MaterialTheme.typography.titleMedium)
+                Text("Due ${com.seyal.app.agent.Catcher.whenText(c.due, c.hasTime, now)} · ${c.source}", style = MaterialTheme.typography.bodySmall, color = if (c.due < now + 24 * 3600_000L) cs.error else cs.primary)
+                Text(c.text.take(220), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Row {
+                    SmallButton("Done") { com.seyal.app.agent.Inbox.mark(c.id, "done"); version++ }
+                    Spacer(Modifier.width(8.dp))
+                    if (c.link.isNotBlank()) { SmallButton(if (c.kind == "deadline") "Open form" else "Open", filled = false) { open(c.link) }; Spacer(Modifier.width(8.dp)) }
+                    SmallButton("Not for me", filled = false) { com.seyal.app.agent.Inbox.mark(c.id, "dismissed"); version++ }
+                }
+            }
+        }
+        if (watchers.isNotEmpty()) item { Text("Watching", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp)) }
+        items(watchers, key = { "w" + it.id }) { w ->
+            Card {
+                Text(w.what, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    (if (w.hitAt > 0) "Happened ${com.seyal.app.util.Times.format(w.hitAt)}" else if (!w.enabled) "Stopped" else "Tells you ${w.rule()} · checks every ${w.everyMin} min") +
+                        (if (w.lastCheck > 0) " · last looked ${com.seyal.app.util.Times.format(w.lastCheck)}" else ""),
+                    style = MaterialTheme.typography.bodySmall, color = if (w.hitAt > 0) cs.primary else cs.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row {
+                    SmallButton("Open page", filled = false) { open(w.url) }
+                    Spacer(Modifier.width(8.dp))
+                    SmallButton("Remove", filled = false, danger = true) { com.seyal.app.agent.Watchers.remove(w.id); version++ }
+                }
+            }
+        }
+        item { Text("Ask in chat: \"tell me when bookings open for … at …\", \"tell me when this drops below ₹…\", \"I'm in class till 4\".", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
+    }
 }
