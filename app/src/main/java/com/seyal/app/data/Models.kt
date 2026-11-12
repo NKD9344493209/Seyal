@@ -130,6 +130,10 @@ class Session(
     var llmMs: Long = 0L
     /** Set when a child of delegate(). */
     var parentId: String? = null
+    /** Sends the user already agreed to when they set a skill up ("tool|target"): they run without asking again. Not saved. */
+    @Volatile var preApproved: Set<String> = emptySet()
+    /** The app this task is working in (package), so Seyal can go back to it after the user answers a question. Not saved. */
+    @Volatile var workApp: String? = null
     /** A skill started by a message from this person may reply to them without asking (the user set it up). Not saved. */
     @Volatile var trustedReplyTo: String? = null
     /** Follow-ups typed while a tool round is in flight; appended once the round's results are in (keeps the transcript valid). Not saved. */
@@ -199,8 +203,89 @@ data class SessionInfo(
 // ------------------------------------------------------------------ skills
 
 /**
+ * "Only when…": conditions a triggered skill also needs before it runs. Empty = always.
+ * after/before are "HH:mm" (a window may cross midnight: after 22:00, before 06:00).
+ */
+class Only(
+    val after: String = "",
+    val before: String = "",
+    val days: List<Int> = emptyList(),
+    val batteryBelow: Int = 0,
+    val batteryAbove: Int = 0,
+    val charging: Boolean? = null,
+    /** Connected Wi-Fi name contains this ("" = don't care, "*" = any Wi-Fi, "-" = not on Wi-Fi). */
+    val wifi: String = "",
+) {
+    val isEmpty: Boolean get() = after.isBlank() && before.isBlank() && days.isEmpty() && batteryBelow == 0 && batteryAbove == 0 && charging == null && wifi.isBlank()
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        if (after.isNotBlank()) put("after", after)
+        if (before.isNotBlank()) put("before", before)
+        if (days.isNotEmpty()) put("days", JSONArray(days))
+        if (batteryBelow > 0) put("battery_below", batteryBelow)
+        if (batteryAbove > 0) put("battery_above", batteryAbove)
+        charging?.let { put("charging", it) }
+        if (wifi.isNotBlank()) put("wifi", wifi)
+    }
+
+    /**
+     * Why the conditions are not met right now, or null when they are.
+     * [dayOfWeek] 1 = Monday … 7 = Sunday; [minute] = minutes since midnight; [wifiName] null = not on Wi-Fi.
+     */
+    fun fails(dayOfWeek: Int, minute: Int, battery: Int, isCharging: Boolean, wifiName: String?): String? {
+        if (days.isNotEmpty() && dayOfWeek !in days) return "not one of its days"
+        val a = mins(after); val b = mins(before)
+        if (a != null && b != null) {
+            val inside = if (a <= b) minute in a until b else (minute >= a || minute < b)
+            if (!inside) return "only between $after and $before"
+        } else if (a != null && minute < a) return "only after $after"
+        else if (b != null && minute >= b) return "only before $before"
+        if (batteryBelow > 0 && battery >= batteryBelow) return "only when the battery is below $batteryBelow%"
+        if (batteryAbove > 0 && battery <= batteryAbove) return "only when the battery is above $batteryAbove%"
+        if (charging != null && charging != isCharging) return if (charging) "only while charging" else "only when not charging"
+        when {
+            wifi.isBlank() -> {}
+            wifi == "-" -> if (wifiName != null) return "only when not on Wi-Fi"
+            wifi == "*" -> if (wifiName == null) return "only on Wi-Fi"
+            else -> if (wifiName == null || !wifiName.contains(wifi, true)) return "only on Wi-Fi \"$wifi\""
+        }
+        return null
+    }
+
+    fun describe(): String {
+        val out = mutableListOf<String>()
+        if (days.isNotEmpty()) out += days.sorted().joinToString(" ") { listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").getOrElse(it - 1) { "?" } }
+        if (after.isNotBlank() && before.isNotBlank()) out += "$after–$before" else if (after.isNotBlank()) out += "after $after" else if (before.isNotBlank()) out += "before $before"
+        if (batteryBelow > 0) out += "battery below $batteryBelow%"
+        if (batteryAbove > 0) out += "battery above $batteryAbove%"
+        charging?.let { out += if (it) "while charging" else "not charging" }
+        when { wifi == "-" -> out += "not on Wi-Fi"; wifi == "*" -> out += "on Wi-Fi"; wifi.isNotBlank() -> out += "on Wi-Fi $wifi" }
+        return out.joinToString(", ")
+    }
+
+    companion object {
+        private fun mins(hhmm: String): Int? = Regex("^(\\d{1,2}):(\\d{2})$").find(hhmm.trim())?.let { it.groupValues[1].toInt() * 60 + it.groupValues[2].toInt() }
+
+        fun fromJson(o: JSONObject?): Only? {
+            o ?: return null
+            val days = mutableListOf<Int>()
+            o.optJSONArray("days")?.let { a -> for (i in 0 until a.length()) days += a.optInt(i) }
+            val only = Only(
+                o.optString("after"), o.optString("before"), days.filter { it in 1..7 },
+                o.optInt("battery_below", 0).coerceIn(0, 100), o.optInt("battery_above", 0).coerceIn(0, 100),
+                if (o.has("charging")) o.optBoolean("charging") else null, o.optString("wifi"),
+            )
+            return only.takeIf { !it.isEmpty }
+        }
+    }
+}
+
+/**
  * When a skill runs on its own.
- * type: "time" (daily | weekly | once, in [when]), "notification" (app, contains), "event" (charging, unplugged, boot, app_opened:<app>)
+ * type: "time" (daily | weekly | once), "notification" (app, from, contains), "event":
+ * charging · unplugged · boot · app_opened:<app> · wifi_connected[:<name>] · wifi_disconnected ·
+ * bluetooth_connected[:<device>] · bluetooth_disconnected[:<device>] · headphones_in · headphones_out ·
+ * battery_below:<n> · battery_above:<n> · call_from[:<name>] · arrive:<place> · leave:<place> (with lat, lon, radius).
  */
 class Trigger(
     val type: String,
@@ -215,6 +300,12 @@ class Trigger(
     val event: String = "",
     /** For type "notification": who it is from (the name the app shows), several separated by "|". */
     val from: String = "",
+    /** "Only when…" conditions, for any type. */
+    val only: Only? = null,
+    /** For arrive:/leave: events: the place. */
+    val lat: Double = 0.0,
+    val lon: Double = 0.0,
+    val radius: Int = 200,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("type", type); put("time", time); put("repeat", repeat)
@@ -224,6 +315,8 @@ class Trigger(
         if (contains.isNotBlank()) put("contains", contains)
         if (from.isNotBlank()) put("from", from)
         if (event.isNotBlank()) put("event", event)
+        only?.takeIf { !it.isEmpty }?.let { put("only", it.toJson()) }
+        if (lat != 0.0 || lon != 0.0) { put("lat", lat); put("lon", lon); put("radius", radius) }
     }
 
     /**
@@ -260,10 +353,21 @@ class Trigger(
             event == "unplugged" -> "When unplugged"
             event == "boot" -> "When the phone starts"
             event.startsWith("app_opened:") -> "When ${event.removePrefix("app_opened:")} opens"
+            event.startsWith("wifi_connected") -> "When Wi-Fi connects" + event.substringAfter(':', "").let { if (it.isBlank()) "" else " to $it" }
+            event.startsWith("wifi_disconnected") -> "When Wi-Fi disconnects" + event.substringAfter(':', "").let { if (it.isBlank()) "" else " from $it" }
+            event.startsWith("bluetooth_connected") -> "When " + event.substringAfter(':', "").ifBlank { "a Bluetooth device" } + " connects"
+            event.startsWith("bluetooth_disconnected") -> "When " + event.substringAfter(':', "").ifBlank { "a Bluetooth device" } + " disconnects"
+            event == "headphones_in" -> "When headphones are plugged in"
+            event == "headphones_out" -> "When headphones are unplugged"
+            event.startsWith("battery_below:") -> "When the battery drops below ${event.substringAfter(':')}%"
+            event.startsWith("battery_above:") -> "When the battery goes above ${event.substringAfter(':')}%"
+            event.startsWith("call_from") -> "When " + event.substringAfter(':', "").ifBlank { "someone" } + " calls"
+            event.startsWith("arrive:") -> "When I reach ${event.substringAfter(':')}"
+            event.startsWith("leave:") -> "When I leave ${event.substringAfter(':')}"
             else -> "On $event"
         }
         else -> "Manual"
-    }
+    }.let { base -> only?.describe()?.takeIf { it.isNotBlank() }?.let { "$base · only $it" } ?: base }
 
     val isTime: Boolean get() = type == "time"
 
@@ -281,7 +385,26 @@ class Trigger(
                 days = days,
                 repeat = if (legacy) rawType else o.optString("repeat", "daily"),
                 app = o.optString("app"), contains = o.optString("contains"), event = o.optString("event"), from = o.optString("from"),
+                only = Only.fromJson(o.optJSONObject("only")),
+                lat = o.optDouble("lat", 0.0), lon = o.optDouble("lon", 0.0), radius = o.optInt("radius", 200).coerceIn(50, 5000),
             )
+        }
+
+        /** The kinds of event that carry a detail after a colon ("wifi_connected:Home"). */
+        private val detailed = setOf("app_opened", "wifi_connected", "wifi_disconnected", "bluetooth_connected", "bluetooth_disconnected", "call_from", "arrive", "leave")
+
+        /**
+         * Whether the event a skill waits for ([want]) is the one that just happened ([event]).
+         * "wifi_connected" waits for any Wi-Fi; "wifi_connected:Home" for a name containing "Home".
+         */
+        fun eventHit(want: String, event: String): Boolean {
+            if (want.equals(event, true)) return true
+            val wk = want.substringBefore(':').lowercase(); val ek = event.substringBefore(':').lowercase()
+            if (wk != ek || wk !in detailed) return false
+            val wd = want.substringAfter(':', "").trim(); val ed = event.substringAfter(':', "").trim()
+            if (wd.isBlank()) return true
+            if (wk == "call_from") return relatives(norm(wd)).any { it.isNotBlank() && Regex("(^| )${Regex.escape(it)}( |$)").containsMatchIn(norm(ed)) }
+            return ed.contains(wd, true)
         }
 
         /** The ways people save family in their contacts: "mom" may be "Amma", "Mummy" or "Mother". */

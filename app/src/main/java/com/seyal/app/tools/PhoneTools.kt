@@ -559,6 +559,25 @@ object PhoneTools {
         return known
     }
 
+    /** Latitude and longitude of an address or place name; "here" (or "home" with no better match) = where the phone is now. */
+    suspend fun locate(place: String): Pair<Double, Double>? {
+        val p = place.trim()
+        val here = p.equals("here", true) || p.equals("current location", true) || p.equals("this place", true)
+        // Names only the user knows can't be looked up on a map.
+        if (!here && p.lowercase() in setOf("home", "office", "work", "college", "school", "hostel", "gym", "my home", "my office", "my college", "house", "my house", "veedu")) return null
+        if (!here) {
+            val hit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { @Suppress("DEPRECATION") Geocoder(ctx).getFromLocationName(if (p.contains(",") || Settings.homeCity.isBlank()) p else "$p, ${Settings.homeCity}", 1)?.firstOrNull() }.getOrNull()
+            }
+            if (hit != null) return hit.latitude to hit.longitude
+            // Names only the user knows ("home", "office", "college") can't be looked up.
+            return null
+        }
+        if (!has(Manifest.permission.ACCESS_COARSE_LOCATION) && !has(Manifest.permission.ACCESS_FINE_LOCATION)) return null
+        val loc = freshLocation(ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager) ?: return null
+        return loc.latitude to loc.longitude
+    }
+
     private suspend fun location(): ToolResult {
         if (!has(Manifest.permission.ACCESS_COARSE_LOCATION) && !has(Manifest.permission.ACCESS_FINE_LOCATION)) return ToolResult.Failed("Location permission not granted (Control → Phone permissions). Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager

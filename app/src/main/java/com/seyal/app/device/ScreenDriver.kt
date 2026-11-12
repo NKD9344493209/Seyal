@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Path
@@ -682,34 +683,57 @@ object ScreenDriver {
     /** A scaled-down JPEG of the screen for the AI, with its size and the real screen size. Android 11+. */
     class Shot(val mime: String, val b64: String, val width: Int, val height: Int, val screenWidth: Int, val screenHeight: Int)
 
+    @Volatile private var lastShotAt = 0L
+
+    /** One try at a screenshot: the whole display, or (Android 14+) just the app's window. Null + [why] on failure. */
+    private suspend fun shoot(s: SeyalAccessibilityService, windowOnly: Boolean, why: (String) -> Unit): Bitmap? {
+        val done = CompletableDeferred<Bitmap?>()
+        val cb = object : AccessibilityService.TakeScreenshotCallback {
+            override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                val hb = result.hardwareBuffer
+                // Some screens (wide colour, HDR) hand back a buffer that needs a second way of reading it.
+                val bmp = runCatching { Bitmap.wrapHardwareBuffer(hb, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false) }
+                    .recoverCatching { Bitmap.wrapHardwareBuffer(hb, null)?.copy(Bitmap.Config.ARGB_8888, false) }
+                    .onFailure { why("could not read the picture (${it.javaClass.simpleName}: ${it.message?.take(60)})") }.getOrNull()
+                runCatching { hb.close() }
+                if (bmp == null) why("the picture came back empty")
+                done.complete(bmp)
+            }
+            override fun onFailure(errorCode: Int) {
+                why(
+                    when (errorCode) {
+                        AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "too soon after the last screenshot"
+                        AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "this app blocks screenshots (secure screen): work from the element list instead"
+                        AccessibilityService.ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "Android refused (turn Seyal's Accessibility switch off and on)"
+                        else -> "Android error $errorCode"
+                    },
+                )
+                done.complete(null)
+            }
+        }
+        main.post {
+            runCatching {
+                val wid = if (windowOnly && Build.VERSION.SDK_INT >= 34) s.rootInActiveWindow?.windowId else null
+                if (wid != null && Build.VERSION.SDK_INT >= 34) s.takeScreenshotOfWindow(wid, { r -> main.post(r) }, cb)
+                else s.takeScreenshot(Display.DEFAULT_DISPLAY, { r -> main.post(r) }, cb)
+            }.onFailure { why(it.message ?: it.javaClass.simpleName); done.complete(null) }
+        }
+        return withTimeoutOrNull(6000) { done.await() }
+    }
+
     suspend fun screenshot(maxWidth: Int = 720): Shot = lock.withLock {
         val s = svc()
         if (Build.VERSION.SDK_INT < 30) throw ScreenshotException("Screenshots need Android 11 or newer")
-        var err = "unknown"
-        val done = CompletableDeferred<Bitmap?>()
+        var err = "no answer from Android"
         pillHidden(true)
         try {
-            main.post {
-                runCatching {
-                    s.takeScreenshot(Display.DEFAULT_DISPLAY, { r -> main.post(r) }, object : AccessibilityService.TakeScreenshotCallback {
-                        override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                            val hb = result.hardwareBuffer
-                            val bmp = runCatching { Bitmap.wrapHardwareBuffer(hb, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
-                            hb.close()
-                            done.complete(bmp)
-                        }
-                        override fun onFailure(errorCode: Int) {
-                            err = when (errorCode) {
-                                AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "too soon after the last screenshot: wait a second"
-                                AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "this app blocks screenshots (secure screen)"
-                                else -> "error $errorCode"
-                            }
-                            done.complete(null)
-                        }
-                    })
-                }.onFailure { err = it.message ?: "failed"; done.complete(null) }
-            }
-            val bmp = withTimeoutOrNull(5000) { done.await() } ?: throw ScreenshotException("Screenshot failed: $err")
+            // Android refuses screenshots taken too close together.
+            (1100 - (System.currentTimeMillis() - lastShotAt)).takeIf { it > 0 }?.let { delay(it) }
+            var bmp = shoot(s, false) { err = it }
+            if (bmp == null && !err.contains("secure")) { delay(1200); bmp = shoot(s, false) { err = it } }
+            if (bmp == null && !err.contains("secure") && Build.VERSION.SDK_INT >= 34) { delay(400); bmp = shoot(s, true) { err = it } }
+            lastShotAt = System.currentTimeMillis()
+            if (bmp == null) throw ScreenshotException("Screenshot failed: $err")
             val scale = minOf(1f, maxWidth.toFloat() / bmp.width)
             val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
             val out = ByteArrayOutputStream()
@@ -750,21 +774,25 @@ object ScreenDriver {
         }
     }
 
-    // ---------------------------------------------------------------- status pill
+    // ---------------------------------------------------------------- status bar and question card
 
     /**
-     * A small pill at the top of the screen while Seyal works inside another app:
-     * "Seyal · Tapping Search   Stop". Tap the text to open Seyal, Stop to stop everything.
+     * A progress bar just under the phone's status bar while Seyal works inside another app:
+     * a spinner, "Seyal · Tapping Search", a Stop button, and a moving line underneath.
+     * Tap the text to open Seyal, Stop to stop everything.
      */
     @Volatile private var statusText: String? = null
+    @Volatile private var statusBusy = true
     @Volatile private var pill: LinearLayout? = null
     private var pillLabel: TextView? = null
+    private var pillSpin: View? = null
+    private var pillBar: View? = null
     var onStop: (() -> Unit)? = null
     var onOpen: (() -> Unit)? = null
 
-    /** Sets what the pill says; null hides it. Safe from any thread. */
-    fun status(text: String?) {
-        statusText = text
+    /** Sets what the bar says; null hides it. [busy] false = a final word (no spinner). Safe from any thread. */
+    fun status(text: String?, busy: Boolean = true) {
+        statusText = text; statusBusy = busy
         main.post { renderPill() }
     }
 
@@ -776,6 +804,13 @@ object ScreenDriver {
         if (hidden) delay(60)
     }
 
+    private fun themed(s: Context): Context = android.view.ContextThemeWrapper(s, android.R.style.Theme_DeviceDefault)
+
+    private fun statusBarHeight(s: Context): Int {
+        val id = s.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) s.resources.getDimensionPixelSize(id) else (28 * s.resources.displayMetrics.density).toInt()
+    }
+
     private fun renderPill() {
         val s = service ?: return
         val text = statusText
@@ -785,39 +820,133 @@ object ScreenDriver {
             if (pill == null) {
                 val d = s.resources.displayMetrics.density
                 fun dp(v: Int) = (v * d).toInt()
+                val spin = android.widget.ProgressBar(themed(s)).apply {
+                    isIndeterminate = true
+                    indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#7BD3A8"))
+                    layoutParams = LinearLayout.LayoutParams(dp(14), dp(14)).apply { rightMargin = dp(8) }
+                }
                 val label = TextView(s).apply {
-                    setTextColor(Color.WHITE); textSize = 12f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                    maxWidth = dp(220)
+                    setTextColor(Color.WHITE); textSize = 13f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                    maxWidth = dp(230)
                     setOnClickListener { onOpen?.invoke() }
                 }
                 val stop = TextView(s).apply {
-                    this.text = "Stop"; setTextColor(Color.parseColor("#FFB4A8")); textSize = 12f; typeface = Typeface.DEFAULT_BOLD
-                    setPadding(dp(12), 0, 0, 0)
+                    this.text = "Stop"; setTextColor(Color.parseColor("#FFB4A8")); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(14), dp(2), dp(2), dp(2))
                     setOnClickListener { onStop?.invoke() }
                 }
-                val box = LinearLayout(s).apply {
+                val row = LinearLayout(s).apply {
                     orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(12), dp(4), dp(12), dp(4))
-                    background = GradientDrawable().apply { setColor(Color.parseColor("#F01F1E1D")); cornerRadius = dp(14).toFloat() }
-                    addView(label); addView(stop)
+                    addView(spin); addView(label); addView(stop)
+                }
+                val bar = android.widget.ProgressBar(themed(s), null, android.R.attr.progressBarStyleHorizontal).apply {
+                    isIndeterminate = true
+                    indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#7BD3A8"))
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = dp(5) }
+                }
+                val box = LinearLayout(s).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(14), dp(7), dp(14), dp(6))
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#F21F1E1D")); cornerRadius = dp(16).toFloat() }
+                    elevation = dp(6).toFloat()
+                    addView(row); addView(bar)
                 }
                 val lp = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT,
-                // Sits in the status-bar strip (like a call pill), so it doesn't cover the app's own top bar.
-                ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(2) }
+                // Just below the status bar: always in view, clear of the camera cut-out.
+                ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = statusBarHeight(s) + dp(4) }
                 (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).addView(box, lp)
-                pill = box; pillLabel = label
+                pill = box; pillLabel = label; pillSpin = spin; pillBar = bar
             }
             pillLabel?.text = "Seyal · $text"
+            val v = if (statusBusy) View.VISIBLE else View.GONE
+            pillSpin?.visibility = v; pillBar?.visibility = v
         }
     }
 
     private fun removePill(s: SeyalAccessibilityService) {
         val p = pill ?: return
         runCatching { (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(p) }
-        pill = null; pillLabel = null
+        pill = null; pillLabel = null; pillSpin = null; pillBar = null
+    }
+
+    /**
+     * A question or an approval, shown over the app Seyal is working in, so the user can answer with
+     * one tap without leaving it. [options] become buttons; "Type an answer" opens Seyal.
+     * Returns false when it can't be shown (screen control off, or Seyal itself is in front).
+     */
+    @Volatile private var card: View? = null
+    private var cardKey: String? = null
+
+    fun showCard(key: String, title: String, text: String, options: List<String>, typeLabel: String?, onPick: (String) -> Unit, onType: () -> Unit): Boolean {
+        val s = service ?: return false
+        if (frontPackage().let { it.isBlank() || it == s.packageName }) return false
+        main.post {
+            hideCardNow()
+            runCatching {
+                val d = s.resources.displayMetrics.density
+                fun dp(v: Int) = (v * d).toInt()
+                fun button(label: String, strong: Boolean, onClick: () -> Unit) = TextView(s).apply {
+                    this.text = label; textSize = 15f; gravity = Gravity.CENTER; maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(if (strong) Color.parseColor("#1F1E1D") else Color.WHITE)
+                    setPadding(dp(14), dp(11), dp(14), dp(11))
+                    background = GradientDrawable().apply { setColor(Color.parseColor(if (strong) "#7BD3A8" else "#3A3937")); cornerRadius = dp(12).toFloat() }
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
+                    setOnClickListener { onClick() }
+                }
+                val box = LinearLayout(s).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(18), dp(16), dp(18), dp(16))
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#F81F1E1D")); cornerRadius = dp(22).toFloat() }
+                    elevation = dp(10).toFloat()
+                    addView(TextView(s).apply { this.text = title; setTextColor(Color.parseColor("#7BD3A8")); textSize = 12f; typeface = Typeface.DEFAULT_BOLD })
+                    addView(TextView(s).apply { this.text = text; setTextColor(Color.WHITE); textSize = 15f; maxLines = 9; ellipsize = TextUtils.TruncateAt.END; setPadding(0, dp(6), 0, dp(4)) })
+                    options.take(5).forEachIndexed { i, o -> addView(button(o, i == 0) { hideCard(key); onPick(o) }) }
+                    if (typeLabel != null) addView(button(typeLabel, options.isEmpty()) { hideCard(key); onType() })
+                }
+                val lp = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT,
+                ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = dp(28); horizontalMargin = 0.04f; width = (s.resources.displayMetrics.widthPixels * 0.92f).toInt() }
+                (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).addView(box, lp)
+                card = box; cardKey = key
+            }
+        }
+        return true
+    }
+
+    fun hideCard(key: String) { main.post { if (cardKey == key) hideCardNow() } }
+
+    private fun hideCardNow() {
+        val c = card ?: return
+        val s = service
+        if (s != null) runCatching { (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(c) }
+        card = null; cardKey = null
+    }
+
+    // ---------------------------------------------------------------- staying in the app being worked on
+
+    val ownPackage: String get() = service?.packageName ?: "com.seyal.app"
+
+    /** The app in front, when it is one Seyal could be working in (not Seyal, the launcher's recents or system UI). */
+    fun workAppNow(): String? = frontPackage().takeIf { it.isNotBlank() && it != ownPackage && it != "com.android.systemui" }
+
+    /**
+     * Brings [pkg] back to the front as it was (after the user opened Seyal to answer a question or type).
+     * True when it is in front afterwards.
+     */
+    suspend fun bringToFront(pkg: String): Boolean {
+        val s = service ?: return false
+        if (frontPackage() == pkg) return true
+        val intent = s.packageManager.getLaunchIntentForPackage(pkg) ?: return false
+        // The launcher's own intent: Android resumes the app where it was instead of restarting it.
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        if (!runCatching { s.startActivity(intent); true }.getOrDefault(false)) return false
+        return waitForPackage(pkg, 4000)
     }
 }

@@ -42,10 +42,7 @@ class LlmResponse(val text: String, val calls: List<Part.Call>, val tokens: Int,
 object Llm {
     private const val TAG = "SeyalAI"
 
-    /**
-     * Gemini models to fall back to, in order. Each model has its own limits, so when one is busy or has
-     * used up its free requests, the next one usually still answers.
-     */
+    /** Gemini models to use, best first: the fast "lite" model does the work; plain Flash is the last resort (its free limit is tiny). */
     private val geminiFallbacks = listOf("gemini-flash-lite-latest", "gemini-flash-latest")
 
     /**
@@ -72,13 +69,13 @@ object Llm {
         return listOf("image", "tts", "audio", "live", "embed", "native", "exp", "computer", "robotics").none { n.contains(it) }
     }
 
-    /** Asks Google which models this key can use (once per app start, when the usual ones are used up). */
+    /** Asks Google which models this key can use (once per app start, in the background). */
     private fun discoverModels() {
         if (discovered || Settings.provider != "gemini") return
         discovered = true
         runCatching {
             val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000; readTimeout = 20_000
+                connectTimeout = 10_000; readTimeout = 15_000
                 setRequestProperty("x-goog-api-key", Settings.apiKey)
             }
             val text = try { conn.inputStream.bufferedReader().readText() } finally { conn.disconnect() }
@@ -88,7 +85,7 @@ object Llm {
                 val o = arr.optJSONObject(i) ?: continue
                 val methods = o.optJSONArray("supportedGenerationMethods")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
                 val name = o.optString("name").removePrefix("models/")
-                if (usableFlash(name, methods)) found += name
+                if (usableFlash(name, methods) && !name.endsWith("-latest")) found += name
             }
             // Lite models first (bigger free limits), then the rest; newest first within each.
             found.sortedWith(compareBy<String>({ !it.contains("lite") }, { it.contains("preview") }).thenByDescending { it }).take(6).forEach { addModel(it) }
@@ -101,6 +98,53 @@ object Llm {
 
     private fun rest(model: String, untilMs: Long, why: String) { coolUntil[model] = untilMs; coolWhy[model] = why }
     @Volatile private var lastKey = 0
+
+    /**
+     * Pacing. Free keys allow only so many requests a minute per model (15 for Flash-Lite, 5 for Flash).
+     * Running into that limit costs a failed request and a long wait, so Seyal keeps count itself:
+     * it knows when a model has room, uses another model meanwhile, and otherwise waits exactly as
+     * long as needed. Limits are learnt from Google's own error details when one is hit.
+     */
+    internal class Pace(@Volatile var perMinute: Int) { val recent = java.util.ArrayDeque<Long>() }
+    private val paces = ConcurrentHashMap<String, Pace>()
+    /** The real model behind a name ("gemini-flash-lite-latest" → "gemini-3.5-flash-lite"): they share one limit. */
+    private val realName = ConcurrentHashMap<String, String>()
+
+    internal fun defaultPerMinute(model: String): Int = when {
+        Settings.provider != "gemini" -> 10_000
+        model.contains("lite") -> 15
+        else -> 5
+    }
+
+    private fun pace(model: String): Pace { val real = realName[model] ?: model; return paces.getOrPut(real) { Pace(defaultPerMinute(real)) } }
+
+    /** When [model] can take one more request: now or earlier = it has room. */
+    internal fun roomAt(model: String, now: Long): Long {
+        val rest = coolUntil[model] ?: 0L
+        val p = pace(model)
+        val window = synchronized(p) {
+            while (p.recent.isNotEmpty() && p.recent.peekFirst()!! < now - 60_000) p.recent.pollFirst()
+            windowRoomAt(p.recent.toList(), p.perMinute, now)
+        }
+        return maxOf(rest, window)
+    }
+
+    /**
+     * Given when the last requests went out ([recent], oldest first) and the per-minute limit: the time the
+     * next request may go (0 = now). Keeps one below the limit: Google's minute and ours don't start together.
+     */
+    internal fun windowRoomAt(recent: List<Long>, perMinute: Int, now: Long): Long {
+        val live = recent.filter { it >= now - 60_000 }
+        val cap = (perMinute - 1).coerceAtLeast(1)
+        return if (live.size >= cap) live[live.size - cap] + 60_500 else 0L
+    }
+
+    private fun used(model: String, at: Long) { val p = pace(model); synchronized(p) { p.recent.addLast(at) } }
+
+    /** Test hook: forget all pacing. */
+    internal fun resetPacing() { paces.clear(); realName.clear(); coolUntil.clear(); coolWhy.clear() }
+    internal fun noteUsed(model: String, at: Long) = used(model, at)
+    internal fun learnLimit(model: String, perMinute: Int) { pace(model).perMinute = perMinute.coerceAtLeast(1) }
 
     /** How little each model may "think" before answering: minimal → low → (none, for models without the setting). Moves right when a model rejects a level. */
     private val thinkLevels = listOf("minimal", "low", null)
@@ -115,25 +159,20 @@ object Llm {
     private fun clock(ms: Long): String =
         java.time.format.DateTimeFormatter.ofPattern("h:mm a").format(java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()))
 
-    /**
-     * One answer from the AI. Tries the chosen model, then the fallbacks. A per-minute limit rests that model for
-     * the time the server asks and moves on; when every model is resting it waits for the first one back
-     * (telling [onWait]), for at most about 2½ minutes. A used-up daily limit rests the model until it resets.
-     */
-    /** The models to try, best first. */
+    /** The models to try, best first: the chosen one, the other lite models, then the rest. Names for the same real model count once. */
     private fun models(): List<String> {
         val chosen = Settings.effectiveModel()
-        return when (Settings.provider) {
-            "gemini" -> (listOf(chosen) + geminiFallbacks + extraModels).distinct()
-            else -> listOf(chosen)
-        }
+        if (Settings.provider != "gemini") return listOf(chosen)
+        val rest = (geminiFallbacks + extraModels).filter { it != chosen }
+        val ordered = listOf(chosen) + rest.filter { it.contains("lite") } + rest.filter { !it.contains("lite") }
+        return ordered.distinctBy { realName[it] ?: it }
     }
 
     /** A new key or provider has its own limits: forget what the old one ran into. Daily rests survive restarts. */
     private fun syncKey() {
         val keyNow = (Settings.provider + Settings.apiKey).hashCode()
         if (keyNow == lastKey) return
-        coolUntil.clear(); coolWhy.clear(); discovered = false
+        coolUntil.clear(); coolWhy.clear(); paces.clear(); discovered = false
         if (lastKey == 0 && Settings.provider == "gemini") runCatching {
             // First call since the app started: bring back daily rests for this same key.
             val o = JSONObject(Settings.aiRests)
@@ -149,95 +188,107 @@ object Llm {
 
     /**
      * Shown before the user types: why the AI can't answer right now and when it can again, or null when
-     * it is ready. Every usable model resting (a used-up daily limit, a per-minute limit, overloaded) counts.
+     * it is ready (a wait of a few seconds for the per-minute limit doesn't count).
      */
     fun limitNote(now: Long = System.currentTimeMillis()): String? {
         if (!Settings.hasKey) return null
         syncKey()
         val usable = models().filter { coolWhy[it] != "missing" }
+        if (usable.isEmpty()) return null
+        val back = usable.minOf { roomAt(it, now) }
+        if (back - now < 8_000) return null
         val resting = usable.filter { (coolUntil[it] ?: 0L) > now }
-        if (usable.isEmpty() || resting.size < usable.size) return null
-        val back = resting.minOf { coolUntil[it] ?: now }
         val whenBack = if (back - now < 90_000) "in ${(back - now) / 1000 + 1} s" else "at ${clock(back)}"
         return when {
-            resting.all { coolWhy[it] == "daily" } -> "Today's free AI limit is used up · back at ${clock(back)}"
-            resting.any { coolWhy[it] == "minute" } -> "AI limit reached · back $whenBack"
-            else -> "The AI is overloaded · trying again $whenBack"
+            resting.size == usable.size && resting.all { coolWhy[it] == "daily" } -> "Today's free AI limit is used up · back at ${clock(back)}"
+            resting.size == usable.size && resting.none { coolWhy[it] == "minute" } -> "The AI is overloaded · trying again $whenBack"
+            else -> "AI limit reached · back $whenBack"
         }
     }
 
-    suspend fun chat(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048, onWait: (String) -> Unit = {}): LlmResponse = withContext(Dispatchers.IO) {
+    /** Set for one request: the model must answer with a tool call (used to make it ask before it acts). */
+    private val mustCall = ThreadLocal<Boolean>()
+
+    /**
+     * One answer from the AI. Picks the best model that has room right now; when none has, waits exactly until
+     * the first one does (telling [onWait]) for up to about three minutes. A hung or overloaded model rests and
+     * the next one answers. [forceTool]: the reply must be a tool call.
+     */
+    suspend fun chat(
+        system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048,
+        forceTool: Boolean = false, onWait: (String) -> Unit = {},
+    ): LlmResponse = withContext(Dispatchers.IO) {
         if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
         syncKey()
+        if (!discovered && Settings.provider == "gemini") kotlin.concurrent.thread(isDaemon = true) { discoverModels() }
         val chosen = Settings.effectiveModel()
-        var all = models()
         var last: LlmException? = null
         val started = System.currentTimeMillis()
-        var triedResting = false
-        // "Busy" (503) spikes usually clear within seconds: wait a little longer each time.
-        val backoff = longArrayOf(1500, 3500, 7000)
-        while (true) {
+        val busyTries = HashMap<String, Int>()
+        var attempts = 0
+        while (attempts < 14) {
             val now = System.currentTimeMillis()
-            all = models()
-            var ready = all.filter { (coolUntil[it] ?: 0L) <= now }
-            // The usual models are used up for the day: find out what else this key can use.
-            if (ready.isEmpty() && Settings.provider == "gemini" && !discovered && all.any { coolWhy[it] == "daily" || coolWhy[it] == "missing" }) {
-                discoverModels(); all = models(); ready = all.filter { (coolUntil[it] ?: 0L) <= now }
-            }
-            // Everything is resting after busy/slow spells: try those once anyway rather than fail at once.
-            if (ready.isEmpty() && !triedResting) { triedResting = true; ready = all.filter { coolWhy[it] == "busy" } }
-            if (ready.isEmpty()) {
-                // Only per-minute limits clear soon. Wait for the first model back, within reason.
-                val soonest = all.filter { coolWhy[it] == "minute" }.minOfOrNull { coolUntil[it] ?: 0L } ?: break
-                val wait = (soonest - now).coerceAtLeast(0)
-                if (wait > 70_000 || now - started + wait > 150_000) break
-                onWait("AI limit reached · waiting ${(wait + 999) / 1000} s")
-                delay(wait + 300)
+            val all = models().filter { coolWhy[it] != "missing" || (coolUntil[it] ?: 0L) <= now }
+            val ready = all.firstOrNull { roomAt(it, now) <= now }
+            // The quick "lite" model is the one to use. If it only needs a few seconds, wait for it rather than
+            // switch to a bigger model that is slower, sometimes hangs, and has a tiny free limit.
+            val liteAt = if (Settings.provider == "gemini") all.filter { it.contains("lite") }.minOfOrNull { roomAt(it, now) } else null
+            val model = if (ready != null && !ready.contains("lite") && liteAt != null && liteAt - now <= 15_000) null else ready
+            if (model == null) {
+                // No model has room. A per-minute limit or a short rest clears soon: wait for exactly that.
+                val soonest = (if (ready != null) liteAt else all.filter { coolWhy[it] != "daily" || (coolUntil[it] ?: 0L) <= now }.minOfOrNull { roomAt(it, now) }) ?: break
+                val wait = soonest - now
+                if (wait > 90_000 || now - started + wait > 200_000) break
+                if (wait > 1500) onWait("AI limit · continuing in ${(wait + 999) / 1000} s")
+                delay(wait.coerceAtLeast(100))
                 continue
             }
-            var minuteLimit = false
-            var progress = false
-            for (model in ready) {
-                progress = true
-                for (attempt in 0..backoff.size) {
-                    val t0 = System.currentTimeMillis()
-                    Settings.aiRequestsToday = Settings.aiRequestsToday + 1
-                    try {
-                        val out = when (Settings.provider) {
-                            "anthropic" -> anthropic(system, messages, tools, maxTokens, model)
-                            "openai" -> openai(system, messages, tools, maxTokens, model)
-                            else -> gemini(system, messages, tools, maxTokens, model)
-                        }
-                        log("$model try ${attempt + 1}: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
-                        if (coolWhy.remove(model) == "daily") saveDailyRests()
-                        coolUntil.remove(model)
-                        Settings.tokensUsed = Settings.tokensUsed + out.tokens
-                        return@withContext out
-                    } catch (e: LlmException) {
-                        last = e
-                        log("$model try ${attempt + 1}: failed in ${System.currentTimeMillis() - t0} ms (busy=${e.busy}, quota=${e.quota}, daily=${e.daily}): ${e.message?.take(160)}")
-                        val end = System.currentTimeMillis()
-                        // A fallback this key can't use: skip it, and try the model Google names instead, if any.
-                        if (e.missing && model != chosen) {
-                            rest(model, end + 24 * 3_600_000L, "missing")
-                            Regex("use models/([A-Za-z0-9._-]+)").find(e.message ?: "")?.groupValues?.get(1)?.trimEnd('.')?.let { addModel(it) }
-                            break
-                        }
-                        if (!e.busy) throw e
-                        if (e.quota && e.daily) { rest(model, quotaResetAt(), "daily"); saveDailyRests(); break }
-                        if (e.quota) { rest(model, end + e.retryAfterMs.coerceIn(15_000, 65_000), "minute"); minuteLimit = true; break }
-                        if (e.slow || attempt == backoff.size) { if (all.size > 1) rest(model, end + 3 * 60_000L, "busy"); break }
-                        delay(backoff[attempt])
+            attempts++
+            val t0 = System.currentTimeMillis()
+            used(model, t0)
+            Settings.aiRequestsToday = Settings.aiRequestsToday + 1
+            try {
+                mustCall.set(forceTool && tools.isNotEmpty())
+                val out = try {
+                    when (Settings.provider) {
+                        "anthropic" -> anthropic(system, messages, tools, maxTokens, model)
+                        "openai" -> openai(system, messages, tools, maxTokens, model)
+                        else -> gemini(system, messages, tools, maxTokens, model)
+                    }
+                } finally { mustCall.remove() }
+                log("$model: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
+                if (coolWhy.remove(model) == "daily") saveDailyRests()
+                coolUntil.remove(model)
+                Settings.tokensUsed = Settings.tokensUsed + out.tokens
+                return@withContext out
+            } catch (e: LlmException) {
+                last = e
+                val end = System.currentTimeMillis()
+                log("$model: failed in ${end - t0} ms (busy=${e.busy}, quota=${e.quota}, daily=${e.daily}, slow=${e.slow}): ${e.message?.take(160)}")
+                when {
+                    // A model this key can't use: skip it, and try the one Google names instead, if any.
+                    e.missing && model != chosen -> {
+                        rest(model, end + 24 * 3_600_000L, "missing")
+                        Regex("use models/([A-Za-z0-9._-]+)").find(e.message ?: "")?.groupValues?.get(1)?.trimEnd('.')?.let { addModel(it) }
+                    }
+                    !e.busy -> throw e
+                    e.quota && e.daily -> { rest(model, quotaResetAt(), "daily"); saveDailyRests() }
+                    e.quota -> rest(model, end + e.retryAfterMs.coerceIn(4_000, 65_000), "minute")
+                    // It hung: let another model answer for a couple of minutes.
+                    e.slow -> rest(model, end + 2 * 60_000L, "busy")
+                    else -> {
+                        // "Overloaded" (503) spikes usually clear in seconds: a short rest, longer each time.
+                        val n = (busyTries[model] ?: 0) + 1; busyTries[model] = n
+                        rest(model, end + (if (n == 1) 1500L else if (n == 2) 4000L else 60_000L), "busy")
                     }
                 }
             }
-            // New models were found while trying (a retired model named its successor): go round once more.
-            if (!minuteLimit && !(progress && models().any { it !in all })) break
         }
-        val usable = all.filter { coolWhy[it] != "missing" }
+        val now = System.currentTimeMillis()
+        val usable = models().filter { coolWhy[it] != "missing" }
         throw LlmException(
             when {
-                usable.isNotEmpty() && usable.none { (coolUntil[it] ?: 0L) <= System.currentTimeMillis() } && usable.any { coolWhy[it] == "daily" } ->
+                usable.isNotEmpty() && usable.all { coolWhy[it] == "daily" && (coolUntil[it] ?: 0L) > now } ->
                     "Today's free AI limit on this key is used up. It starts again at ${clock(quotaResetAt())}. Until then you can add a key from another provider in Control → AI."
                 last?.quota == true -> "The AI's per-minute limit is still reached. Try again in a minute."
                 last?.slow == true -> "The AI isn't answering right now (it timed out). Try again in a minute."
@@ -340,7 +391,7 @@ object Llm {
                         put(d)
                     }
                 })))
-                put("toolConfig", JSONObject().put("functionCallingConfig", JSONObject().put("mode", "AUTO")))
+                put("toolConfig", JSONObject().put("functionCallingConfig", JSONObject().put("mode", if (mustCall.get() == true) "ANY" else "AUTO")))
             }
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.2)
@@ -351,6 +402,13 @@ object Llm {
             })
         }
         val res = post(url, body, mapOf("x-goog-api-key" to Settings.apiKey))
+        // Which real model answered: names that point at the same one share its per-minute limit.
+        res.optString("modelVersion").removePrefix("models/").takeIf { it.isNotBlank() && it != model }?.let { real ->
+            if (realName.put(model, real) != real) paces.remove(model)?.let { old ->
+                val p = paces.getOrPut(real) { old }
+                if (p !== old) synchronized(p) { p.recent.addAll(old.recent) }
+            }
+        }
         val cands = res.optJSONArray("candidates") ?: throw LlmException(res.optJSONObject("error")?.optString("message") ?: "Empty answer from Gemini")
         val cand = cands.optJSONObject(0) ?: throw LlmException("Gemini gave no answer")
         val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
@@ -425,6 +483,7 @@ object Llm {
         val body = JSONObject().apply {
             put("model", model); put("max_tokens", maxTokens); put("system", system); put("messages", msgs)
             if (tools.isNotEmpty()) put("tools", JSONArray().apply { tools.forEach { put(JSONObject().put("name", it.name).put("description", it.description).put("input_schema", it.params)) } })
+            if (tools.isNotEmpty() && mustCall.get() == true) put("tool_choice", JSONObject().put("type", "any"))
         }
         val res = post("https://api.anthropic.com/v1/messages", body, mapOf("x-api-key" to Settings.apiKey, "anthropic-version" to "2023-06-01"))
         val content = res.optJSONArray("content") ?: throw LlmException(res.optJSONObject("error")?.optString("message") ?: "Empty answer from Claude")
@@ -485,6 +544,7 @@ object Llm {
             if (tools.isNotEmpty()) put("tools", JSONArray().apply {
                 tools.forEach { put(JSONObject().put("type", "function").put("function", JSONObject().put("name", it.name).put("description", it.description).put("parameters", it.params))) }
             })
+            if (tools.isNotEmpty() && mustCall.get() == true) put("tool_choice", "required")
         }
         val res = post("$base/chat/completions", body, mapOf("Authorization" to "Bearer ${Settings.apiKey}"))
         val choice = res.optJSONArray("choices")?.optJSONObject(0) ?: throw LlmException(res.optJSONObject("error")?.optString("message") ?: "Empty answer from model")
@@ -509,9 +569,8 @@ object Llm {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
-            // Long screen tasks send big requests, and phone networks are slow at times: give an answer
-            // 55 s before trying the next model (Flash usually answers in 2-10 s).
-            readTimeout = 55_000
+            // Flash-Lite answers in 1-3 s. A model that says nothing for 25 s has hung: another one takes over.
+            readTimeout = 25_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("User-Agent", "Seyal/2.0")
@@ -529,6 +588,7 @@ object Llm {
                     (msg ?: text).contains("high demand", true) || (msg ?: text).contains("overloaded", true)
                 val (retryMs0, daily) = quotaInfo(err)
                 quotaDetail(err)?.let { log("quota: $it") }
+                perMinuteLimit(err)?.let { (m, n) -> learnLimit(m, n) }
                 var retryMs = retryMs0
                 if (retryMs == 0L) conn.getHeaderField("retry-after")?.toDoubleOrNull()?.let { retryMs = (it * 1000).toLong() }
                 throw LlmException(
@@ -577,5 +637,21 @@ object Llm {
             }
         }
         return out.joinToString("; ").ifBlank { null }
+    }
+
+    /** The per-minute request limit a 429 names, with its model: ("gemini-3.5-flash-lite", 15). */
+    internal fun perMinuteLimit(err: JSONObject?): Pair<String, Int>? {
+        val d = err?.optJSONArray("details") ?: return null
+        for (i in 0 until d.length()) {
+            val v = d.optJSONObject(i)?.optJSONArray("violations") ?: continue
+            for (j in 0 until v.length()) {
+                val o = v.optJSONObject(j) ?: continue
+                if (!o.optString("quotaId").contains("RequestsPerMinute", true)) continue
+                val model = o.optJSONObject("quotaDimensions")?.optString("model").orEmpty()
+                val n = o.optString("quotaValue").toIntOrNull() ?: continue
+                if (model.isNotBlank()) return model to n
+            }
+        }
+        return null
     }
 }

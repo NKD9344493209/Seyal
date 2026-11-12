@@ -21,6 +21,7 @@ class SeyalApp : Application() {
         Notify.createChannels(this)
         Agent.init(this)
         Scheduler.rescheduleAll(this)
+        runCatching { com.seyal.app.device.PhoneEvents.sync(this) }
         // Charger plugged in / unplugged only reach receivers registered while the app runs.
         runCatching {
             val filter = IntentFilter().apply { addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED) }

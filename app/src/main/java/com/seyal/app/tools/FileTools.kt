@@ -19,6 +19,7 @@ import com.seyal.app.agent.noArgs
 import com.seyal.app.device.ScreenDriver
 import com.seyal.app.tools.Common.ctx
 import com.seyal.app.tools.Common.launch
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -202,19 +203,43 @@ object FileTools {
                 ?: return ToolResult.Failed("$app can't open this file, or isn't installed. Apps that can: ${apps.joinToString { it.first }}.")
             intent.setPackage(chosen.second)
         } else if (apps.size == 1) chosen = apps[0]
+        else {
+            // Several apps can open it and the user named none: use the phone's default for this kind of file,
+            // else a well-known player, so Android's "Open with" list doesn't stop the task.
+            val def = runCatching { ctx.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName }.getOrNull()
+            val favourites = listOf("com.mxtech.videoplayer.ad", "com.mxtech.videoplayer.pro", "org.videolan.vlc", "com.google.android.apps.photos", "com.miui.video", "com.miui.gallery", "com.sec.android.app.videoplayer", "com.sec.android.gallery3d", "com.google.android.apps.nbu.files")
+            chosen = apps.firstOrNull { it.second == def && def != "android" && !def.contains("resolver") }
+                ?: favourites.firstNotNullOfOrNull { fav -> apps.firstOrNull { it.second == fav } }
+                ?: apps[0]
+            intent.setPackage(chosen.second)
+        }
         if (!launch(intent)) return ToolResult.Failed("Could not open ${file.name}")
         val out = JSONObject().put("ok", true).put("opened", file.name).put("kind", file.kind)
         chosen?.let { out.put("app", it.first) }
         if (chosen == null) out.put("note", "Android may ask which app to use: pick one on screen (apps: ${apps.joinToString { it.first }}).")
         if (ScreenDriver.available) {
             chosen?.let { if (!ScreenDriver.waitForPackage(it.second, 6000)) out.put("note", "${it.first} did not come to the front yet. Check the screen.") }
-            ScreenDriver.snapshotAfter(1500)?.let { out.put("screen", it) }
         }
+        // A video or song should be playing now. Players that open paused get the "play" media key (the same as a headset button).
+        if (file.kind == "video" || file.kind == "audio") {
+            delay(2500)
+            val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            if (!am.isMusicActive) {
+                runCatching {
+                    am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+                    am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+                }
+                delay(1200)
+            }
+            out.put("playing", am.isMusicActive)
+            if (!am.isMusicActive) out.put("note", "It opened but no sound is playing yet: look at the screen and tap Play (a muted video also shows as not playing).")
+        }
+        if (ScreenDriver.available) ScreenDriver.snapshotAfter(600)?.let { out.put("screen", it) }
         return ToolResult.Done(out, "Opened ${file.name.take(40)}" + (chosen?.let { " in ${it.first}" } ?: ""))
     }
 
     /** The index entry for a content uri, or null when it is gone. */
-    private fun describe(uri: Uri): Found? {
+    fun describe(uri: Uri): Found? {
         val cols = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns.MIME_TYPE)
         return runCatching {
             ctx.contentResolver.query(uri, cols, null, null, null)?.use { c ->

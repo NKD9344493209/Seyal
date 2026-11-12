@@ -1,31 +1,32 @@
-# Full edition: screen control and notification access are on. "> " = follow-up in the same conversation.
-What is a macro in phone automation?
+# Full edition: screen control and notification access are on. "> " = follow-up in the same conversation. "!post Title|Text" = a message notification arrives.
+Torch on
 What is the weather in Coimbatore today?
 > And tomorrow?
-Send a message to my dad saying I will be late today
-Remind me in 2 minutes to drink water
-Give me todays top AI news in 5 points
-Every morning at 8, give me AI news
-Make a meeting link for Priya tomorrow 4 PM and email it to her
-Amma ku call pannu
-What notifications do I have right now?
-Open the Calculator app and work out 48 times 12 using the screen, then tell me the answer
-> Save this as a skill called Multiply
-Run my Multiply skill
-Open Settings, find the Android version of this phone and tell me
-Open Chrome, search for Broadway Cinemas Coimbatore and tell me the title of the first result
-Open the Clock app and add an alarm for 7:15 AM using its screen
-In the Contacts app add a new contact named Test Kumar with the number 9876512345
-Set the brightness to 30 percent and turn on do not disturb
-How long have I used YouTube today, and what is my battery level?
-Remember that my favourite theatre is Broadway Cinemas
+Order a biryani from a nearby hotel
 Book tickets for Ramayana at Broadway Cinemas Coimbatore, I am free from 1 pm today
+Make a PowerPoint about the benefits of rooftop solar power for homes, 6 slides
+> Email it to priya@example.com
+Make a PDF with a packing list for a 2 day trip to Ooty
 How much storage is used on this phone, and which folders and apps take the most space?
 Find the video called Seyal Test Clip on my phone and play it
-Find my Ramayana notes file
 Whenever any app shows a message from Amma asking where are you, tell me my current location
 !post Amma|Where are you?
+When the battery goes below 20 percent after 9 pm, set the brightness to 10
+Tomorrow at 8 am send a WhatsApp to my dad saying good morning
+Make a meeting link for Priya tomorrow 4 PM, email it to her and remind me before it starts
+Send a message to my dad saying I will be late today
+Open Settings, find the Android version of this phone and tell me
+> Save this as a skill called Version check
+Run my Version check skill
+Open the Clock app and add an alarm for 7:15 AM using its screen
+Open Chrome, search for Broadway Cinemas Coimbatore and tell me the title of the first result
+In the Contacts app add a new contact named Test Kumar with the number 9876512345
 Play the oldest video from the YouTube channel @Google
 Find buses from Coimbatore to Bangalore this Friday night and give me the link to the list
-Order a biryani from a nearby hotel
 Where is the share log button in this app?
+Amma ku call pannu
+Give me todays top AI news in 5 points
+What notifications do I have right now?
+Remember that my favourite theatre is Broadway Cinemas
+Set the brightness to 30 percent and turn on do not disturb
+Every morning at 8, give me AI news

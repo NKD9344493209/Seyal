@@ -82,6 +82,7 @@ fun ControlScreen() {
         PermissionsSection()
         YouSection()
         MemorySection()
+        LessonsSection()
         PhoneSection()
         Card {
             Text("Your data", style = MaterialTheme.typography.titleMedium)
@@ -354,5 +355,36 @@ private fun PhoneSection() {
             ).joinToString(" · "),
             style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp),
         )
+    }
+}
+
+/** What Seyal has learnt about doing things in apps: shown so the user can see it grow, and remove what's wrong. */
+@Composable
+private fun LessonsSection() {
+    val cs = MaterialTheme.colorScheme
+    val lessons by com.seyal.app.agent.Lessons.all.collectAsState()
+    var open by remember { mutableStateOf(false) }
+    Card {
+        Text("What Seyal has learnt", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (lessons.isEmpty()) "Nothing yet. After a longer task in an app, Seyal notes what would make it faster next time, and reads those notes before working in that app again."
+            else "${lessons.size} notes from your tasks, in ${lessons.map { it.app }.distinct().size} apps. Seyal reads an app's notes before working in it.",
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+        )
+        if (lessons.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmallButton(if (open) "Hide" else "Show", filled = false) { open = !open }
+                SmallButton("Forget all", filled = false, danger = true) { com.seyal.app.agent.Lessons.clear() }
+            }
+            if (open) lessons.sortedBy { it.app }.forEach { l ->
+                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f)) {
+                        Text(l.app.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                        Text(l.text, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("Remove", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp).clickable { com.seyal.app.agent.Lessons.remove(l) })
+                }
+            }
+        }
     }
 }

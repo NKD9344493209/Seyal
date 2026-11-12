@@ -22,6 +22,9 @@ class SeyalNotificationListener : NotificationListenerService() {
     private val keywords = listOf("exam", "fees", "fee ", "deadline", "placement", "internship", "interview", "offer", "result", "hall ticket", "assignment", "submission", "timetable")
     /** The same message re-posted (apps update notifications often) counts once; sent again after 2 minutes, it counts again. */
     private val seen = LinkedHashMap<String, Long>()
+    private var lastCallKey: String? = null
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) { if (sbn.key == lastCallKey) lastCallKey = null }
 
     override fun onListenerConnected() {
         instance = this; ScreenDriver.accessChanged()
@@ -35,6 +38,12 @@ class SeyalNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
         val n = sbn.notification ?: return
+        // A ringing phone shows as a "call" notification with the caller's name: "when Amma calls…".
+        if (n.category == Notification.CATEGORY_CALL && sbn.key != lastCallKey) {
+            val (who, what) = textOf(n)
+            // Only a call coming in, not one the user is making or already on.
+            if (who.isNotBlank() && !Regex("dialing|calling|ongoing|on hold|missed", RegexOption.IGNORE_CASE).containsMatchIn("$who $what")) { lastCallKey = sbn.key; Skills.onEvent("call_from:$who") }
+        }
         // Group summaries and ongoing things (music, downloads, calls) are not news.
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0 || sbn.isOngoing) return
         val (title, text) = textOf(n)

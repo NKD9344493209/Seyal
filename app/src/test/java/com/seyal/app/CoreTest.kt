@@ -5,6 +5,12 @@ import com.seyal.app.ai.Llm
 import com.seyal.app.agent.Agent
 import com.seyal.app.tools.FileTools
 import com.seyal.app.device.AdSkipper
+import com.seyal.app.device.PhoneEvents
+import com.seyal.app.agent.Preflight
+import com.seyal.app.agent.Quick
+import com.seyal.app.agent.Lessons
+import com.seyal.app.data.Only
+import com.seyal.app.util.Office
 import com.seyal.app.agent.Skills
 import com.seyal.app.data.CallStatus
 import com.seyal.app.data.Msg
@@ -260,8 +266,110 @@ fun testFiles() {
     T.eq("file name words", listOf("ramayana", "2026", "1080p", "mkv"), FileTools.words("Ramayana.2026.1080p.mkv"))
 }
 
+fun testPhase2() {
+    println("AI pacing")
+    val now = 1_000_000L
+    T.eq("room when nothing was sent", 0L, Llm.windowRoomAt(emptyList(), 15, now))
+    T.eq("room with 13 of 15 used", 0L, Llm.windowRoomAt((1..13).map { now - 50_000 + it * 1000 }, 15, now))
+    val full = (1..14).map { now - 50_000 + it * 1000L }
+    T.eq("no room at 14 of 15: wait for the oldest to leave the minute", full[0] + 60_500, Llm.windowRoomAt(full, 15, now))
+    T.eq("requests older than a minute don't count", 0L, Llm.windowRoomAt((1..20).map { now - 120_000 + it }, 15, now))
+    T.eq("a limit of 5 allows 4 in a minute", now - 4000 + 60_500, Llm.windowRoomAt(listOf(now - 4000, now - 3000, now - 2000, now - 1000), 5, now))
+    val pm = Llm.perMinuteLimit(JSONObject("""{"details":[{"violations":[{"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier","quotaValue":"15","quotaDimensions":{"model":"gemini-3.5-flash-lite"}}]}]}"""))
+    T.eq("per-minute limit learnt from the error", "gemini-3.5-flash-lite" to 15, pm)
+    T.eq("a daily limit is not a per-minute one", null, Llm.perMinuteLimit(JSONObject("""{"details":[{"violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaValue":"20","quotaDimensions":{"model":"gemini-3.8-flash"}}]}]}""")))
+
+    println("Ask before buying")
+    T.eq("movie tickets", Preflight.Kind.MOVIE, Preflight.kind("Book tickets for Ramayana at Broadway Cinemas"))
+    T.eq("biryani", Preflight.Kind.FOOD, Preflight.kind("order a biryani from a nearby hotel"))
+    T.eq("bus", Preflight.Kind.TRAVEL, Preflight.kind("Book a bus from Coimbatore to Bangalore on Friday"))
+    T.eq("cab", Preflight.Kind.CAB, Preflight.kind("book an auto to the railway station"))
+    T.eq("shopping", Preflight.Kind.SHOP, Preflight.kind("Buy a phone charger on Amazon"))
+    T.eq("Tanglish order", Preflight.Kind.FOOD, Preflight.kind("oru dosa order pannu"))
+    T.eq("finding buses is not buying", null, Preflight.kind("Find buses from Coimbatore to Bangalore and tell me the cheapest"))
+    T.eq("a question is not buying", null, Preflight.kind("How do I book tatkal tickets?"))
+    T.eq("order status is not buying", null, Preflight.kind("Track my order on Swiggy"))
+    T.eq("weather is not buying", null, Preflight.kind("What is the weather today?"))
+    T.eq("facebook is not 'book'", null, Preflight.kind("Open Facebook and check notifications"))
+
+    println("Instant commands")
+    T.eq("torch on", "set_setting", Quick.match("Torch on")?.name)
+    T.eq("turn off the flashlight", "off", Quick.match("turn off the flashlight")?.args?.optString("value"))
+    T.eq("open an app", "YouTube".lowercase(), Quick.match("Open YouTube")?.args?.optString("name"))
+    T.eq("open … and do more goes to the AI", null, Quick.match("open youtube and search lofi"))
+    T.eq("timer", 5, Quick.match("set a timer for 5 minutes")?.args?.optInt("minutes"))
+    T.eq("brightness", "30", Quick.match("brightness 30%")?.args?.optString("value"))
+    T.eq("a sentence goes to the AI", null, Quick.match("Remind me in 2 minutes to drink water"))
+    T.eq("a question goes to the AI", null, Quick.match("what is on my calendar tomorrow"))
+
+    println("Only when")
+    val night = Only(after = "22:00", before = "06:00")
+    T.eq("23:30 is inside a night window", null, night.fails(1, 23 * 60 + 30, 50, false, null))
+    T.eq("05:00 is inside a night window", null, night.fails(1, 5 * 60, 50, false, null))
+    T.check("noon is outside a night window", night.fails(1, 12 * 60, 50, false, null) != null)
+    T.check("after 21:00 fails at 20:59", Only(after = "21:00").fails(1, 20 * 60 + 59, 50, false, null) != null)
+    T.eq("after 21:00 holds at 21:00", null, Only(after = "21:00").fails(1, 21 * 60, 50, false, null))
+    T.check("weekdays only fails on Sunday", Only(days = listOf(1, 2, 3, 4, 5)).fails(7, 600, 50, false, null) != null)
+    T.check("battery below 20 fails at 20", Only(batteryBelow = 20).fails(1, 600, 20, false, null) != null)
+    T.eq("battery below 20 holds at 19", null, Only(batteryBelow = 20).fails(1, 600, 19, false, null))
+    T.check("charging only fails when unplugged", Only(charging = true).fails(1, 600, 50, false, null) != null)
+    T.eq("home Wi-Fi matches", null, Only(wifi = "Home").fails(1, 600, 50, false, "MyHome_5G"))
+    T.check("home Wi-Fi fails on mobile data", Only(wifi = "Home").fails(1, 600, 50, false, null) != null)
+    T.eq("'-' means not on Wi-Fi", null, Only(wifi = "-").fails(1, 600, 50, false, null))
+    val tr = Trigger.fromJson(JSONObject("""{"type":"event","event":"battery_below:20","only":{"after":"21:00","charging":false}}"""))
+    T.eq("only survives saving", "21:00", Trigger.fromJson(tr.toJson()).only?.after)
+    T.check("described in words", tr.describe().contains("below 20%") && tr.describe().contains("after 21:00"), tr.describe())
+
+    println("Events")
+    T.check("any Wi-Fi", Trigger.eventHit("wifi_connected", "wifi_connected:Office_5G"))
+    T.check("named Wi-Fi", Trigger.eventHit("wifi_connected:office", "wifi_connected:Office_5G"))
+    T.check("other Wi-Fi is not it", !Trigger.eventHit("wifi_connected:Home", "wifi_connected:Office_5G"))
+    T.check("exact events", Trigger.eventHit("charging", "charging") && Trigger.eventHit("battery_below:20", "battery_below:20"))
+    T.check("another level is not it", !Trigger.eventHit("battery_below:20", "battery_below:15"))
+    T.check("mom calling matches Amma", Trigger.eventHit("call_from:Mom", "call_from:Amma"))
+    T.check("anyone calling", Trigger.eventHit("call_from", "call_from:Ram Kumar"))
+    T.check("someone else calling is not it", !Trigger.eventHit("call_from:Amma", "call_from:Ram Kumar"))
+    T.check("car Bluetooth", Trigger.eventHit("bluetooth_connected:car", "bluetooth_connected:My Car Audio"))
+    T.check("connect is not disconnect", !Trigger.eventHit("bluetooth_connected", "bluetooth_disconnected:My Car Audio"))
+    T.check("arrive home", Trigger.eventHit("arrive:Home", "arrive:Home"))
+    // Coimbatore Gandhipuram ↔ Peelamedu is roughly 5-6 km.
+    val d = PhoneEvents.distance(11.0183, 76.9725, 11.0258, 77.0260)
+    T.check("distance is about right", d in 5000.0..7000.0, "$d")
+    T.check("inside a place", PhoneEvents.within(11.0183, 76.9725, 20f, 11.0184, 76.9726, 200, null))
+    T.check("far outside", !PhoneEvents.within(11.0258, 77.0260, 20f, 11.0183, 76.9725, 200, true))
+    T.check("near the edge keeps the last answer", PhoneEvents.within(11.0183 + 0.0021, 76.9725, 20f, 11.0183, 76.9725, 200, true))
+    T.check("a vague fix changes nothing", PhoneEvents.within(11.0258, 77.0260, 900f, 11.0183, 76.9725, 200, true))
+
+    println("Files made on the phone")
+    val blocks = listOf(Office.Block("Intro", listOf("a", "b")), Office.Block("Long", (1..9).map { "point $it" }), Office.Block("Text", text = "one\ntwo"))
+    val pages = Office.paginate(blocks)
+    T.eq("a long list is spread over two slides", listOf(2, 5, 4, 2), pages.map { it.bullets.size })
+    T.check("continued slide is marked", pages[2].heading.endsWith("(cont.)"))
+    val deck = Office.pptx("Title & <tags>", "sub", "me", blocks)
+    T.check("a deck is a zip", deck.size > 2000 && deck[0] == 'P'.code.toByte() && deck[1] == 'K'.code.toByte())
+    val names = java.util.zip.ZipInputStream(deck.inputStream()).use { z -> generateSequence { z.nextEntry }.map { it.name }.toList() }
+    T.check("it has a title slide and one per page", names.count { it.matches(Regex("ppt/slides/slide\\d+\\.xml")) } == pages.size + 1, "$names")
+    T.check("special characters are escaped", !String(deck, Charsets.ISO_8859_1).contains("<tags>"))
+    T.check("a document is a zip with its text part", java.util.zip.ZipInputStream(Office.docx("T", "s", blocks).inputStream()).use { z -> generateSequence { z.nextEntry }.any { it.name == "word/document.xml" } })
+    T.eq("file names are safe", "Q3 plan v2 final.pptx", Office.fileName("Q3 plan: v2 / final?", "pptx"))
+
+    println("Learning")
+    T.check("same note in other words", Lessons.similar("Tap the suggestion under the search box, not Enter", "In search, tap the suggestion under the box instead of Enter"))
+    T.check("different notes", !Lessons.similar("Tap the suggestion under the search box", "The cart button is at the bottom right"))
+    T.check("apps named in a request", Lessons.appsIn("order a dosa on Swiggy please").contains("swiggy"))
+    T.check("notes for an app are given", Lessons.textFor(listOf("YouTube")).contains("Oldest"))
+    T.eq("no notes for an unknown app", "", Lessons.textFor(listOf("Some Unknown App")))
+    T.check("a 'tell me' skill needs the AI to word it", Agent.wantsAnswer("Open the Calculator and tell me the answer"))
+    T.check("a 'do it' skill runs without the AI", !Agent.wantsAnswer("Put the phone on silent"))
+
+    println("Ads")
+    T.check("bare Skip on an ad", AdSkipper.isAdButton("Skip", "", adOnScreen = true, adActivity = false))
+    T.check("bare Close on a page that only mentions an ad is left alone", !AdSkipper.isAdButton("Close", "com.app:id/btn", adOnScreen = true, adActivity = false))
+    T.check("bare Close inside a full-screen ad", AdSkipper.isAdButton("Close", "", adOnScreen = false, adActivity = true))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -270,7 +378,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

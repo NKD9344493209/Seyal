@@ -89,6 +89,16 @@ class MainActivity : ComponentActivity() {
         if (intent == null) return
         openSessionId.value = intent.getStringExtra("session")
         when (intent.action) {
+            // A skill's home-screen button: run it and get out of the way.
+            ACTION_RUN_SKILL -> {
+                val skill = intent.getStringExtra("skill")?.let { com.seyal.app.agent.Skills.get(it) }
+                if (skill != null) {
+                    com.seyal.app.agent.Skills.run(skill.id)
+                    android.widget.Toast.makeText(this, "Running ${skill.name}", android.widget.Toast.LENGTH_SHORT).show()
+                    moveTaskToBack(true)
+                } else android.widget.Toast.makeText(this, "That skill was deleted", android.widget.Toast.LENGTH_SHORT).show()
+                intent.action = null
+            }
             Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND, ACTION_LISTEN -> listenTick.value = listenTick.value + 1
             Intent.ACTION_PROCESS_TEXT -> intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()?.takeIf { it.isNotBlank() }?.let { sharedText.value = it.take(6000) }
             Intent.ACTION_SEND -> {
@@ -106,6 +116,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_LISTEN = "com.seyal.app.LISTEN"
+        const val ACTION_RUN_SKILL = "com.seyal.app.RUN_SKILL"
     }
 }
 

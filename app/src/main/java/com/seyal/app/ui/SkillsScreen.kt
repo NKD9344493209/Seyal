@@ -34,6 +34,7 @@ import com.seyal.app.agent.Agent
 import com.seyal.app.agent.Skills
 import com.seyal.app.data.Skill
 import com.seyal.app.data.Trigger
+import com.seyal.app.data.Only
 import com.seyal.app.util.Times
 
 /** Saved automations: what runs when, and the steps the agent recorded. */
@@ -43,6 +44,7 @@ fun SkillsScreen(goTo: (Tab) -> Unit) {
     val skills by Skills.skills.collectAsState()
     val triggerLog by Skills.triggerLog.collectAsState()
     var showLog by remember { mutableStateOf(false) }
+    var showGallery by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Skill?>(null) }
     var creating by remember { mutableStateOf(false) }
 
@@ -50,10 +52,30 @@ fun SkillsScreen(goTo: (Tab) -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Skills", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
             if (skills.any { it.trigger?.type == "notification" || it.trigger?.type == "event" }) { SmallButton(if (showLog) "Skills" else "Trigger log", filled = false) { showLog = !showLog }; Spacer(Modifier.width(8.dp)) }
+            SmallButton(if (showGallery) "My skills" else "Ready-made", filled = false) { showGallery = !showGallery; showLog = false }
+            Spacer(Modifier.width(8.dp))
             SmallButton("New") { creating = true }
         }
         Text("Things Seyal does on its own: on a schedule, when an app notifies you, or when you say so. Ask in chat (\"every morning at 8…\") or tap New.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
-        if (showLog) {
+        if (showGallery) {
+            // Skills that work out of the box: one tap adds one (edit the time or words afterwards).
+            LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(Skills.templates) { t ->
+                    val have = skills.any { it.name.equals(t.name, true) }
+                    Card {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(t.name, style = MaterialTheme.typography.titleMedium)
+                                Text(t.trigger.describe(), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                                Text(t.about, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            if (have) Text("Added", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant) else SmallButton("Add") { Skills.addTemplate(t) }
+                        }
+                    }
+                }
+            }
+        } else if (showLog) {
             // What the message and event triggers saw since Seyal started, and why each did or didn't run.
             LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (triggerLog.isEmpty()) item { Text("Nothing yet. Messages and phone events that a skill watches for show up here, with what ran.", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant) }
@@ -87,6 +109,9 @@ private fun TriggerDialog(title: String, name: String, goal: String, trigger: Tr
     var app by remember { mutableStateOf(trigger?.app ?: "") }
     var contains by remember { mutableStateOf(trigger?.contains ?: "") }
     var from by remember { mutableStateOf(trigger?.from ?: "") }
+    var after by remember { mutableStateOf(trigger?.only?.after ?: "") }
+    var before by remember { mutableStateOf(trigger?.only?.before ?: "") }
+    var onlyWifi by remember { mutableStateOf(trigger?.only?.wifi ?: "") }
     var event by remember { mutableStateOf(trigger?.event?.ifBlank { "charging" } ?: "charging") }
 
     AlertDialog(
@@ -116,18 +141,33 @@ private fun TriggerDialog(title: String, name: String, goal: String, trigger: Tr
                         Text("Needs the Full edition with Notification access on.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                     }
                     "event" -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("charging" to "Charging", "unplugged" to "Unplugged", "boot" to "Phone starts", "app_opened:" to "App opens").forEach { (k, l) -> Chip(l, selected = event.startsWith(k)) { event = k } }
+                        eventKinds.forEach { (k, l, _) -> Chip(l, selected = event.substringBefore(':') == k.substringBefore(':')) { event = k } }
                     }
                 }
-                if (type == "event" && event.startsWith("app_opened")) OutlinedTextField(event.removePrefix("app_opened:"), { event = "app_opened:$it" }, label = { Text("App name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                // Events with a detail: which app, which Wi-Fi, which device, what level, who.
+                if (type == "event") eventKinds.firstOrNull { it.first.endsWith(":") && event.substringBefore(':') == it.first.substringBefore(':') }?.let { (k, _, hint) ->
+                    OutlinedTextField(event.substringAfter(':', ""), { event = k + it }, label = { Text(hint) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    if (k.startsWith("arrive") || k.startsWith("leave")) Text("Places are easiest by chat: \"when I reach home, …\" while you are there.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+                if (type != "manual") {
+                    Text("Only when (optional)", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(after, { after = it }, label = { Text("After HH:mm") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedTextField(before, { before = it }, label = { Text("Before HH:mm") }, singleLine = true, modifier = Modifier.weight(1f))
+                    }
+                    OutlinedTextField(onlyWifi, { onlyWifi = it }, label = { Text("On Wi-Fi named (* = any, - = none)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
+                // Keep the conditions this form doesn't show (battery, charging, days) as they were.
+                val old = trigger?.only
+                val only = Only(after.trim(), before.trim(), old?.days ?: emptyList(), old?.batteryBelow ?: 0, old?.batteryAbove ?: 0, old?.charging, onlyWifi.trim()).takeIf { !it.isEmpty }
                 val t = when (type) {
-                    "time" -> Trigger("time", time.trim(), day.trim().ifBlank { null }, days, repeat)
-                    "notification" -> Trigger("notification", app = app.trim(), contains = contains.trim(), from = from.trim())
-                    "event" -> Trigger("event", event = event)
+                    "time" -> Trigger("time", time.trim(), day.trim().ifBlank { null }, days, repeat, only = only)
+                    "notification" -> Trigger("notification", app = app.trim(), contains = contains.trim(), from = from.trim(), only = only)
+                    "event" -> Trigger("event", event = event.trimEnd(':'), only = only, lat = trigger?.lat ?: 0.0, lon = trigger?.lon ?: 0.0, radius = trigger?.radius ?: 200)
                     else -> null
                 }
                 onSave(n.trim(), g.trim(), t)
@@ -155,7 +195,7 @@ private fun SkillList(skills: List<Skill>, onEdit: (Skill) -> Unit, goTo: (Tab) 
                     }
                     if (s.description.isNotBlank() || s.goal.isNotBlank()) Text(s.description.ifBlank { s.goal }, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
                     val meta = listOfNotNull(
-                        if (s.steps.isNotEmpty()) "${s.steps.size} recorded steps" else "agent decides",
+                        if (s.steps.isNotEmpty()) "${s.steps.size} fixed steps" + (if (Agent.wantsAnswer(s.goal)) "" else " · runs without the AI") else "the AI works it out each time",
                         if (s.nextRun > 0 && s.enabled) "next ${Times.format(s.nextRun)}" else null,
                         if (s.lastRun > 0) "last ${Times.format(s.lastRun)}" else null,
                     ).joinToString(" · ")
@@ -164,7 +204,9 @@ private fun SkillList(skills: List<Skill>, onEdit: (Skill) -> Unit, goTo: (Tab) 
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         // The run shows in Activity (chats stay for conversations).
                         SmallButton("Run now") { Skills.run(s.id)?.let { id -> activity?.openSessionId?.value = id } ?: goTo(Tab.HISTORY) }
+                        if (s.trigger != null) SmallButton("Test", filled = false) { Skills.test(s.id)?.let { id -> activity?.openSessionId?.value = id } }
                         SmallButton("Edit", filled = false) { onEdit(s) }
+                        if (activity != null) SmallButton("Add to home screen", filled = false) { pinSkill(activity, s) }
                         SmallButton(if (code) "Card" else "Code", filled = false) { code = !code }
                         SmallButton("Delete", filled = false, danger = true) { Skills.delete(s.id) }
                     }
@@ -172,4 +214,26 @@ private fun SkillList(skills: List<Skill>, onEdit: (Skill) -> Unit, goTo: (Tab) 
                 }
             }
         }
+}
+
+/** The phone events a skill can wait for: key (ending in ":" when it takes a detail), label, and the detail's hint. */
+private val eventKinds = listOf(
+    Triple("charging", "Charging", ""), Triple("unplugged", "Unplugged", ""), Triple("boot", "Phone starts", ""),
+    Triple("app_opened:", "App opens", "App name"),
+    Triple("wifi_connected:", "Wi-Fi connects", "Wi-Fi name (empty = any)"), Triple("wifi_disconnected:", "Wi-Fi disconnects", "Wi-Fi name (empty = any)"),
+    Triple("bluetooth_connected:", "Bluetooth connects", "Device name (empty = any)"), Triple("bluetooth_disconnected:", "Bluetooth disconnects", "Device name (empty = any)"),
+    Triple("headphones_in", "Headphones in", ""), Triple("headphones_out", "Headphones out", ""),
+    Triple("battery_below:", "Battery below", "Percent, e.g. 20"), Triple("battery_above:", "Battery above", "Percent, e.g. 90"),
+    Triple("call_from:", "Someone calls", "Name as in contacts (empty = anyone)"),
+    Triple("arrive:", "Reach a place", "Place name"), Triple("leave:", "Leave a place", "Place name"),
+)
+
+/** Puts a button for this skill on the home screen: one tap runs it. */
+private fun pinSkill(activity: MainActivity, s: Skill) {
+    val sm = activity.getSystemService(android.content.pm.ShortcutManager::class.java) ?: return
+    if (!sm.isRequestPinShortcutSupported) { android.widget.Toast.makeText(activity, "This home screen doesn't take shortcuts", android.widget.Toast.LENGTH_SHORT).show(); return }
+    val intent = android.content.Intent(activity, MainActivity::class.java).setAction(MainActivity.ACTION_RUN_SKILL).putExtra("skill", s.id)
+    val info = android.content.pm.ShortcutInfo.Builder(activity, "skill_${s.id}").setShortLabel(s.name.take(24)).setLongLabel("Run ${s.name}".take(40))
+        .setIcon(android.graphics.drawable.Icon.createWithResource(activity, com.seyal.app.R.mipmap.ic_launcher)).setIntent(intent).build()
+    runCatching { sm.requestPinShortcut(info, null) }
 }

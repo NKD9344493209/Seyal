@@ -52,16 +52,19 @@ object AgentTools {
 
             Tool(
                 "skill_save", "agent",
-                "Create an automation from a description. goal = what to do, in words (an agent works it out each run, with the trigger's details). " +
-                    "steps (optional) = exact tool calls to replay without the AI, only when every value is fixed; in a notification-triggered skill their text args may use {{sender}}, {{text}}, {{app}}. trigger_json (optional): " +
+                "Create an automation. goal = what to do, in words (an agent works it out each run, with the trigger's details). " +
+                    "steps (optional) = exact tool calls replayed without the AI (instant, works offline): give them whenever every value is fixed; in a message-triggered skill their text args may use {{sender}}, {{text}}, {{app}}. trigger_json (optional), one of: " +
                     "{\"type\":\"time\",\"repeat\":\"daily|weekly|once\",\"time\":\"HH:mm\",\"days\":[1-7 Mon-Sun],\"day\":\"YYYY-MM-DD\"} | " +
                     "{\"type\":\"notification\",\"app\":\"WhatsApp\",\"from\":\"Amma\",\"contains\":\"where are you|where r u|enga irukka\"} | " +
-                    "{\"type\":\"event\",\"event\":\"charging|unplugged|boot|app_opened:YouTube\"}. " +
-                    "Notification triggers: from = the person's name exactly as saved in contacts (look it up with contacts_search first: 'mom' may be saved as 'Amma'); contains = the words, with a few other ways of saying them separated by |, in the languages they'd use; leave contains empty for any message from them. " +
-                    "A skill started by a message may reply to that sender without asking (the user set it up). " +
-                    "Examples: 'every morning at 8 give me AI news' → goal + daily time trigger, no steps. " +
-                    "'When Amma messages on WhatsApp reply I'm in class' → notification trigger {app WhatsApp, from Amma} + one step notification_reply {match:'{{sender}}', app:'WhatsApp', text:\"I'm in class\"}. " +
-                    "'When mom asks where I am, send my location' → notification trigger {app WhatsApp, from Amma, contains 'where are you|where r u|enga irukka|engey irukka'} + goal 'Get my current location with location, then reply to the sender with notification_reply (match = the sender, app WhatsApp) saying where I am', no steps (the location changes each time). " +
+                    "{\"type\":\"event\",\"event\":\"E\"} with E = charging | unplugged | boot | app_opened:YouTube | wifi_connected[:Name] | wifi_disconnected[:Name] | bluetooth_connected[:Device] | bluetooth_disconnected[:Device] | headphones_in | headphones_out | battery_below:20 | battery_above:90 | call_from[:Name] | arrive:Place | leave:Place. " +
+                    "arrive/leave: add \"place\":\"an address or place name\" (or \"here\" for where the phone is now) and optional \"radius\" in metres. " +
+                    "Any trigger may add \"only\": {\"after\":\"HH:mm\",\"before\":\"HH:mm\",\"days\":[1-7],\"battery_below\":n,\"battery_above\":n,\"charging\":true|false,\"wifi\":\"Name\" (\"*\" any Wi-Fi, \"-\" not on Wi-Fi)} for conditions like 'only on weekdays', 'only after 9 PM', 'only at home (home Wi-Fi)'. " +
+                    "Message triggers: from = the person's name exactly as saved in contacts (contacts_search first: 'mom' may be 'Amma'); contains = the words with a few other ways of saying them separated by |; empty = any message from them. A skill started by a message may reply to that sender without asking. " +
+                    "Examples: 'every morning at 8 give me AI news' → goal + daily time trigger. " +
+                    "'When Amma messages on WhatsApp reply I'm in class' → notification trigger + one step notification_reply {match:'{{sender}}', app:'WhatsApp', text:\"I'm in class\"}. " +
+                    "'When mom asks where I am, send my location' → notification trigger {from Amma, contains 'where are you|where r u|enga irukka'} + goal 'Get my location with location, then notification_reply to the sender with the place and map_link'. " +
+                    "'When I reach home turn Wi-Fi panel on and message Amma' → event arrive:Home with place. 'At night when battery is below 20 turn on DND' → event battery_below:20 + only {after 21:00}. " +
+                    "'Tomorrow 8 am send Ram a meeting link' → time trigger repeat once with day + goal. " +
                     "Tell the user exactly when it will run.",
                 schema {
                     str("name", "Short name, e.g. 'Morning AI news'", required = true)
@@ -70,7 +73,7 @@ object AgentTools {
                     objList("steps", "Tool calls to replay in order") { str("tool", "Tool name", required = true); str("args_json", "The arguments as a JSON string", required = true) }
                     str("trigger_json", "The trigger as a JSON string, or empty for manual")
                 },
-            ) { a, _ ->
+            ) { a, ctx ->
                 val steps = mutableListOf<Part.Call>()
                 a.optJSONArray("steps")?.let { arr ->
                     for (i in 0 until arr.length()) {
@@ -79,7 +82,21 @@ object AgentTools {
                         if (s.optString("tool").isNotBlank()) steps += Part.Call(newId(), s.optString("tool"), args)
                     }
                 }
-                val trigger = a.optString("trigger_json").takeIf { it.isNotBlank() }?.let { runCatching { Trigger.fromJson(JSONObject(it)) }.getOrNull() }
+                var trigger = a.optString("trigger_json").takeIf { it.isNotBlank() }?.let { runCatching { Trigger.fromJson(JSONObject(it)) }.getOrNull() }
+                // A skill that will send something by itself: the user confirms the exact message once, now.
+                val sends = steps.filter { com.seyal.app.agent.Toolbox.get(it.name)?.group == "comms" && !it.args.toString().contains("{{sender}}") }
+                if (sends.isNotEmpty()) {
+                    val what = sends.joinToString("\n") { st -> "• " + (runCatching { com.seyal.app.agent.Toolbox.get(st.name)!!.preview(st.args) }.getOrNull()?.ifBlank { null } ?: com.seyal.app.agent.Prompts.friendly(st)) }
+                    val answer = ctx.askUser("Schedule this to be sent by itself (${trigger?.describe() ?: "when you run the skill"})?\n$what", listOf("Yes, schedule it", "No"))
+                    if (!Regex("^(y|ok|sure|sari|aam|schedule|the first|first|go ahead|do it)", RegexOption.IGNORE_CASE).containsMatchIn(answer.trim())) return@Tool ToolResult.Failed("The user did not confirm the scheduled send. Ask what they want changed.")
+                }
+                // A place skill needs the spot on the map: "here", or the address looked up.
+                if (trigger != null && trigger.type == "event" && (trigger.event.startsWith("arrive:") || trigger.event.startsWith("leave:")) && trigger.lat == 0.0 && trigger.lon == 0.0) {
+                    val raw = runCatching { JSONObject(a.optString("trigger_json")) }.getOrDefault(JSONObject())
+                    val place = raw.optString("place").ifBlank { trigger.event.substringAfter(':') }
+                    val spot = PhoneTools.locate(place) ?: return@Tool ToolResult.Failed("Could not find \"$place\" on the map. Ask the user for the address, or to say \"here\" while they are at the place (Location must be on).")
+                    trigger = Trigger.fromJson(raw.put("lat", spot.first).put("lon", spot.second))
+                }
                 val skill = Skills.save(a.optString("name"), a.optString("description"), a.optString("goal"), steps, trigger)
                 val whenText = trigger?.describe() ?: "manual"
                 val next = if (skill.nextRun > 0) " · next ${Times.format(skill.nextRun)}" else ""
@@ -102,6 +119,15 @@ object AgentTools {
                 val arr = JSONArray()
                 Skills.all().forEach { s -> arr.put(JSONObject().put("name", s.name).put("description", s.description).put("when", s.trigger?.describe() ?: "manual").put("enabled", s.enabled).put("steps", s.steps.size)) }
                 ToolResult.Done(JSONObject().put("skills", arr), "${arr.length()} skills")
+            },
+
+            Tool(
+                "lesson_save", "agent",
+                "Save a short how-to about an app for next time (where a button is, what works, what to avoid): use it when the user teaches you how they want something done in an app, or after you found the way round a problem. General method only, no personal details.",
+                schema { str("app", "App name, e.g. 'Swiggy'", required = true); str("lesson", "One line", required = true) },
+            ) { a, _ ->
+                if (com.seyal.app.agent.Lessons.add(a.optString("app"), a.optString("lesson"))) ToolResult.ok("Noted for ${a.optString("app")}")
+                else ToolResult.Failed("Not saved: give an app name and a one-line method (no numbers or personal details).")
             },
 
             Tool("skill_run", "agent", "Run a saved skill now by name.", schema { str("name", "Skill name", required = true) }) { a, _ ->

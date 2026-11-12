@@ -108,6 +108,7 @@ object Agent {
         }
         _current.value = index.firstOrNull { it.optString("source") == "user" }?.optString("id")
         Skills.init()
+        Lessons.init(context.filesDir)
         publish()
     }
 
@@ -287,6 +288,7 @@ object Agent {
         // The same call giving the same result again and again means the agent is stuck.
         val lastOutput = HashMap<String, Int>()
         val sameCount = HashMap<String, Int>()
+        var firstRound = true
         try {
             while (coroutineContext.isActive) {
                 pauseGate.await()
@@ -303,6 +305,37 @@ object Agent {
                     else { if (s.status != SessionStatus.RUNNING) { s.status = SessionStatus.RUNNING; touch(s) }; true }
                 }
                 if (!go) return
+
+                if (firstRound) {
+                    firstRound = false
+                    val lastMsg = lock.withLock { s.messages.lastOrNull() }
+                    val said = lastMsg?.takeIf { it.role == "user" && it.parts.none { p -> p is Part.Image } }?.text?.removePrefix(MIDTASK).orEmpty()
+                    if (s.source == "user" && s.parentId == null && said.isNotBlank()) {
+                        // 1. A command that needs no thinking ("torch on", "open YouTube"): do it now.
+                        val quick = Quick.match(said)
+                        val quickTool = quick?.let { byName[it.name] }
+                        if (quick != null && quickTool != null) {
+                            val r = runSynthetic(s, quick, quickTool)
+                            s.steps++; stepsThisRun++
+                            if (!r.isError && r.output.optBoolean("ok", true)) {
+                                finish(s, SessionStatus.DONE, lock.withLock { s.calls[quick.id]?.line } ?: "Done.")
+                                return
+                            }
+                        }
+                        // 2. Buying, booking or ordering: the user gives the details before anything is opened.
+                        val kind = if (quick == null) Preflight.kind(said) else null
+                        val ask = byName["ask_user"]
+                        if (kind != null && ask != null) {
+                            report("Checking what I need to know…")
+                            val pre = try {
+                                Llm.chat(Preflight.system(kind), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Preflight.complete), 700, forceTool = true, onWait = { report(it) })
+                            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
+                            lock.withLock { s.llmCalls++; s.tokens += pre?.tokens ?: 0; touch(s) }
+                            val question = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
+                            if (question != null) { runSynthetic(s, question, ask); s.steps++; stepsThisRun++ }
+                        }
+                    }
+                }
 
                 val snapshot = lock.withLock { repair(s); forModel(s) }
                 report(if (stepsThisRun == 0) "Thinking…" else "Thinking · step ${stepsThisRun + 1}")
@@ -342,7 +375,15 @@ object Agent {
                     if ((sameCount[sig] ?: 0) >= 2 && call.name !in setOf("wait", "ask_user")) { skipped += call.id; return stuck(s, call) }
                     return runCall(s, call, byName[call.name])
                 }
-                val results = if (resp.calls.any { usesScreen(it.name) }) resp.calls.map { one(it) }
+                // Screen actions sent together assume each one worked: after one fails, the rest would hit the wrong screen.
+                var screenBroke = false
+                val results = if (resp.calls.any { usesScreen(it.name) }) resp.calls.map { call ->
+                    if (screenBroke && usesScreen(call.name)) {
+                        skipped += call.id
+                        lock.withLock { s.state(call.id).apply { status = CallStatus.CANCELLED; error = "Skipped: the step before it did not work"; startedAt = System.currentTimeMillis(); endedAt = startedAt }; touch(s) }
+                        Part.Result(call.id, call.name, JSONObject().put("error", "Skipped because the action before it failed. Look at the screen it returned and decide again."), true)
+                    } else one(call).also { r -> if (usesScreen(call.name) && (r.isError || !r.output.optBoolean("ok", true))) screenBroke = true }
+                }
                 else coroutineScope { resp.calls.map { call -> async { one(call) } }.awaitAll() }
                 resp.calls.forEachIndexed { i, call ->
                     if (call.id in skipped) return@forEachIndexed
@@ -364,6 +405,18 @@ object Agent {
         }
     }
 
+    /** Whether a skill's goal is to find something out and say it (then the AI words the result), rather than just to do things. */
+    internal fun wantsAnswer(goal: String): Boolean =
+        Regex("\\b(tell|what|how|which|who|when|where|show|read|check|find|answer|summar\\w*|list|news|weather|give me|sollu|enna|evlo|yaaru)\\b|\\?|சொல்|என்ன", RegexOption.IGNORE_CASE).containsMatchIn(goal.substringBefore("\n\n"))
+
+    /** Runs a call the agent decided on without the AI, recorded like any other step. */
+    private suspend fun runSynthetic(s: Session, call: Part.Call, tool: Tool): Part.Result {
+        lock.withLock { s.messages += Msg("assistant", listOf(call)); s.state(call.id).status = CallStatus.PENDING; touch(s) }
+        val r = runCall(s, call, tool)
+        lock.withLock { s.messages += Msg("tool", listOf(r)); touch(s) }
+        return r
+    }
+
     private suspend fun finish(s: Session, status: SessionStatus, text: String) {
         lock.withLock {
             if (s.status == SessionStatus.CANCELLED) return
@@ -378,6 +431,10 @@ object Agent {
         }
         save(s)
         if (s.status.isOpen) return
+        // Learn from it: what would make the same kind of task quicker next time in that app.
+        if (status == SessionStatus.DONE && s.parentId == null && Settings.hasKey) s.workApp?.let { pkg ->
+            scope.launch { runCatching { Lessons.learnFrom(s, ScreenDriver.appLabel(app, pkg)) } }
+        }
         idleCheck(if (s.parentId == null) (if (status == SessionStatus.DONE) "Done · " else "Stopped · ") + (s.result ?: "") else null)
         if (s.parentId == null) {
             if (!Settings.quiet || status != SessionStatus.DONE) Notify.line(app, "${s.title}: ${s.result}", s.id)
@@ -473,10 +530,13 @@ object Agent {
         val did = done.map { it.second.take(70) }.distinct().takeLast(3).joinToString("; ")
         val lastRound = s.messages.lastOrNull { it.role == "assistant" && it.calls.isNotEmpty() }?.calls.orEmpty()
         val lastOk = lastRound.isNotEmpty() && lastRound.all { s.calls[it.id]?.status == CallStatus.DONE }
-        val acted = lastRound.any { Toolbox.get(it.name)?.sideEffect == true }
-        return if (lastOk && acted) SessionStatus.DONE to "Done: $did."
+        // Only a finished direct action (a message sent, an alarm set) counts as done. Taps on a screen are
+        // steps on the way: stopping after them means the task is NOT finished.
+        val acted = lastRound.any { Toolbox.get(it.name)?.let { t -> t.sideEffect && t.group != "screen" } == true }
+        val midScreen = calls.any { Toolbox.get(it.name)?.group == "screen" }
+        return if (lastOk && acted && !midScreen) SessionStatus.DONE to "Done: $did."
         // The reason goes first: the one-line result shown in lists is cut short.
-        else SessionStatus.FAILED to "$why Done so far: $did. Send a message to continue."
+        else SessionStatus.FAILED to "Not finished. $why Done so far: $did. Say \"continue\" to carry on."
     }
 
     private fun report(text: String) {
@@ -490,7 +550,7 @@ object Agent {
         scope.launch {
             val g = lock.withLock { if (live.values.any { it.status.isOpen }) return@launch; activity.get() }
             AgentService.idle(g)
-            if (lastWords != null) { ScreenDriver.status(plain(lastWords).take(70)); delay(4500) }
+            if (lastWords != null) { ScreenDriver.status(plain(lastWords).take(70), busy = false); delay(4500) }
             lock.withLock { if (activity.get() == g && live.values.none { it.status.isOpen }) ScreenDriver.status(null) }
         }
     }
@@ -529,6 +589,8 @@ object Agent {
         // A skill the user made to answer a person ("when Amma asks where I am, reply with my location"):
         // replying to that same person is what they asked for.
         if (level == Level.ASK && tool.group == "comms" && target != null && samePerson(target, s.trustedReplyTo)) level = Level.AUTO
+        // A scheduled or automatic send the user confirmed when the skill was made ("tomorrow 8 am send Ram the link").
+        if (level == Level.ASK && target != null && "${tool.name}|$target" in s.preApproved) level = Level.AUTO
         // Safety net: after 40 unattended sends in a day, ask again.
         if (level == Level.AUTO && tool.group == "comms" && tool.sideEffect && Settings.autoSendToday >= 40) level = Level.ASK
         // After the user said No to something in this conversation, screen actions ask first too
@@ -549,7 +611,11 @@ object Agent {
             }
             Notify.approval(app, s, call.id, Prompts.friendly(call), preview)
             report("Needs your OK · ${Prompts.friendly(call)}")
-            val decision = try { withTimeoutOrNull(30 * 60_000L) { wait.await() } ?: "deny" } finally { waits.remove(call.id); Notify.cancelApproval(app, s.id, call.id) }
+            ScreenDriver.showCard(
+                call.id, "Seyal needs your OK", preview, listOf("Allow", "Always allow", "No"), null,
+                onPick = { wait.complete(when (it) { "Allow" -> "allow"; "Always allow" -> "allow_always"; else -> "deny" }) }, onType = {},
+            )
+            val decision = try { withTimeoutOrNull(30 * 60_000L) { wait.await() } ?: "deny" } finally { waits.remove(call.id); Notify.cancelApproval(app, s.id, call.id); ScreenDriver.hideCard(call.id) }
             if (decision == "allow_always") {
                 if (target != null) Settings.allow(tool.name, target) else Settings.setLevel(tool.name, Level.AUTO)
             }
@@ -568,6 +634,8 @@ object Agent {
         if (usesScreen(tool.name) && ScreenDriver.available && !ScreenDriver.claim(s.id)) {
             return lock.withLock { fail("Another Seyal task is using the screen right now. Wait for it (or tell the user), then try again.").also { touch(s) } }
         }
+        // The user opened Seyal meanwhile (to approve, answer or type): go back to the app first.
+        if (tool.group == "screen") backToWork(s)
         report(Prompts.friendly(call))
         val ctx = ToolContext(
             sessionId = s.id,
@@ -585,6 +653,11 @@ object Agent {
             val f = result as? ToolResult.Failed ?: break
             if (!f.retryable || tool.sideEffect || attempt == 1) break
             delay(1200)
+        }
+
+        if (usesScreen(tool.name)) ScreenDriver.workAppNow()?.let { s.workApp = it }
+        if (tool.name == "ask_user") (result as? ToolResult.Done)?.let { r ->
+            backToWork(s)?.let { screen -> r.output.put("note", "You are back in the app you were working in. This is its screen now.").put("screen", screen) }
         }
 
         // 3. Record it.
@@ -635,9 +708,27 @@ object Agent {
         }
         Notify.question(app, s, question)
         report("Question for you · ${question.take(50)}")
-        val answer = try { withTimeoutOrNull(60 * 60_000L) { wait.await() } ?: "(no answer)" } finally { waits.remove(state.callId); Notify.cancelQuestion(app, s.id) }
+        // Over the app being worked in: answer with one tap, or open Seyal to type.
+        ScreenDriver.showCard(
+            state.callId, "Seyal asks", question, options, "Type an answer",
+            onPick = { wait.complete(it) },
+            onType = { ScreenDriver.onOpen?.invoke() },
+        )
+        val answer = try { withTimeoutOrNull(60 * 60_000L) { wait.await() } ?: "(no answer)" } finally { waits.remove(state.callId); Notify.cancelQuestion(app, s.id); ScreenDriver.hideCard(state.callId) }
         lock.withLock { s.status = SessionStatus.RUNNING; touch(s) }
         return answer
+    }
+
+    /**
+     * The user may have opened Seyal (to answer, approve or type) while a task was inside another app.
+     * Go back to that app before touching the screen again. Returns the fresh screen, or null if nothing moved.
+     */
+    private suspend fun backToWork(s: Session): JSONObject? {
+        val pkg = s.workApp ?: return null
+        if (!ScreenDriver.available || ScreenDriver.frontPackage() != ScreenDriver.ownPackage) return null
+        report("Back to ${ScreenDriver.appLabel(app, pkg)}")
+        if (!ScreenDriver.bringToFront(pkg)) return null
+        return ScreenDriver.snapshotAfter(500)
     }
 
     private suspend fun delegate(s: Session, state: CallState, goals: List<String>): List<JSONObject> = coroutineScope {
@@ -715,6 +806,7 @@ object Agent {
         lock.withLock {
             live.clear(); index.clear()
             Skills.wipe()
+            Lessons.clear()
             Store.wipe()
             Memory.set("")
             _current.value = null
@@ -742,7 +834,17 @@ object Agent {
                     }
                 }
                 if (!go) return@launch
-                if (ok && !Settings.hasKey) { finish(s, SessionStatus.DONE, "Done: ${s.title}"); return@launch }
+                // The recorded steps did the whole job: finish at once, without the AI (instant, works offline,
+                // costs nothing). Only a skill whose goal is to tell the user something needs the AI to word it.
+                if (ok && (!Settings.hasKey || !wantsAnswer(goal))) {
+                    val last = lock.withLock {
+                        // The closing instruction was for the AI; nobody needs to see it.
+                        if (s.messages.lastOrNull()?.role == "user") s.messages.removeAt(s.messages.size - 1)
+                        s.calls.values.filter { it.status == CallStatus.DONE && it.line != null }.maxByOrNull { it.endedAt }?.line
+                    }
+                    finish(s, SessionStatus.DONE, "Done: " + (last ?: s.title))
+                    return@launch
+                }
                 loop(s, softFail = ok)
             } else loop(s)
         }
