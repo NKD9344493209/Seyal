@@ -30,9 +30,14 @@ object NotificationTools {
                 defaultLevel = Level.ASK, sideEffect = true, available = on,
                 target = { SeyalNotificationListener.resolve(it.optString("match"), it.optString("app"))?.lowercase() },
                 preview = { "Reply to ${SeyalNotificationListener.resolve(it.optString("match"), it.optString("app")) ?: it.optString("match")}: \"${it.optString("text").take(200)}\"" },
-            ) { a, _ ->
+            ) { a, ctx ->
                 if (a.optString("text").isBlank()) return@Tool ToolResult.Failed("Empty reply")
-                try { ToolResult.ok("Replied to ${SeyalNotificationListener.reply(a.optString("match"), a.optString("app"), a.optString("text"))}", "sent" to true) }
+                // A run that a message started answers that very message (by Android's id for it), and never a group.
+                val s = com.seyal.app.agent.Agent.session(ctx.sessionId)
+                val auto = s?.unattended == true
+                val key = s?.replyKey?.takeIf { auto && com.seyal.app.agent.Agent.samePerson(a.optString("match"), s.trustedReplyTo) }
+                if (auto && key == null) return@Tool ToolResult.Failed("An automatic run may only answer the person whose message started it (match = that sender), and never a group. Use notify to tell the user instead.")
+                try { ToolResult.ok("Replied to ${SeyalNotificationListener.reply(a.optString("match"), a.optString("app"), a.optString("text"), key, noGroups = auto)}: \"${a.optString("text").take(60)}\"", "sent" to true) }
                 catch (e: Exception) { ToolResult.Failed(e.message ?: "Could not reply") }
             },
 

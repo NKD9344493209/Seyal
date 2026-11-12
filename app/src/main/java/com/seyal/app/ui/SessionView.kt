@@ -61,7 +61,11 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         var stepNo = 0
-        for (m in s.messages) {
+        for ((i, m) in s.messages.withIndex()) {
+            // Seyal's own check before finishing, and the half-answer it corrected, are not part of the conversation.
+            if (m.role == "user" && m.text.startsWith(Agent.CHECK)) continue
+            val corrected = m.role == "assistant" && m.calls.isEmpty() && s.messages.getOrNull(i + 1)?.let { it.role == "user" && it.text.startsWith(Agent.CHECK) } == true
+            if (corrected) continue
             if (m.role == "user") {
                 UserBubble(m)
             } else if (m.role == "assistant") {

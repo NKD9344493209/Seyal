@@ -73,6 +73,29 @@ object Agent {
     val paused: StateFlow<Boolean> = _paused
     /** Marks a message the user sent while a task was running, so the AI reads it as their latest word. Not shown in the chat. */
     const val MIDTASK = "[New message, sent while you were working] "
+    /** Marks a reminder Seyal gives itself before accepting "done" (see [Checks]). It is not from the user and is not shown in the chat. */
+    const val CHECK = "[Seyal's own check before finishing, not a message from the user] "
+
+    /** Whether a message is something the user really said (not Seyal's own check). */
+    internal fun fromUser(m: Msg): Boolean = m.role == "user" && !m.text.startsWith(CHECK)
+
+    /** The user's latest words in [s]. */
+    internal fun lastSaid(s: Session): String = s.messages.lastOrNull { fromUser(it) }?.text?.removePrefix(MIDTASK).orEmpty()
+
+    /** Everything the user said in [s]: their messages and their answers to questions. */
+    internal fun userWords(s: Session): List<String> =
+        s.messages.filter { fromUser(it) }.map { it.text.removePrefix(MIDTASK) } +
+            s.messages.filter { it.role == "tool" }.flatMap { it.results }.filter { it.name == "ask_user" }.map { it.output.optString("answer") }.filter { it.isNotBlank() }
+
+    /** What was done since the user's latest message, for [Checks]. */
+    internal fun didSince(s: Session): List<Did> {
+        val from = s.messages.indexOfLast { fromUser(it) }
+        val results = s.messages.drop(from + 1).filter { it.role == "tool" }.flatMap { it.results }.associateBy { it.callId }
+        return s.messages.drop(from + 1).filter { it.role == "assistant" }.flatMap { it.calls }.map { c ->
+            val st = s.calls[c.id]
+            Did(c.name, st?.status == CallStatus.DONE, results[c.id]?.output, st?.status == CallStatus.DENIED)
+        }
+    }
 
     private val _tick = MutableStateFlow(0L)
     /** Bumps on every change, for screens that want a cheap signal. */
@@ -109,6 +132,19 @@ object Agent {
         _current.value = index.firstOrNull { it.optString("source") == "user" }?.optString("id")
         Skills.init()
         Lessons.init(context.filesDir)
+        // Which apps are on the phone (by the name on their icon), looked up at most once a minute.
+        var labels: List<String> = emptyList(); var labelsAt = 0L
+        Preflight.appLabels = {
+            val now = System.currentTimeMillis()
+            if (now - labelsAt > 60_000 || labels.isEmpty()) {
+                labels = runCatching {
+                    val pm = app.packageManager
+                    pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0).map { it.loadLabel(pm).toString() }.distinct()
+                }.getOrDefault(labels)
+                labelsAt = now
+            }
+            labels
+        }
         publish()
     }
 
@@ -174,7 +210,7 @@ object Agent {
         appendLine("Started ${Times.format(s.createdAt)}, last change ${Times.format(s.updatedAt)}")
         var n = 0
         for (m in s.messages) when (m.role) {
-            "user" -> { appendLine(); appendLine("USER: ${m.text.removePrefix(MIDTASK).take(1500)}") }
+            "user" -> { appendLine(); appendLine(if (m.text.startsWith(CHECK)) "SELF-CHECK: ${m.text.removePrefix(CHECK).take(600)}" else "USER: ${m.text.removePrefix(MIDTASK).take(1500)}") }
             "assistant" -> {
                 if (m.text.isNotBlank()) appendLine("SEYAL: ${m.text.take(1500)}")
                 m.calls.forEach { c ->
@@ -308,6 +344,8 @@ object Agent {
 
                 if (firstRound) {
                     firstRound = false
+                    // A new request gets its own checks before "done".
+                    s.checked.clear()
                     val lastMsg = lock.withLock { s.messages.lastOrNull() }
                     val said = lastMsg?.takeIf { it.role == "user" && it.parts.none { p -> p is Part.Image } }?.text?.removePrefix(MIDTASK).orEmpty()
                     if (s.source == "user" && s.parentId == null && said.isNotBlank()) {
@@ -328,10 +366,28 @@ object Agent {
                         if (kind != null && ask != null) {
                             report("Checking what I need to know…")
                             val pre = try {
-                                Llm.chat(Preflight.system(kind), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Preflight.complete), 700, forceTool = true, onWait = { report(it) })
+                                Llm.chat(Preflight.system(kind, said), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Preflight.complete), 700, forceTool = true, onWait = { report(it) })
                             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
                             lock.withLock { s.llmCalls++; s.tokens += pre?.tokens ?: 0; touch(s) }
-                            val question = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
+                            var question = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
+                            if (question == null) {
+                                // The AI did not ask. That is only right when the user really gave the details: check the one
+                                // that costs most when guessed (how many), and ask it ourselves if nobody said it.
+                                val words = lock.withLock { userWords(s) }
+                                val saidComplete = pre?.calls?.any { it.name == "details_complete" } == true
+                                val leaves = Preflight.leavesChoice(words)
+                                val needCount = kind.unit.isNotBlank() && !Preflight.saysHowMany(words)
+                                val needSeat = kind == Preflight.Kind.MOVIE && !Preflight.saysSeatOrBudget(words)
+                                question = when {
+                                    leaves -> null
+                                    !saidComplete -> Part.Call(newId(), "ask_user", JSONObject().put("question", Preflight.fallbackQuestion(kind, onlyCount = false)))
+                                    else -> Preflight.missingQuestion(kind, needCount, needSeat)?.let { q ->
+                                        val args = JSONObject().put("question", q)
+                                        if (needCount && !needSeat) args.put("options", org.json.JSONArray(listOf("1", "2", "3", "4")))
+                                        Part.Call(newId(), "ask_user", args)
+                                    }
+                                }
+                            }
                             if (question != null) { runSynthetic(s, question, ask); s.steps++; stepsThisRun++ }
                         }
                     }
@@ -364,6 +420,19 @@ object Agent {
                     touch(s)
                 }
                 if (resp.calls.isEmpty()) {
+                    // "Done" has to mean done: compare what was asked with what happened, and send the AI back once per gap.
+                    val gap = if (s.source == "user" && s.parentId == null && s.checked.size < 3) lock.withLock {
+                        val said = lastSaid(s)
+                        val words = userWords(s)
+                        val one = Regex("\\b(1|one|single|just me|only me|myself|alone)\\b", RegexOption.IGNORE_CASE).containsMatchIn(words.joinToString(" ")) && !Regex("\\b([2-9]|two|three|four|five|six)\\s*(tickets?|seats?|people|persons?)", RegexOption.IGNORE_CASE).containsMatchIn(words.joinToString(" "))
+                        Checks.beforeDone(said, Preflight.kind(said) ?: Preflight.kind(words.firstOrNull().orEmpty()).takeIf { said.length < 40 }, didSince(s), s.checked, manyPeople = !one)
+                    } else null
+                    if (gap != null) {
+                        s.checked += gap.key
+                        report("Checking the result…")
+                        lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + gap.text))); touch(s) }
+                        continue
+                    }
                     finish(s, SessionStatus.DONE, resp.text.ifBlank { "Done." })
                     return
                 }
@@ -523,7 +592,7 @@ object Agent {
      */
     private fun afterAiFailure(s: Session, steps: Int, why: String): Pair<SessionStatus, String> {
         if (steps == 0) return SessionStatus.FAILED to why
-        val lastUser = s.messages.indexOfLast { it.role == "user" }
+        val lastUser = s.messages.indexOfLast { fromUser(it) }
         val calls = s.messages.drop(lastUser + 1).filter { it.role == "assistant" }.flatMap { it.calls }
         val done = calls.mapNotNull { c -> s.calls[c.id]?.takeIf { it.status == CallStatus.DONE }?.line?.let { c to it } }
         if (done.isEmpty()) return SessionStatus.FAILED to why
@@ -557,7 +626,9 @@ object Agent {
 
     /** The agent repeated the same call with the same result three times: stop it wasting steps. */
     private suspend fun stuck(s: Session, call: Part.Call): Part.Result = lock.withLock {
-        val msg = "You already did exactly this several times and got the same result. Do NOT repeat it. Try a different way (other element, scroll, screenshot, another tool) or finish and tell the user what is blocking."
+        val msg = "You already did exactly this several times and got the same result. Do NOT repeat it. Recover, in this order, until something moves: " +
+            "1) screen_wait 4 seconds for a word you expect (the app may be loading); 2) screenshot, then screen_tap_at on what you see; 3) screen_scroll, or tap a different element that leads to the same place; " +
+            "4) screen_back once; 5) open_app again (the app restarts where it was) and continue. Only after these, if it still will not move, say exactly which screen is stuck and what you already did."
         s.state(call.id).apply { status = CallStatus.FAILED; error = "Skipped: repeated with no progress"; startedAt = System.currentTimeMillis(); endedAt = startedAt }
         touch(s)
         Part.Result(call.id, call.name, JSONObject().put("error", msg), true)
@@ -588,7 +659,7 @@ object Agent {
         if (level == Level.ASK && target != null && Settings.isAllowed(tool.name, target)) level = Level.AUTO
         // A skill the user made to answer a person ("when Amma asks where I am, reply with my location"):
         // replying to that same person is what they asked for.
-        if (level == Level.ASK && tool.group == "comms" && target != null && samePerson(target, s.trustedReplyTo)) level = Level.AUTO
+        if (level == Level.ASK && tool.group == "comms" && target != null && !target.contains("group chat") && samePerson(target, s.trustedReplyTo)) level = Level.AUTO
         // A scheduled or automatic send the user confirmed when the skill was made ("tomorrow 8 am send Ram the link").
         if (level == Level.ASK && target != null && "${tool.name}|$target" in s.preApproved) level = Level.AUTO
         // Safety net: after 40 unattended sends in a day, ask again.
@@ -599,6 +670,17 @@ object Agent {
         if (level == Level.OFF) {
             val r = lock.withLock { fail("\"${tool.name}\" is turned off in Control → Permissions. Tell the user.", CallStatus.DENIED).also { touch(s) } }
             return r
+        }
+        // A run that started by itself from an incoming message or call: sending is a privilege, tightly held.
+        if (s.unattended && tool.group == "comms" && tool.sideEffect) {
+            val sentAlready = lock.withLock { s.calls.values.any { it.callId != call.id && it.status == CallStatus.DONE && it.sent } }
+            val no = when {
+                !Settings.autoReplies -> "Automatic replies are turned off (Skills → Automatic replies), so nothing was sent. Use notify to tell the user what arrived instead."
+                sentAlready -> "One answer was already sent in this run. An automatic run sends one message, to the person who wrote, and stops."
+                target != null && target.contains("group chat") -> "That is a group chat. Seyal never sends to a group by itself. Use notify to tell the user instead."
+                else -> null
+            }
+            if (no != null) return lock.withLock { fail(no, CallStatus.DENIED).also { touch(s) } }
         }
         pauseGate.await()
         if (level == Level.ASK) {
@@ -668,7 +750,17 @@ object Agent {
                     // A screen action that didn't work still hands the AI the screen (not an error for it), but shows as failed.
                     if (r.output.optBoolean("ok", true)) { state.status = CallStatus.DONE; state.line = r.line; state.error = null }
                     else { state.status = CallStatus.FAILED; state.error = r.output.optString("error").ifBlank { r.line }; state.line = null }
-                    if (tool.sideEffect && tool.group == "comms") Settings.autoSendToday = Settings.autoSendToday + 1
+                    if (tool.sideEffect && tool.group == "comms") {
+                        Settings.autoSendToday = Settings.autoSendToday + 1
+                        if (state.status == CallStatus.DONE) {
+                            state.sent = true
+                            // Nobody was watching: say at once what went out and to whom, so a wrong one is caught on the first.
+                            if (s.unattended) {
+                                Skills.log("\"${s.title}\" sent by itself: ${r.line.take(80)}")
+                                runCatching { Notify.line(app, "Seyal answered by itself (${s.title}): ${r.line.take(90)}. Turn this off in Skills.", s.id) }
+                            }
+                        }
+                    }
                     Part.Result(call.id, call.name, cap(r.output), false, r.image)
                 }
                 is ToolResult.Failed -> {

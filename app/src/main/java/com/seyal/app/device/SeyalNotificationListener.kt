@@ -56,7 +56,7 @@ class SeyalNotificationListener : NotificationListenerService() {
             if (seen.size > 120) seen.keys.take(seen.size - 120).forEach { seen.remove(it) }
         }
         val label = ScreenDriver.appLabel(this, sbn.packageName)
-        Skills.onNotification(label, sbn.packageName, title, mask("$title $text").removePrefix("$title "))
+        Skills.onNotification(label, sbn.packageName, title, mask("$title $text").removePrefix("$title "), isGroup(sbn), sbn.key)
 
         if (sbn.packageName == "com.google.android.gm") {
             val all = "$title $text".lowercase()
@@ -76,6 +76,24 @@ class SeyalNotificationListener : NotificationListenerService() {
             val big = x.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim()
             val text = big?.takeIf { it.isNotBlank() } ?: x.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim() ?: ""
             return title to text
+        }
+
+        /** Apps whose notifications are chats (their titles follow the "Group: Sender" habit). */
+        private val chatApps = listOf("whatsapp", "telegram", "messaging", "mms", "instagram", "signal", "messenger", "orca", "snapchat", "discord", "slack", "teams", "imo", "viber", "line.android", "truecaller")
+
+        /**
+         * Whether a notification comes from a group chat. Android's own flag first; then the group's name
+         * the app attached; then WhatsApp's chat id (groups end in @g.us); then the way the title is written.
+         */
+        internal fun isGroup(sbn: StatusBarNotification): Boolean {
+            val n = sbn.notification ?: return false
+            val x = n.extras ?: Bundle()
+            if (x.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION)) return true
+            if (!x.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE).isNullOrBlank()) return true
+            if (Build.VERSION.SDK_INT >= 26 && n.shortcutId?.contains("@g.us") == true) return true
+            if (sbn.tag?.contains("@g.us") == true) return true
+            val chat = n.category == Notification.CATEGORY_MESSAGE || chatApps.any { sbn.packageName.contains(it, true) }
+            return chat && com.seyal.app.data.Trigger.looksLikeGroup(textOf(n).first)
         }
 
         private fun replyAction(n: Notification): Notification.Action? =
@@ -124,14 +142,21 @@ class SeyalNotificationListener : NotificationListenerService() {
          * The notification a reply to [match] should go to: a title (sender or chat name) that equals it,
          * else one that contains it, else one whose message contains it. Several different chats → an error listing them.
          */
-        private fun target(match: String, app: String): StatusBarNotification {
+        private fun target(match: String, app: String, key: String? = null, noGroups: Boolean = false): StatusBarNotification {
             val s = instance ?: throw IllegalStateException("Notification access is off. Control → Notification access → allow Seyal.")
+            // An automatic reply answers the very message that started it, nothing else.
+            if (key != null) {
+                val sbn = active().firstOrNull { it.key == key && it.notification?.let { n -> replyAction(n) } != null }
+                    ?: throw IllegalStateException("That message's notification is gone, so it can't be answered from here.")
+                if (isGroup(sbn)) throw IllegalStateException("That message is in a group chat. Seyal does not answer in groups by itself.")
+                return sbn
+            }
             val m = match.trim()
             if (m.isBlank()) throw IllegalStateException("Say who to reply to.")
             val replyable = active().sortedByDescending { it.postTime }.filter { sbn ->
                 val n = sbn.notification ?: return@filter false
                 val label = ScreenDriver.appLabel(s, sbn.packageName)
-                replyAction(n) != null && (app.isBlank() || label.contains(app, true) || sbn.packageName.contains(app, true))
+                replyAction(n) != null && (app.isBlank() || label.contains(app, true) || sbn.packageName.contains(app, true)) && !(noGroups && isGroup(sbn))
             }
             fun titleOf(sbn: StatusBarNotification) = textOf(sbn.notification).first
             val exact = replyable.filter { titleOf(it).equals(m, true) }
@@ -148,14 +173,13 @@ class SeyalNotificationListener : NotificationListenerService() {
         fun resolve(match: String, app: String): String? = runCatching {
             val s = instance ?: return null
             val sbn = target(match, app)
-            val group = sbn.notification.extras?.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION) == true
-            "${textOf(sbn.notification).first}${if (group) " (group)" else ""} on ${ScreenDriver.appLabel(s, sbn.packageName)}"
+            "${textOf(sbn.notification).first}${if (isGroup(sbn)) " (GROUP chat: everyone in it will see this)" else ""} on ${ScreenDriver.appLabel(s, sbn.packageName)}"
         }.getOrNull()
 
         /** Replies from the notification itself (WhatsApp, Messages, Telegram… all support this). Returns who it went to. */
-        fun reply(match: String, app: String, text: String): String {
+        fun reply(match: String, app: String, text: String, key: String? = null, noGroups: Boolean = false): String {
             val s = instance ?: throw IllegalStateException("Notification access is off. Control → Notification access → allow Seyal.")
-            val sbn = target(match, app)
+            val sbn = target(match, app, key, noGroups)
             val action = replyAction(sbn.notification)!!
             val inputs = action.remoteInputs!!
             val results = Bundle()

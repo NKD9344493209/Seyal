@@ -57,6 +57,22 @@ fun SkillsScreen(goTo: (Tab) -> Unit) {
             SmallButton("New") { creating = true }
         }
         Text("Things Seyal does on its own: on a schedule, when an app notifies you, or when you say so. Ask in chat (\"every morning at 8…\") or tap New.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+        if (com.seyal.app.BuildConfig.FLAVOR == "full" && !showGallery && !showLog) {
+            // Answering people by itself is the one thing that can embarrass the user: it has its own switch, off by default.
+            var auto by remember { mutableStateOf(com.seyal.app.data.Settings.autoReplies) }
+            val waiting = skills.count { it.enabled && it.trigger?.type == "notification" && Skills.sendsOut(it) }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Automatic replies", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (auto) "On: skills may answer a person's message by themselves. Never in group chats, one answer per chat every 10 minutes, and you are told each time."
+                        else "Off: no skill sends a message by itself when someone messages or calls you." + (if (waiting > 0) " $waiting skill${if (waiting == 1) "" else "s"} wait${if (waiting == 1) "s" else ""} for this." else ""),
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = auto, onCheckedChange = { auto = it; com.seyal.app.data.Settings.autoReplies = it; Skills.log(if (it) "Automatic replies turned ON" else "Automatic replies turned OFF") })
+            }
+        }
         if (showGallery) {
             // Skills that work out of the box: one tap adds one (edit the time or words afterwards).
             LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

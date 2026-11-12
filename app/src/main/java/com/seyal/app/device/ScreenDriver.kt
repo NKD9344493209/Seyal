@@ -454,11 +454,23 @@ object ScreenDriver {
         if (isPayment(node)) return@withLock blocked(label)
         if (!node.isEnabled) return@withLock JSONObject().put("ok", false).put("error", "\"$label\" is disabled right now.")
         val target = if (long) node else (clickableUp(node) ?: node)
+        val before = lastListing; val beforePkg = lastPkg
+        val (cx, cy) = center(node)
+        var byGesture = false
         var ok = runCatching { target.performAction(if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
-        if (!ok) { val (x, y) = center(node); ok = gestureTap(x, y, if (long) 700 else 60) }
+        if (!ok) { ok = gestureTap(cx, cy, if (long) 700 else 60); byGesture = true }
         val o = JSONObject().put("ok", ok).put("tapped", label).also { if (!ok) it.put("error", "The tap did not register") }
         if (refound && ok) o.put("note", "The screen had changed since you looked; found \"$label\" again and tapped it.")
-        if (returnScreen) withScreen(o) else o
+        if (!returnScreen) return@withLock o
+        val r = withScreen(o)
+        // Some apps (many shopping and food apps) say "clicked" and then do nothing. When not one thing on the
+        // screen moved, press the same spot the way a finger would, once. Switches are left alone: a second press would undo the first.
+        val nothingMoved = ok && !byGesture && !long && !node.isCheckable && before.isNotBlank() && before == lastListing && beforePkg == lastPkg && TapRules.safeToPressAgain(label)
+        if (nothingMoved && cx > 0 && cy > 0 && gestureTap(cx, cy, 60)) {
+            o.remove("note"); o.remove("screen")
+            return@withLock withScreen(o.put("pressed", "the app ignored the first tap, so the spot was pressed directly"), waitMs = 500)
+        }
+        r
     }
 
     /** Taps a point on screen (for things with no element: a map, a seat, a canvas). Same safety rules as tap. */
@@ -948,5 +960,19 @@ object ScreenDriver {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         if (!runCatching { s.startActivity(intent); true }.getOrDefault(false)) return false
         return waitForPackage(pkg, 4000)
+    }
+}
+
+/** Rules about taps that need no phone to check. */
+object TapRules {
+    /**
+     * Whether pressing [label] a second time is harmless when the first press changed nothing on screen.
+     * Named things that lead somewhere (a dish, a row, "Search", "View cart") are; counters, players and
+     * unnamed icons are not: a second press there would add one more or undo the first.
+     */
+    fun safeToPressAgain(label: String): Boolean {
+        val l = label.trim().lowercase()
+        if (l.length < 3 || l.startsWith("#") || l == "(unlabeled)") return false
+        return !Regex("^(like|unlike|dislike|play|pause|next|previous|prev|mute|unmute|rewind|forward|skip.*|follow|subscribe|send|post|share|call|delete|\\d+)\\b").containsMatchIn(l)
     }
 }

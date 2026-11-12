@@ -162,6 +162,14 @@ object Settings {
         get() = plain.getBoolean("skip_ads", true)
         set(v) = plain.edit().putBoolean("skip_ads", v).apply()
 
+    /**
+     * Whether skills may send messages by themselves when a message or call comes in ("when Amma asks where
+     * I am, reply…"). Off until the user turns it on: a wrong automatic reply goes to real people.
+     */
+    var autoReplies: Boolean
+        get() = plain.getBoolean("auto_replies", false)
+        set(v) = plain.edit().putBoolean("auto_replies", v).apply()
+
     /** The user hid the setup card. */
     var setupHidden: Boolean
         get() = plain.getBoolean("setup_hidden", false)

@@ -38,7 +38,12 @@ object Lessons {
         runCatching { f.parentFile?.mkdirs(); f.writeText(JSONArray().apply { list.forEach { put(it.toJson()) } }.toString()) }
     }
 
-    private fun key(app: String) = app.trim().lowercase().removeSuffix(" app")
+    /** One name per app, however its icon is labelled ("Swiggy Food & Grocery" → "swiggy", "PVR INOX" → "pvr inox"). */
+    private fun key(app: String): String {
+        val k = app.trim().lowercase().removeSuffix(" app")
+        return builtInNames.firstOrNull { k == it || k.startsWith("$it ") || k.startsWith("$it:") || k.startsWith("$it-") } ?: k
+    }
+    private val builtInNames = listOf("youtube", "swiggy", "zomato", "bookmyshow", "district", "redbus", "google meet", "chrome", "whatsapp", "google maps")
     private fun norm(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
 
     /** Whether two notes say much the same (most of the shorter one's words are in the longer one). */
@@ -74,17 +79,24 @@ object Lessons {
             "A channel's videos: open_url https://www.youtube.com/@HANDLE/videos; the chips at the top sort them (Latest, Popular, Oldest). Oldest video = tap Oldest, then the first video.",
             "Ads are skipped by Seyal itself; just wait a few seconds.",
         ),
+        "district" to listOf(
+            "District (by Zomato) books movies too: Movies tab → search the film → pick the theatre and time → choose how many → seats → stop at Pay. Check the film's name and language on its page before picking a show.",
+        ),
         "swiggy" to listOf(
+            "After the location is set the home screen can take a few seconds to draw and its list is long: screen_wait for \"Search\", then go on. If taps seem to do nothing, take a screenshot and use screen_tap_at; if it still does not move, open_app Swiggy again (it keeps the location).",
             "To find a dish: tap the search bar, type the dish, then tap the matching suggestion (Dish or a restaurant) instead of pressing Enter. \"No results\" usually means the delivery location at the top is wrong.",
             "On a restaurant page tap ADD beside the item; if a sheet with choices opens, pick them and tap Add Item. Quantity is changed with + and − on the item. Then View Cart at the bottom. Stop at Proceed to Pay.",
         ),
         "zomato" to listOf(
             "Search from the bar at the top, tap the suggestion for the dish or restaurant. ADD beside the item, choose options in the sheet, then the cart bar at the bottom. Stop before Place Order / payment.",
+            "Zomato asks for the delivery location first: \"Use current location\" (allow location while using the app), then confirm the address shown. Filters under the search results sort by rating and price.",
         ),
         "bookmyshow" to listOf(
             "Search the movie by name and open its page, check the title, then Book tickets. Pick the date at the top; theatres are listed with their show times: find the theatre the user named and tap the time they want.",
             "A \"How many seats?\" sheet opens before the seat map: tap the number the user asked for (it defaults to 2, never leave a wrong number), then Select Seats.",
-            "The seat map is a picture: take ONE screenshot. Free seats are white or outlined, sold ones are grey. Tap the seats, check the bottom button shows the right count and price (Pay ₹…), and stop there.",
+            "If the film runs in several languages or formats (Tamil / Hindi / English, 2D / 3D), a sheet asks which: pick what the user said. If they did not say, ask them; never pick one yourself.",
+            "The seat map is a picture: take ONE screenshot. Free seats are white or outlined, sold ones are grey; rows have a letter on the left, numbers run along the row; the price classes are labelled above each block. Seats for people going together must be side by side in ONE row: find a row in the user's class with enough free seats in a run, away from the first two rows, as near the middle as you can, and tap those neighbours.",
+            "After tapping, the bar at the bottom shows the selected seats and the price (e.g. \"A5, A6 · Pay ₹380\"): read it, call seats_check with those labels, and fix the selection if they are not together or the count is wrong. No row has enough seats together in budget → ask the user (say what is free) before taking separate seats. Then stop at Pay.",
         ),
         "redbus" to listOf(
             "Search link: https://www.redbus.in/bus-tickets/FROM-to-TO?fromCityName=From&toCityName=To&onward=DD-Mon-YYYY (e.g. coimbatore-to-bangalore, onward=14-Nov-2026). There is no link for one bus: share the search link with the bus name, time and price.",
@@ -132,7 +144,7 @@ object Lessons {
             val st = s.calls[c.id]
             "- ${Prompts.friendly(c)} [${st?.status?.name?.lowercase() ?: "?"}]" + (st?.error?.let { " (${it.take(90)})" } ?: "")
         }
-        val ask = s.messages.lastOrNull { it.role == "user" }?.text?.take(300).orEmpty()
+        val ask = Agent.lastSaid(s).take(300)
         val out = runCatching {
             Llm.complete(
                 "You help a phone assistant get faster. From the log of a task it just finished in the app \"$appLabel\", write at most 2 short notes that would make the SAME KIND of task quicker next time in this app: where the right button is, which step to skip, what did not work and what did. " +

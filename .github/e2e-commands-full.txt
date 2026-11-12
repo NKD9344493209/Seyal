@@ -1,4 +1,4 @@
-# Full edition: screen control and notification access are on. "> " = follow-up in the same conversation. "!post Title|Text" = a message notification arrives.
+# Full edition: screen control and notification access are on. "> " = follow-up in the same conversation. "!post Title|Text" = a message notification arrives. "!gpost Group|Sender:Text" = the same in a group chat (nothing may run).
 Torch on
 What is the weather in Coimbatore today?
 > And tomorrow?
@@ -11,6 +11,8 @@ How much storage is used on this phone, and which folders and apps take the most
 Find the video called Seyal Test Clip on my phone and play it
 Whenever any app shows a message from Amma asking where are you, tell me my current location
 !post Amma|Where are you?
+!gpost Family|Amma:Where are you?
+List the videos on this phone and send the list to priya@example.com as a PPT
 When the battery goes below 20 percent after 9 pm, set the brightness to 10
 Tomorrow at 8 am send a WhatsApp to my dad saying good morning
 Make a meeting link for Priya tomorrow 4 PM, email it to her and remind me before it starts

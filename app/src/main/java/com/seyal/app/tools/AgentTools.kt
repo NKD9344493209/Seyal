@@ -59,7 +59,9 @@ object AgentTools {
                     "{\"type\":\"event\",\"event\":\"E\"} with E = charging | unplugged | boot | app_opened:YouTube | wifi_connected[:Name] | wifi_disconnected[:Name] | bluetooth_connected[:Device] | bluetooth_disconnected[:Device] | headphones_in | headphones_out | battery_below:20 | battery_above:90 | call_from[:Name] | arrive:Place | leave:Place. " +
                     "arrive/leave: add \"place\":\"an address or place name\" (or \"here\" for where the phone is now) and optional \"radius\" in metres. " +
                     "Any trigger may add \"only\": {\"after\":\"HH:mm\",\"before\":\"HH:mm\",\"days\":[1-7],\"battery_below\":n,\"battery_above\":n,\"charging\":true|false,\"wifi\":\"Name\" (\"*\" any Wi-Fi, \"-\" not on Wi-Fi)} for conditions like 'only on weekdays', 'only after 9 PM', 'only at home (home Wi-Fi)'. " +
-                    "Message triggers: from = the person's name exactly as saved in contacts (contacts_search first: 'mom' may be 'Amma'); contains = the words with a few other ways of saying them separated by |; empty = any message from them. A skill started by a message may reply to that sender without asking. " +
+                    "Message triggers: from = the person's name exactly as saved in contacts (contacts_search first: 'mom' may be 'Amma'); contains = the words with a few other ways of saying them separated by |; empty = any message from them. " +
+                    "A skill that replies MUST have from (who it answers): never leave it empty unless the user clearly said 'anyone' / 'everyone'. It answers only that person, only in their own chat, one message per run; the user is asked once to allow it. " +
+                    "Group chats are ignored unless \"groups\":true (only when the user named a group), and Seyal never sends into a group by itself: there it can only tell the user (notify / say). " +
                     "Examples: 'every morning at 8 give me AI news' → goal + daily time trigger. " +
                     "'When Amma messages on WhatsApp reply I'm in class' → notification trigger + one step notification_reply {match:'{{sender}}', app:'WhatsApp', text:\"I'm in class\"}. " +
                     "'When mom asks where I am, send my location' → notification trigger {from Amma, contains 'where are you|where r u|enga irukka'} + goal 'Get my location with location, then notification_reply to the sender with the place and map_link'. " +
@@ -83,8 +85,36 @@ object AgentTools {
                     }
                 }
                 var trigger = a.optString("trigger_json").takeIf { it.isNotBlank() }?.let { runCatching { Trigger.fromJson(JSONObject(it)) }.getOrNull() }
-                // A skill that will send something by itself: the user confirms the exact message once, now.
-                val sends = steps.filter { com.seyal.app.agent.Toolbox.get(it.name)?.group == "comms" && !it.args.toString().contains("{{sender}}") }
+                // A message trigger tied to an app that is not on this phone would never fire: listen to every app instead.
+                if (trigger != null && trigger.type == "notification" && trigger.app.isNotBlank()) {
+                    val labels = runCatching { com.seyal.app.agent.Preflight.appLabels() }.getOrDefault(emptyList())
+                    val wanted = trigger.app
+                    if (labels.isNotEmpty() && labels.none { it.contains(wanted, true) }) trigger = Trigger.fromJson(trigger.toJson().put("app", ""))
+                }
+                // A skill that answers people by itself when they message or call: the user agrees once, knowing exactly who gets answered.
+                val isSend = { n: String -> com.seyal.app.agent.Toolbox.get(n)?.let { it.group == "comms" && it.sideEffect } == true }
+                val answering = trigger != null && (trigger.type == "notification" || (trigger.type == "event" && trigger.event.startsWith("call_from"))) &&
+                    com.seyal.app.agent.AutoGuard.sends(a.optString("goal"), steps.map { it.name }, isSend)
+                if (answering && trigger != null) {
+                    // Never into a group by itself, whatever was asked.
+                    if (trigger.groups) trigger = Trigger.fromJson(trigger.toJson().put("groups", false))
+                    val tr = trigger!!
+                    val who = when {
+                        tr.type == "event" -> tr.event.substringAfter(':', "").ifBlank { "ANYONE who calls you" }
+                        tr.from.isNotBlank() -> tr.from.replace("|", " or ")
+                        else -> "ANYONE who messages you" + (if (tr.app.isNotBlank()) " on ${tr.app}" else "")
+                    }
+                    val what = steps.firstOrNull { isSend(it.name) }?.args?.optString("text")?.takeIf { it.isNotBlank() }?.let { " with: \"${it.take(120)}\"" } ?: ""
+                    val words = if (tr.type == "notification" && tr.contains.isNotBlank()) " when the message says \"${tr.contains.split('|').first()}\"" else ""
+                    val answer = ctx.askUser(
+                        "Seyal will answer $who BY ITSELF$words$what.\n• Only in their own chat, never in a group chat\n• One answer per chat, then quiet for ${if (tr.contains.isNotBlank()) "10 minutes" else "an hour"}\n• You get a notification each time\nTurn this on?",
+                        listOf("Yes, turn it on", "No"),
+                    )
+                    if (!Regex("^(y|ok|sure|sari|aam|turn|the first|first|go ahead|do it|on\\b)", RegexOption.IGNORE_CASE).containsMatchIn(answer.trim())) return@Tool ToolResult.Failed("The user did not allow the automatic reply. Nothing was saved. Ask what they want changed (who it should answer, or what it should say).")
+                    com.seyal.app.data.Settings.autoReplies = true
+                }
+                // A skill that will send something by itself at a set time: the user confirms the exact message once, now.
+                val sends = if (answering) emptyList() else steps.filter { com.seyal.app.agent.Toolbox.get(it.name)?.group == "comms" && !it.args.toString().contains("{{sender}}") }
                 if (sends.isNotEmpty()) {
                     val what = sends.joinToString("\n") { st -> "• " + (runCatching { com.seyal.app.agent.Toolbox.get(st.name)!!.preview(st.args) }.getOrNull()?.ifBlank { null } ?: com.seyal.app.agent.Prompts.friendly(st)) }
                     val answer = ctx.askUser("Schedule this to be sent by itself (${trigger?.describe() ?: "when you run the skill"})?\n$what", listOf("Yes, schedule it", "No"))
@@ -128,6 +158,22 @@ object AgentTools {
             ) { a, _ ->
                 if (com.seyal.app.agent.Lessons.add(a.optString("app"), a.optString("lesson"))) ToolResult.ok("Noted for ${a.optString("app")}")
                 else ToolResult.Failed("Not saved: give an app name and a one-line method (no numbers or personal details).")
+            },
+
+            Tool(
+                "seats_check", "agent",
+                "After selecting seats (movie, bus, train) and before the payment step: give the seat labels the screen shows as selected and how many tickets the user wants. Tells you whether they are next to each other in one row and the count is right, and what to do if not.",
+                schema { strList("seats", "The selected seats as shown, e.g. [\"A5\", \"A6\"]", required = true); int("wanted", "How many tickets the user asked for", required = true); bool("user_agreed_apart", "true only if the user said separate seats are fine") },
+            ) { a, _ ->
+                val raw = a.optJSONArray("seats")?.let { arr -> (0 until arr.length()).map { arr.optString(it) } } ?: emptyList()
+                val labels = raw.flatMap { com.seyal.app.agent.Seats.split(it) }
+                val v = com.seyal.app.agent.Seats.check(labels, a.optInt("wanted"))
+                if (!v.ok) return@Tool ToolResult.Failed(v.message)
+                val fine = v.together || a.optBoolean("user_agreed_apart")
+                ToolResult.Done(
+                    JSONObject().put("ok", true).put("together", v.together).put("fine", fine).put("result", if (v.together || !fine) v.message else "Separate seats, as the user agreed: ${labels.joinToString(", ")}."),
+                    if (v.together) "Seats ${labels.joinToString(", ")} are together" else if (fine) "Separate seats (you agreed): ${labels.joinToString(", ")}" else "Seats ${labels.joinToString(", ")} are not together",
+                )
             },
 
             Tool("skill_run", "agent", "Run a saved skill now by name.", schema { str("name", "Skill name", required = true) }) { a, _ ->

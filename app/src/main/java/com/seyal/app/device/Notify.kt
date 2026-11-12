@@ -53,6 +53,24 @@ object Notify {
         NotificationManagerCompat.from(ctx).notify((sessionId ?: text).hashCode(), n)
     }
 
+    /** "Tap to run it now": for a skill that could not run at its time (the phone was locked). */
+    fun runSkill(ctx: Context, skillId: String, title: String, text: String) {
+        if (!allowed(ctx)) return
+        val intent = Intent(ctx, MainActivity::class.java).setAction("com.seyal.app.RUN_SKILL").putExtra("skill", skillId)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pi = PendingIntent.getActivity(ctx, "run$skillId".hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(60))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pi)
+            .addAction(0, "Run now", pi)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify("run$skillId".hashCode(), n)
+    }
+
     fun approval(ctx: Context, s: Session, callId: String, title: String, preview: String) {
         if (!allowed(ctx)) return
         fun action(act: String): PendingIntent = PendingIntent.getBroadcast(

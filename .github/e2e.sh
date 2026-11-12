@@ -99,14 +99,25 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   case "$cmd" in \#*) continue ;; esac
   n=$((n + 1)); tag=$(printf "%02d" "$n")
   # "!post Title|Text": a message notification arrives (from the Shell app); a skill that watches for it should run by itself.
-  case "$cmd" in "!post "*)
-    spec="${cmd#!post }"; ptitle="${spec%%|*}"; ptext="${spec#*|}"
-    echo "== [$tag] notification from $ptitle: $ptext"
-    pull; before=$(python3 "$HERE/e2e_state.py" count index.json)
-    start=$(date +%s)
-    adb shell "cmd notification post -S bigtext -t '$ptitle' seyaltrigger$n '$ptext'" >/dev/null 2>&1
+  # "!gpost Group|Sender:Text": the same in a GROUP chat. Nothing may run: skills answer people, not groups.
+  case "$cmd" in "!post "*|"!gpost "*)
+    tries=50
+    case "$cmd" in
+      "!gpost "*)
+        spec="${cmd#!gpost }"; ptitle="${spec%%|*}"; ptext="${spec#*|}"; tries=12
+        echo "== [$tag] GROUP notification in $ptitle: $ptext (nothing should run)"
+        pull; before=$(python3 "$HERE/e2e_state.py" count index.json)
+        start=$(date +%s)
+        adb shell "cmd notification post -S messaging --conversation '$ptitle' --message '$ptext' -t '$ptitle' seyalgroup$n '$ptext'" >/dev/null 2>&1 ;;
+      *)
+        spec="${cmd#!post }"; ptitle="${spec%%|*}"; ptext="${spec#*|}"
+        echo "== [$tag] notification from $ptitle: $ptext"
+        pull; before=$(python3 "$HERE/e2e_state.py" count index.json)
+        start=$(date +%s)
+        adb shell "cmd notification post -S bigtext -t '$ptitle' seyaltrigger$n '$ptext'" >/dev/null 2>&1 ;;
+    esac
     state="no skill ran"
-    for i in $(seq 1 50); do
+    for i in $(seq 1 $tries); do
       sleep 3; pull
       if [ "$(python3 "$HERE/e2e_state.py" count index.json)" -gt "$before" ]; then
         state=$(python3 "$HERE/e2e_state.py" newest index.json sessions)

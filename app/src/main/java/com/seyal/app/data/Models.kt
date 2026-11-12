@@ -87,6 +87,8 @@ class CallState(val callId: String) {
     var options: List<String> = emptyList()
     /** Child session ids for delegate(). */
     var children: List<String> = emptyList()
+    /** This call sent a message to someone (kept for the run, not saved). */
+    @Volatile var sent: Boolean = false
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("call_id", callId); put("status", status.name)
@@ -136,6 +138,12 @@ class Session(
     @Volatile var workApp: String? = null
     /** A skill started by a message from this person may reply to them without asking (the user set it up). Not saved. */
     @Volatile var trustedReplyTo: String? = null
+    /** The notification that started this run: a reply goes to exactly that chat, never to one that merely has a similar name. Not saved. */
+    @Volatile var replyKey: String? = null
+    /** Started by an incoming message or call, with nobody watching. Sending anything needs "Automatic replies" on. Not saved. */
+    @Volatile var unattended: Boolean = false
+    /** Self-checks already made before saying "done" in this run (each is made once). Not saved. */
+    val checked: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
     /** Follow-ups typed while a tool round is in flight; appended once the round's results are in (keeps the transcript valid). Not saved. */
     val queued: MutableList<Msg> = mutableListOf()
 
@@ -306,9 +314,12 @@ class Trigger(
     val lat: Double = 0.0,
     val lon: Double = 0.0,
     val radius: Int = 200,
+    /** For type "notification": also react to messages in group chats. Off unless the user named a group. */
+    val groups: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("type", type); put("time", time); put("repeat", repeat)
+        if (groups) put("groups", true)
         day?.let { put("day", it) }
         if (days.isNotEmpty()) put("days", JSONArray(days))
         if (app.isNotBlank()) put("app", app)
@@ -325,9 +336,11 @@ class Trigger(
      * fits inside a group title ("Family: Amma") or a group message ("Amma: where are you").
      * Returns null when it fits, else why not (for the trigger log).
      */
-    fun misses(appLabel: String, pkg: String, title: String, text: String): String? {
+    fun misses(appLabel: String, pkg: String, title: String, text: String, group: Boolean = false): String? {
         if (type != "notification") return "not a notification trigger"
         if (app.isNotBlank() && !appLabel.contains(app, true) && !pkg.contains(app, true)) return "other app"
+        // A group chat is many people: a skill made for a person stays out of it.
+        if (group && !groups) return "a group chat (skills answer people, not groups)"
         val who = norm(title + " " + text.substringBefore(':', ""))
         if (from.isNotBlank() && from.split('|').flatMap { relatives(norm(it)) }.none { it.isNotBlank() && Regex("(^| )${Regex.escape(it)}( |$)").containsMatchIn(who) }) return "from someone else"
         val body = norm("$title $text")
@@ -347,7 +360,7 @@ class Trigger(
             else -> "Once · ${day ?: "today"} $time"
         }
         "notification" -> if (from.isBlank()) "When ${app.ifBlank { "an app" }} notifies" + (if (contains.isNotBlank()) " about \"${contains.split('|').first()}\"" else "")
-            else "When ${from.replace("|", " or ")} messages" + (if (app.isNotBlank()) " on $app" else "") + (if (contains.isNotBlank()) " saying \"${contains.split('|').first()}\"" else "")
+            else "When ${from.replace("|", " or ")} messages" + (if (app.isNotBlank()) " on $app" else "") + (if (contains.isNotBlank()) " saying \"${contains.split('|').first()}\"" else "") + (if (groups) " (groups too)" else "")
         "event" -> when {
             event == "charging" -> "When charging starts"
             event == "unplugged" -> "When unplugged"
@@ -387,7 +400,19 @@ class Trigger(
                 app = o.optString("app"), contains = o.optString("contains"), event = o.optString("event"), from = o.optString("from"),
                 only = Only.fromJson(o.optJSONObject("only")),
                 lat = o.optDouble("lat", 0.0), lon = o.optDouble("lon", 0.0), radius = o.optInt("radius", 200).coerceIn(50, 5000),
+                groups = o.optBoolean("groups", false),
             )
+        }
+
+        /**
+         * Whether a notification title is a group chat's, going by how chat apps write them:
+         * "Class 3B: Priya", "Priya @ Class 3B", "Family (3 messages): Amma". Used on top of what
+         * Android itself says about the notification, because not every app says.
+         */
+        fun looksLikeGroup(title: String): Boolean {
+            val t = title.trim()
+            if (t.isBlank()) return false
+            return Regex("\\S: \\S").containsMatchIn(t) || t.contains(" @ ") || Regex("\\(\\d+ (new )?messages?\\): ").containsMatchIn(t)
         }
 
         /** The kinds of event that carry a detail after a colon ("wifi_connected:Home"). */

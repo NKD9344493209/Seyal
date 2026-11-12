@@ -41,7 +41,7 @@ object DocTools {
         listOf(
             Tool(
                 "doc_create", "phone",
-                "Create a file on the phone: kind pptx (slide deck), docx (Word document), pdf, or txt. You write the content: a title, and sections (for a deck each section is one slide: a short heading and 3-6 short bullets; " +
+                "Make a PPT / PowerPoint / presentation / slides, a Word document, a PDF or a text file, on the phone itself: kind pptx (slide deck), docx (Word document), pdf, or txt. This is the tool whenever the user asks for a PPT, slides, a document, a report or a PDF, about anything (a topic, a list you gathered, files on the phone). You write the content: a title, and sections (for a deck each section is one slide: a short heading and 3-6 short bullets; " +
                     "for a document each section is a heading with text and/or bullets). A good deck has 6-10 slides: what/why, the main points one per slide, an example or numbers, and a closing slide with next steps. " +
                     "Research first (web_search) when the topic needs facts. Saved in Documents/Seyal. Output: uri, name. Then file_open shows it, send_file sends it.",
                 schema {
