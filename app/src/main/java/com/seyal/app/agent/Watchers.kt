@@ -93,7 +93,7 @@ object Watchers {
     }
 
     /** A page that came back nearly empty was drawn by scripts or wants a login: it can't be watched this way. */
-    fun readable(pageText: String): Boolean = squash(pageText).length >= 200
+    fun readable(pageText: String): Boolean = squash(pageText).length >= 40
 
     // ---- the list
 

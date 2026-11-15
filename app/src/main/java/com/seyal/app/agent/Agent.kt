@@ -87,6 +87,41 @@ object Agent {
         s.messages.filter { fromUser(it) }.map { it.text.removePrefix(MIDTASK) } +
             s.messages.filter { it.role == "tool" }.flatMap { it.results }.filter { it.name == "ask_user" }.map { it.output.optString("answer") }.filter { it.isNotBlank() }
 
+    /**
+     * Runs an everyday command with no AI: looks the person up if there is one (asking which, when several
+     * match), runs the tool through the usual permission rules, and words the answer. Null = it could not
+     * be done this way; the AI takes over and sees what was tried.
+     */
+    private suspend fun runBasic(s: Session, plan: Basics.Plan, byName: Map<String, Tool>): String? {
+        if (plan.tool.isEmpty()) return plan.say
+        val tool = byName[plan.tool] ?: return null
+        val args = JSONObject(plan.args.toString())
+        if (plan.who != null) {
+            val search = byName["contacts_search"] ?: return null
+            val c = Part.Call(newId(), "contacts_search", JSONObject().put("name", plan.who))
+            val r = runSynthetic(s, c, search); s.steps++
+            val found = r.output.optJSONArray("matches")?.let { m -> (0 until m.length()).mapNotNull { m.optJSONObject(it) }.map { it.optString("name") to it.optString("phone") } }.orEmpty().filter { it.second.isNotBlank() }
+            if (found.isEmpty()) return "I couldn't find \"${plan.who}\" in your contacts. Tell me the name as it is saved, or the number."
+            var pick = Basics.pick(plan.who, found)
+            if (pick == null) {
+                // Several different people match: ask which, then carry on.
+                val ask = byName["ask_user"] ?: return null
+                val names = found.distinctBy { it.second.filter { ch -> ch.isDigit() }.takeLast(10) }.take(4)
+                val q = Part.Call(newId(), "ask_user", JSONObject().put("question", "Which ${plan.who}?").put("options", org.json.JSONArray(names.map { it.first })))
+                val a = runSynthetic(s, q, ask).output.optString("answer").trim(); s.steps++
+                pick = names.firstOrNull { it.first.equals(a, true) } ?: names.firstOrNull { a.isNotBlank() && (it.first.contains(a, true) || a.contains(it.first, true)) }
+                    ?: return "I wasn't sure who you meant, so I did nothing."
+            }
+            args.put("phone", pick.second).put("name", pick.first)
+        }
+        val call = Part.Call(newId(), plan.tool, args)
+        val r = runSynthetic(s, call, tool); s.steps++
+        val st = lock.withLock { s.calls[call.id] }
+        if (st?.status == CallStatus.DENIED) return "Okay, I didn't do it."
+        if (r.isError || !r.output.optBoolean("ok", true)) return null
+        return plan.answer?.invoke(r.output) ?: plan.say ?: st?.line?.takeIf { it.isNotBlank() } ?: "Done."
+    }
+
     /** What the user said for the request in hand only: their latest message and their answers since (never an older request's "6 tickets"). */
     internal fun requestWords(s: Session): List<String> {
         val from = s.messages.indexOfLast { fromUser(it) }
@@ -345,8 +380,9 @@ object Agent {
                 val tools = Toolbox.available().filter { allowDelegate || it.name != "delegate" }
                 val byName = tools.associateBy { it.name }
                 val decls = tools.map { it.decl() }
-                if (stepsThisRun >= maxSteps) {
-                    finish(s, SessionStatus.FAILED, "I stopped after $maxSteps steps. Tell me how to continue, or try a smaller task.")
+                // Bookings and orders are long by nature (search, pick, seats, review): give them room.
+                if (stepsThisRun >= (if (s.order != null) maxOf(maxSteps, 50) else maxSteps)) {
+                    finish(s, SessionStatus.FAILED, "I stopped after $stepsThisRun steps without finishing. Say \"continue\" and I'll carry on from where it is now.")
                     return
                 }
                 val go = lock.withLock {
@@ -373,8 +409,15 @@ object Agent {
                                 return
                             }
                         }
+                        // 1a. The everyday commands (call, message, alarm, weather, battery…): understood on the phone, no AI asked.
+                        val basic = if (quick == null) Basics.plan(said, whatsApp = runCatching { Preflight.appLabels().any { it.contains("WhatsApp", true) } }.getOrDefault(true)) else null
+                        if (basic != null) {
+                            val answer = runBasic(s, basic, byName)
+                            if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
+                            if (answer != null) { s.replayed = true; finish(s, SessionStatus.DONE, answer); return }
+                        }
                         // 1b. Asked before, done the same way: repeat the steps that worked, with no AI at all.
-                        val known = if (quick == null && Preflight.kind(said) == null) Routines.exact(said)?.takeIf { r -> r.steps.all { byName[it.name] != null } } else null
+                        val known = if (quick == null && basic == null && Preflight.kind(said) == null) Routines.exact(said)?.takeIf { r -> r.steps.all { byName[it.name] != null } } else null
                         if (known != null) {
                             report("Doing it the way that worked last time…")
                             val steps = known.steps.map { Part.Call(newId(), it.name, JSONObject(it.args.toString())) }

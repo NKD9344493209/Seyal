@@ -12,6 +12,8 @@ import com.seyal.app.agent.Checks
 import com.seyal.app.agent.Did
 import com.seyal.app.agent.Seats
 import com.seyal.app.agent.Order
+import com.seyal.app.agent.Basics
+import com.seyal.app.device.RepeatGuard
 import com.seyal.app.agent.Routines
 import com.seyal.app.agent.History
 import com.seyal.app.agent.Catcher
@@ -723,8 +725,138 @@ fun testPhase4() {
     dir.deleteRecursively()
 }
 
+fun testBasics() {
+    val now = java.time.LocalDateTime.of(2026, 11, 16, 10, 0)
+    fun plan(text: String, wa: Boolean = true) = Basics.plan(text, now, wa)
+
+    println("Everyday commands need no AI: calls")
+    T.eq("call amma", "Amma".lowercase(), plan("Call Amma")?.who)
+    T.eq("…is a call", "call", plan("Call Amma")?.tool)
+    T.eq("amma ku call pannu", "amma", plan("Amma ku call pannu")?.who)
+    T.eq("please call my dad", "dad", plan("Please call my dad")?.who)
+    T.eq("ring ram kumar", "ram kumar", plan("ring Ram Kumar")?.who)
+    T.eq("அம்மாக்கு கால் பண்ணு", "call", plan("அம்மாக்கு கால் பண்ணு")?.tool)
+    T.eq("call me a cab is not a contact", null, plan("call me a cab"))
+    T.eq("call him back is for the AI", null, plan("call him back"))
+    T.eq("call the last missed number is for the AI", null, plan("call the last missed number"))
+    T.eq("call customer care is for the AI", null, plan("call airtel customer care"))
+    T.eq("call ram and tell him… is for the AI", null, plan("call ram and tell him I am late"))
+
+    println("Everyday commands: messages")
+    val m1 = plan("Send a message to my dad saying I will be late today")
+    T.eq("message to dad: who", "dad", m1?.who)
+    T.eq("…the words, as typed", "I will be late today", m1?.args?.optString("text"))
+    T.eq("…on WhatsApp when it is installed", "send_whatsapp", m1?.tool)
+    T.eq("…by SMS when it is not", "send_sms", plan("Send a message to my dad saying I will be late today", wa = false)?.tool)
+    T.eq("sms is sms", "send_sms", plan("send an sms to Ram saying call me")?.tool)
+    val m2 = plan("Tell Amma that I reached Coimbatore")
+    T.eq("tell amma that…", "amma", m2?.who)
+    T.eq("…keeps capitals", "I reached Coimbatore", m2?.args?.optString("text"))
+    val m3 = plan("send good morning to dad on whatsapp")
+    T.eq("send X to Y on whatsapp", "Good morning", m3?.args?.optString("text"))
+    T.eq("…to dad", "dad", m3?.who)
+    val m4 = plan("dad ku I will be late nu message pannu")
+    T.eq("tanglish message", "I will be late", m4?.args?.optString("text"))
+    T.eq("a message for later is for the AI", null, plan("send a message to dad saying good morning at 8 pm"))
+    T.eq("two jobs in one are for the AI", null, plan("send a message to dad saying happy birthday and call him"))
+    T.eq("tell me a joke is not a message", null, plan("tell me that joke again"))
+    T.eq("send the file to dad is for the AI", null, plan("send the file to dad"))
+    T.eq("send it to him is for the AI", null, plan("send it to him on whatsapp"))
+    T.eq("send money is for the AI", null, plan("send 500 rs to ram"))
+    T.eq("message everyone is for the AI", null, plan("message everyone that the class is cancelled"))
+    T.eq("a message to a group is for the AI", null, plan("send a message to the class group saying hi"))
+
+    println("Everyday commands: alarms, reminders, timers")
+    T.eq("alarm for 6:30 am is tomorrow", "2026-11-17T06:30", plan("Set an alarm for 6:30 am")?.args?.optString("at"))
+    T.eq("alarm at 5 pm is today", "2026-11-16T17:00", plan("alarm at 5 pm")?.args?.optString("at"))
+    T.eq("wake me up at 5.30 am", "2026-11-17T05:30", plan("wake me up at 5.30 am")?.args?.optString("at"))
+    T.eq("alarm for 11 am tomorrow", "2026-11-17T11:00", plan("set alarm for 11 am tomorrow")?.args?.optString("at"))
+    T.eq("a bare 7 is not clear enough", null, plan("set an alarm for 7"))
+    val r1 = plan("Remind me to call the bank at 4 pm")
+    T.eq("remind me to … at 4 pm", "2026-11-16T16:00", r1?.args?.optString("at"))
+    T.eq("…what", "Call the bank", r1?.args?.optString("text"))
+    val r2 = plan("remind me in 20 minutes to drink water")
+    T.eq("remind me in 20 minutes", "2026-11-16T10:20", r2?.args?.optString("at"))
+    T.eq("…what", "Drink water", r2?.args?.optString("text"))
+    T.eq("remind me … in 2 hours", "2026-11-16T12:00", plan("remind me to take tablets in 2 hours")?.args?.optString("at"))
+    T.eq("remind me at 6 pm to …", "Pay the fee", plan("remind me at 6 pm to pay the fee")?.args?.optString("text"))
+    T.eq("timer 10 minutes", 10, plan("set a timer for 10 minutes")?.args?.optInt("minutes"))
+    T.eq("1 hour timer", 60, plan("timer for 1 hour")?.args?.optInt("minutes"))
+    T.eq("a reminder with a day is for the AI", null, plan("remind me to pay the fee on Friday"))
+
+    println("Everyday commands: phone and facts")
+    T.check("what time is it", plan("What time is it?")?.say?.contains("10:00 AM") == true)
+    T.check("today's date", plan("what is the date today")?.say?.contains("16 November 2026") == true)
+    T.eq("battery", "phone_state", plan("battery level")?.tool)
+    T.eq("…worded", "Battery is at 82%, charging.", plan("how much battery is left")?.answer?.invoke(JSONObject().put("battery_percent", 82).put("charging", true)))
+    T.eq("weather", "weather", plan("What is the weather in Coimbatore today?")?.tool)
+    T.eq("…the place", "coimbatore", plan("What is the weather in Coimbatore today?")?.args?.optString("place"))
+    T.eq("weather alone uses the home city", "", plan("weather")?.args?.optString("place"))
+    T.eq("chennai weather", "chennai", plan("Chennai weather")?.args?.optString("place"))
+    T.eq("tomorrow's weather is for the AI", null, plan("what is the weather tomorrow"))
+    T.eq("volume 40", "40", plan("set the volume to 40")?.args?.optString("value"))
+    T.eq("mute", "0", plan("mute")?.args?.optString("value"))
+    T.eq("bluetooth on", "bluetooth", plan("turn on bluetooth")?.args?.optString("name"))
+    T.eq("wifi off", "off", plan("wifi off")?.args?.optString("value"))
+    T.check("navigate", plan("Navigate to Gandhipuram bus stand")?.args?.optString("url")?.contains("destination=Gandhipuram+bus+stand") == true)
+    T.check("youtube search", plan("search lofi songs on youtube")?.args?.optString("url")?.contains("search_query=lofi+songs") == true)
+    T.check("google", plan("google best laptops under 50000")?.args?.optString("url")?.contains("q=best+laptops+under+50000") == true)
+
+    println("Everyday commands: Seyal's own lists")
+    T.eq("what deadlines do I have", "inbox_list", plan("What deadlines do I have?")?.tool)
+    T.eq("any bills due", "inbox_list", plan("any bills due")?.tool)
+    T.check("…worded from the list", plan("my deadlines")?.answer?.invoke(JSONObject().put("items", JSONArray().put(JSONObject().put("due", "tomorrow 5:00 PM").put("what", "TCS drive registration").put("link", "https://forms.gle/x"))))?.contains("TCS drive registration") == true)
+    T.check("…and when empty", plan("my deadlines")?.answer?.invoke(JSONObject().put("items", JSONArray()))?.contains("Nothing is waiting") == true)
+    T.eq("my summary for today", "daily_brief", plan("Give me my summary for today")?.tool)
+    T.eq("what's on today", "daily_brief", plan("what's on today")?.tool)
+    T.eq("what are you watching", "watch_list", plan("What are you watching for me?")?.tool)
+    T.eq("end busy mode", false, plan("End busy mode")?.args?.optBoolean("on", true))
+
+    println("Everyday commands: anything else is left to the AI")
+    for (x in listOf("Book 2 tickets for Leo", "Order a biryani", "Make a PowerPoint about solar power", "What notifications do I have right now?", "Open YouTube and play lofi", "Give me todays top AI news in 5 points",
+        "Play the oldest video from the YouTube channel @Google", "Find buses from Coimbatore to Bangalore this Friday night", "Remember that my favourite theatre is Broadway Cinemas", "Every morning at 8, give me AI news",
+        "Tomorrow at 8 am send a WhatsApp to my dad saying good morning", "Whenever Amma messages asking where are you, tell her my location", "When the battery goes below 20 percent, set the brightness to 10", "how are you", "And tomorrow?",
+        "Tell me when the page https://example.com says Book tickets", "I am in class till 4 pm, tell people who call that I will call back after 4", "tell ram to call me")) T.eq("not basic: $x", null, plan(x))
+
+    println("Which contact")
+    T.eq("one match", "Amma", Basics.pick("amma", listOf("Amma" to "+919876500004"))?.first)
+    T.eq("two entries, one number", "Appa", Basics.pick("dad", listOf("Appa" to "+91 98765 00001", "Appa Jio" to "9876500001"))?.first)
+    T.eq("the exact name among several", "Ram", Basics.pick("Ram", listOf("Ram Kumar" to "111", "Ram" to "222", "Ram Project" to "333"))?.first)
+    T.eq("several different people: ask", null, Basics.pick("Ram", listOf("Ram Kumar" to "+919876500002", "Ram Project" to "+919876500003")))
+    T.eq("nobody", null, Basics.pick("xyz", emptyList()))
+
+    println("A booking is only a booking")
+    T.eq("a watcher is not a booking", null, Preflight.kind("Tell me when the page https://example.com says Book tickets"))
+    T.eq("tell me when bookings open", null, Preflight.kind("Tell me when Leo bookings open at Broadway, I want to book tickets"))
+    T.eq("a reminder to book", null, Preflight.kind("Remind me to book train tickets tomorrow"))
+    T.eq("reading a book", null, Preflight.kind("Summarise the book Atomic Habits for me"))
+    T.eq("a good book to read", null, Preflight.kind("suggest a good book to read on the bus"))
+    T.eq("showing my orders", null, Preflight.kind("Show my Amazon orders"))
+    T.eq("checking and then booking is one", Preflight.Kind.TRAVEL, Preflight.kind("Check buses to Chennai on Friday and book the cheapest"))
+    T.eq("booking a table is not a shop order", null, Preflight.kind("Book a table for two at Annapoorna tonight"))
+    T.eq("buying a book is shopping", Preflight.Kind.SHOP, Preflight.kind("Buy the book Atomic Habits on Amazon"))
+    T.eq("a plain movie booking still is", Preflight.Kind.MOVIE, Preflight.kind("Book 2 tickets for Ramayana at Sangeetha Somanur"))
+    T.eq("a plain food order still is", Preflight.Kind.FOOD, Preflight.kind("Order a chicken biryani on Swiggy"))
+    T.eq("a plain purchase still is", Preflight.Kind.SHOP, Preflight.kind("Order a phone charger from Flipkart"))
+
+    println("No blind repeat taps")
+    val g = RepeatGuard()
+    g.tapped("A5 seat", 1000, unchanged = true)
+    T.check("the same thing right again is held back", g.blocks("A5 seat", 2500))
+    T.check("…once: the next try goes through", !g.blocks("A5 seat", 3000))
+    g.tapped("Buy tickets", 5000, unchanged = true); g.looked()
+    T.check("after a look it may be tapped again", !g.blocks("Buy tickets", 6000))
+    g.tapped("Next", 7000, unchanged = false)
+    T.check("when the screen moved, the same label is fine (Next, +)", !g.blocks("Next", 7500))
+    g.tapped("Buy tickets", 8000, unchanged = true)
+    T.check("another thing is never held back", !g.blocks("Cancel", 8500))
+    g.tapped("Buy tickets", 9000, unchanged = true)
+    T.check("after a while it is a new try", !g.blocks("Buy tickets", 30_000))
+    T.check("a small page can be watched", Watchers.readable("Example Domain. This domain is for use in documentation examples."))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -733,7 +865,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

@@ -47,10 +47,27 @@ object ScreenTools {
             },
 
             Tool(
-                "screen_tap_at", "screen", "Tap a point when there is no element to target (a seat, a map, a canvas): x,y on a 0-1000 scale of the screen, as in the screenshot (0,0 top-left, 1000,1000 bottom-right) and the @x,y of elements. $SCREEN_NOTE",
-                schema { int("x", "0-1000 from the left", required = true); int("y", "0-1000 from the top", required = true) },
+                "screen_tap_at", "screen", "Tap a point when there is no element to target (a seat, a map, a canvas): x,y on a 0-1000 scale of the screen, as in the screenshot (0,0 top-left, 1000,1000 bottom-right) and the @x,y of elements. " +
+                    "Several points at once (all the seats you want): put the others in `more`. You get a picture of the screen AFTER the taps: look at it before tapping again, because tapping a selected seat a second time unselects it.",
+                schema { int("x", "0-1000 from the left", required = true); int("y", "0-1000 from the top", required = true); strList("more", "More points to tap right after, each as \"x,y\" (e.g. [\"330,580\"])") },
                 available = screenOn, sideEffect = true,
-            ) { a, _ -> wrap(ScreenDriver.tapAt(a.optInt("x"), a.optInt("y"))) { "Tapped at ${a.optInt("x")},${a.optInt("y")}" } },
+            ) { a, _ ->
+                val points = mutableListOf(a.optInt("x") to a.optInt("y"))
+                a.optJSONArray("more")?.let { arr -> for (i in 0 until minOf(arr.length(), 9)) Regex("(\\d{1,4})\\D+(\\d{1,4})").find(arr.optString(i))?.let { points += it.groupValues[1].toInt() to it.groupValues[2].toInt() } }
+                var r = JSONObject()
+                for ((i, pt) in points.distinct().withIndex()) {
+                    if (i > 0) kotlinx.coroutines.delay(350)
+                    r = ScreenDriver.tapAt(pt.first, pt.second)
+                    if (!r.optBoolean("ok")) return@Tool wrap(r) { "" }
+                }
+                val line = "Tapped at " + points.distinct().joinToString(" and ") { "${it.first},${it.second}" }
+                // What the taps did shows in the picture, not in the element list: hand the picture back with the result.
+                val shot = runCatching { ScreenDriver.screenshot() }.getOrNull()
+                r.remove("note")
+                if (shot == null) return@Tool wrap(r.put("note", "The taps were delivered, but a picture could not be taken. Take a screenshot before tapping the same spot again (a second tap unselects).")) { line }
+                r.put("note", "The taps were delivered. The picture attached is the screen AFTER them: check it (selected seats change colour; the bar at the bottom shows what is selected) before tapping anything again. A second tap on the same spot unselects.")
+                ToolResult.Done(r, line, Part.Image(shot.mime, shot.b64))
+            },
 
             Tool(
                 "screen_long_press", "screen", "Long-press an element by id or visible text (opens context menus, selects items). $SCREEN_NOTE",

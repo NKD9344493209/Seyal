@@ -97,6 +97,9 @@ object Llm {
     private val coolWhy = ConcurrentHashMap<String, String>()
 
     private fun rest(model: String, untilMs: Long, why: String) { coolUntil[model] = untilMs; coolWhy[model] = why }
+    /** How often in a row each model was overloaded or hung, and when last. */
+    private val strikes = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val struckAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     @Volatile private var lastKey = 0
 
     /**
@@ -165,7 +168,12 @@ object Llm {
         if (Settings.provider != "gemini") return listOf(chosen)
         val rest = (geminiFallbacks + extraModels).filter { it != chosen }
         val ordered = listOf(chosen) + rest.filter { it.contains("lite") } + rest.filter { !it.contains("lite") }
-        return ordered.distinctBy { realName[it] ?: it }
+        // A model that has just been overloaded or hanging goes to the back of its group for a few minutes,
+        // so the one that is answering is asked first instead of losing seconds on every step.
+        val now = System.currentTimeMillis()
+        fun ailing(m: String) = (strikes[m] ?: 0) >= 2 && now - (struckAt[m] ?: 0L) < 5 * 60_000L
+        val (lite, heavy) = ordered.distinctBy { realName[it] ?: it }.partition { it.contains("lite") || it == chosen }
+        return lite.sortedBy { ailing(it) } + heavy.sortedBy { ailing(it) }
     }
 
     /** A new key or provider has its own limits: forget what the old one ran into. Daily rests survive restarts. */
@@ -258,7 +266,7 @@ object Llm {
                 } finally { mustCall.remove() }
                 log("$model: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
                 if (coolWhy.remove(model) == "daily") saveDailyRests()
-                coolUntil.remove(model)
+                coolUntil.remove(model); strikes.remove(model); busyTries.remove(model)
                 Settings.tokensUsed = Settings.tokensUsed + out.tokens
                 return@withContext out
             } catch (e: LlmException) {
@@ -275,8 +283,9 @@ object Llm {
                     e.quota && e.daily -> { rest(model, quotaResetAt(), "daily"); saveDailyRests() }
                     e.quota -> rest(model, end + e.retryAfterMs.coerceIn(4_000, 65_000), "minute")
                     // It hung: let another model answer for a couple of minutes.
-                    e.slow -> rest(model, end + 2 * 60_000L, "busy")
+                    e.slow -> { strikes[model] = (strikes[model] ?: 0) + 2; struckAt[model] = end; rest(model, end + 2 * 60_000L, "busy") }
                     else -> {
+                        strikes[model] = (strikes[model] ?: 0) + 1; struckAt[model] = end
                         // "Overloaded" (503) spikes usually clear in seconds: a short rest, longer each time.
                         val n = (busyTries[model] ?: 0) + 1; busyTries[model] = n
                         rest(model, end + (if (n == 1) 1500L else if (n == 2) 4000L else 60_000L), "busy")

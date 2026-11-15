@@ -1,5 +1,13 @@
 # Full edition: screen control and notification access are on. "> " = follow-up in the same conversation. "!post Title|Text" = a message notification arrives. "!gpost Group|Sender:Text" = the same in a group chat (nothing may run).
 Torch on
+What time is it?
+Battery level
+Call Amma
+Tell Amma that I reached Coimbatore
+Set an alarm for 6:30 am
+Remind me in 10 minutes to drink water
+Navigate to Gandhipuram bus stand
+Summarise the book Atomic Habits in 5 lines
 What is the weather in Coimbatore today?
 > And tomorrow?
 Order a biryani from a nearby hotel

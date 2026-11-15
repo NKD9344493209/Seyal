@@ -191,7 +191,10 @@ object ScreenDriver {
     }
 
     /** What is on screen now. Output: app, package, size, elements (one per line), scrollable. */
-    suspend fun read(maxElements: Int = 110): JSONObject = lock.withLock { settle(); describe(maxElements) }
+    suspend fun read(maxElements: Int = 110): JSONObject = lock.withLock { repeatGuard.looked(); settle(); describe(maxElements) }
+
+    /** Remembers the last tap, to stop the same thing being tapped twice in a row without a look in between. */
+    internal val repeatGuard = RepeatGuard()
 
     /** The screen after waiting [waitMs], or null when screen control is off. For tools that open apps. */
     suspend fun snapshotAfter(waitMs: Long): JSONObject? {
@@ -330,7 +333,7 @@ object ScreenDriver {
         delay(waitMs); settle()
         val screen = runCatching { describe(90) }.getOrNull() ?: return o
         if (compare && before.isNotBlank() && beforePkg == lastPkg && before == lastListing) {
-            o.put("note", "The screen has not changed (yet). If the app is loading, screen_wait for what you expect before trying again; otherwise try another way.")
+            o.put("note", "The action was delivered. The element list reads the same as before, which is normal for pictures, seat layouts, maps and web pages still loading. Do NOT repeat the same tap now (a second tap undoes a selection): screen_wait 2 seconds for what you expect, or take a screenshot to see what changed.")
         }
         return o.put("screen", screen)
     }
@@ -453,6 +456,13 @@ object ScreenDriver {
         val label = ((if (byId) labelOf(id!!) else null) ?: node.text?.toString()?.takeIf { it.isNotBlank() && !node.isEditable } ?: node.contentDescription?.toString()?.ifBlank { null } ?: hintOf(node).ifBlank { null } ?: text ?: "#$id").take(80)
         if (isPayment(node)) return@withLock blocked(label)
         if (!node.isEnabled) return@withLock JSONObject().put("ok", false).put("error", "\"$label\" is disabled right now.")
+        // The same thing tapped again right after a tap that was delivered but showed no change in the element list:
+        // on a seat, a checkbox or a web button that is an undo or a double order, not a retry. Make it look first.
+        val nowMs = System.currentTimeMillis()
+        if (!long && returnScreen && repeatGuard.blocks(label, nowMs)) {
+            return@withLock JSONObject().put("ok", false).put("error",
+                "You tapped \"$label\" a moment ago and that tap was delivered. Tapping it again now would undo it or do it twice. Look first: screen_wait 2 seconds for what you expect, or take a screenshot. If it really did nothing, tap it once more after that.")
+        }
         val target = if (long) node else (clickableUp(node) ?: node)
         val before = lastListing; val beforePkg = lastPkg
         val (cx, cy) = center(node)
@@ -463,6 +473,7 @@ object ScreenDriver {
         if (refound && ok) o.put("note", "The screen had changed since you looked; found \"$label\" again and tapped it.")
         if (!returnScreen) return@withLock o
         val r = withScreen(o)
+        repeatGuard.tapped(label, nowMs, unchanged = ok && r.optString("note").startsWith("The action was delivered"))
         // Some apps (many shopping and food apps) say "clicked" and then do nothing. When not one thing on the
         // screen moved, press the same spot the way a finger would, once. Switches are left alone: a second press would undo the first.
         val nothingMoved = ok && !byGesture && !long && !node.isCheckable && before.isNotBlank() && before == lastListing && beforePkg == lastPkg && TapRules.safeToPressAgain(label)
@@ -653,6 +664,7 @@ object ScreenDriver {
 
     /** Waits until [text] appears on screen (optionally only while [pkg] is in front), up to [timeoutMs]. */
     suspend fun waitFor(text: String, timeoutMs: Long, pkg: String? = null, returnScreen: Boolean = false): JSONObject {
+        repeatGuard.looked()
         if (text.isBlank()) return JSONObject().put("ok", false).put("error", "Give some text to wait for")
         val start = System.currentTimeMillis()
         while (System.currentTimeMillis() - start < timeoutMs) {
@@ -734,6 +746,7 @@ object ScreenDriver {
     }
 
     suspend fun screenshot(maxWidth: Int = 720): Shot = lock.withLock {
+        repeatGuard.looked()
         val s = svc()
         if (Build.VERSION.SDK_INT < 30) throw ScreenshotException("Screenshots need Android 11 or newer")
         var err = "no answer from Android"
@@ -974,5 +987,27 @@ object TapRules {
         val l = label.trim().lowercase()
         if (l.length < 3 || l.startsWith("#") || l == "(unlabeled)") return false
         return !Regex("^(like|unlike|dislike|play|pause|next|previous|prev|mute|unmute|rewind|forward|skip.*|follow|subscribe|send|post|share|call|delete|\\d+)\\b").containsMatchIn(l)
+    }
+}
+
+/**
+ * Stops one mistake: tapping the same thing twice in a row because the first tap "showed no change".
+ * On a seat, a checkbox or a web button the second tap undoes the first or orders twice. After a tap
+ * that left the element list unchanged, the same label is refused once until something was looked at
+ * (a wait, a read, a screenshot) or 15 seconds have passed. No phone needed: easy to test.
+ */
+class RepeatGuard {
+    private var label: String? = null
+    private var at = 0L
+    private var unchanged = false
+
+    fun tapped(label: String, now: Long, unchanged: Boolean) { this.label = label; at = now; this.unchanged = unchanged }
+    fun looked() { unchanged = false }
+
+    /** Whether a tap on [label] at [now] is a blind repeat. Refuses once, then lets the next one through. */
+    fun blocks(label: String, now: Long): Boolean {
+        val hit = unchanged && this.label == label && now - at < 15_000 && label.length >= 2
+        if (hit) unchanged = false
+        return hit
     }
 }

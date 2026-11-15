@@ -130,9 +130,21 @@ object Preflight {
     )
 
     /** What kind of purchase a request is, or null when it isn't one (questions and look-ups are not). */
+    /** Asking to be told, shown or reminded is not asking to buy, unless it goes on "…and book it". */
+    private val lookup = Regex("^(tell me|let me know|notify me|alert me|inform me|watch|remind me|show|list|find|search|check|compare|track|any|do i|have i|can i|could i|will|would|open my|open the)\\b", RegexOption.IGNORE_CASE)
+    private val thenBuy = Regex("\\b(and|then|,)\\s+(book|order|buy)\\b", RegexOption.IGNORE_CASE)
+    private val other = Regex("https?://|\\b(remind|reminder|alarm|remember|note that|bookings?|orders|ordered|booked|bought)\\b", RegexOption.IGNORE_CASE)
+    /** "book" as a thing to read, not a thing to do. */
+    private val bookNoun = Regex("\\b(a|an|the|this|that|my|your|any|one|some|which|what|text|note|story|comic|e|audio|good|new|best|pdf)[ -]book\\b|\\bbook (name|title|author|pdf|summary|review|list|about|called|by)\\b|\\b(read|reading|summari[sz]e|write|download)\\b.{0,30}\\bbook\\b", RegexOption.IGNORE_CASE)
+    private val buyVerb = Regex("\\b(buy|purchase|vaangu|vangu|vaangi)\\b|வாங்கு|வாங்கி", RegexOption.IGNORE_CASE)
+    private val orderVerb = Regex("\\border\\b|ஆர்டர்", RegexOption.IGNORE_CASE)
+
     fun kind(text: String): Kind? {
         val t = text.trim()
-        if (t.length < 6 || notBuying.containsMatchIn(t)) return null
+        if (t.length < 6 || notBuying.containsMatchIn(t) || other.containsMatchIn(t)) return null
+        if (lookup.containsMatchIn(t) && !thenBuy.containsMatchIn(t)) return null
+        // "Read a book", "summarise this book": nothing is being bought unless it also says buy or order.
+        if (bookNoun.containsMatchIn(t) && !buyVerb.containsMatchIn(t) && !orderVerb.containsMatchIn(t)) return null
         if (!verb.containsMatchIn(t)) {
             // "Get me 2 tickets for Ramayana", "rendu ticket venum", "I need a cab to the airport": no "book", same wish.
             if (!softVerb.containsMatchIn(t)) return null
@@ -148,7 +160,9 @@ object Preflight {
             travel.containsMatchIn(t) -> Kind.TRAVEL
             cab.containsMatchIn(t) -> Kind.CAB
             food.containsMatchIn(t) -> Kind.FOOD
-            else -> Kind.SHOP
+            // "Book" or "reserve" with nothing recognisable after it (a table, a slot, an appointment) is not a shop order.
+            buyVerb.containsMatchIn(t) || orderVerb.containsMatchIn(t) -> Kind.SHOP
+            else -> null
         }
     }
 
