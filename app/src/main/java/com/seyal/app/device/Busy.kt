@@ -66,6 +66,7 @@ object Busy {
     }
 
     private fun dnd(ctx: Context, on: Boolean) = runCatching {
+        com.seyal.app.agent.Habits.own()
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.isNotificationPolicyAccessGranted) nm.setInterruptionFilter(if (on) NotificationManager.INTERRUPTION_FILTER_PRIORITY else NotificationManager.INTERRUPTION_FILTER_ALL)
     }

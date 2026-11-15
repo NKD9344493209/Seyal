@@ -108,7 +108,9 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
                 // Every step with its details, to send to whoever is fixing a problem.
                 if (s.steps > 0) {
                     val context = LocalContext.current
-                    Text("Share log", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.clickable {
+                    // A task that failed or was stopped: one tap sends the steps together with the phone's details.
+                    if (s.status == SessionStatus.FAILED || s.status == SessionStatus.CANCELLED) Text("Report problem", style = MaterialTheme.typography.labelMedium, color = Ink.red, modifier = Modifier.clickable { com.seyal.app.device.Report.share(context, s) })
+                    else Text("Share log", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.clickable {
                         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "Seyal log: ${s.title}").putExtra(Intent.EXTRA_TEXT, Agent.debugLog(s))
                         runCatching { context.startActivity(Intent.createChooser(send, "Share log").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                     })

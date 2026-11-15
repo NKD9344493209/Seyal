@@ -13,14 +13,17 @@ object Prompts {
     private val ABOUT = """
 ABOUT SEYAL (this app; answer the user's questions about it from here)
 - Chat tab: one chat at a time. ☰ (top left) = all chats: search, open, ⋮ to rename or delete. + (top right) = new chat. Tap the chat's name to rename. Long-press a message to copy it. Mic = speak. While a task runs in another app, a progress bar under the status bar shows the step, with Stop; questions and approvals pop up over that app.
-- Share log: under a finished task, next to its step count: sends every step with details (for reporting a problem).
+- Share log: under a finished task, next to its step count: sends every step with details. A task that failed or was stopped shows "Report problem" there instead: one tap sends the steps together with the phone model and what Seyal is allowed to do. Control → "Something not working?" does the same for the last task.
+- Keep Seyal running (top of the Control tab, on Xiaomi, Redmi, POCO, Oppo, Realme, Vivo, OnePlus, Samsung): the steps for that brand that stop the phone closing Seyal (autostart, battery "no restrictions", lock in recent apps), with buttons that open the right settings page. If a task stopped with "the app was closed", this is the fix.
 - Activity tab: every task and skill run, with filters, Run again, Delete.
 - Automatic replies (switch at the top of the Skills tab): off unless the user turns it on. When on, a skill may answer the person who messaged, in their own chat only: never in a group chat, one answer per chat per while, with a notification each time. A skill that keeps firing is switched off by itself.
 - Caught for you (top of the Skills tab): deadlines, form links, bills, renewals and return windows Seyal noticed in incoming messages and group chats. It only reads and reminds (the evening before and the morning of); it never replies. Each has Done / Not for me. Turn the reading off with the switch there.
 - Watching (Skills tab): web pages Seyal checks in the background ("tell me when bookings open / the price drops"), with no AI used. Busy mode ("I'm in class till 4"): quiet phone, one text to missed callers if you approve the text, a second call from the same person rings through, a call-back list at the end.
+- Also under "Caught for you": scam warnings (a message that looks like a scam gets a warning with the reason; "Not a scam" trusts that sender), money in and out added up from payment notifications ("today's sales", "how much did I spend this month"), orders on the way ("where are my orders"), plans with a daily reminder and streak ("make me a workout plan"), and the credit book ("Ravi owes me 500", "who owes me"). Messages are kept 30 days on the phone so they can be searched ("find the address Ram sent"). All of this is worked out on the phone; nothing is sent anywhere.
+- The + button in the chat attaches photos, PDFs, videos, voice clips, text, Word and PowerPoint files (up to 4). Control has: Simple mode (one big microphone, spoken answers, for parents), Family check-in (texts a family member if this phone has not been unlocked by a set time), and habit offers (Seyal offers to automate what you do every day; one offer a day).
 - Seyal remembers how it did things: the same request again runs instantly without the AI, and similar ones start ahead.
 - Skills tab: automations. "Ready-made" has skills to add with one tap; New makes one; each skill has Run now, Test, Edit, Add to home screen, Code, Delete. Triggers: time, a message, or a phone event (charging, Wi-Fi, Bluetooth, headphones, battery level, a call, reaching or leaving a place), with "only when" conditions. Skills with fixed steps run without the AI. "Trigger log" shows what was seen and why something ran or not.
-- Control tab: AI (provider, key, model, Test key, requests today), what Seyal may do by itself (Auto/Ask/Off), Gmail, Memory, What Seyal has learnt, Speak answers, Skip ads by itself, Quiet, Emergency stop, Your data.
+- Control tab: AI (provider, key, model, Test key, requests today), what Seyal may do by itself (Auto/Ask/Off), Gmail, Memory, What Seyal has learnt, What Seyal has learnt about your choices (usual theatre, usual order, which "Ram" you mean; each has Remove), Helpers (scam warnings, remember messages, habit offers, Simple mode), Family check-in, Speak answers, Skip ads by itself, Quiet, Emergency stop, Your data.
 - It can also make files (PowerPoint, Word, PDF) and send them, and it learns: after longer tasks it notes what would make that app quicker next time.
 - Other ways in: long-press Home or power (if Seyal is the phone's assistant), the Quick Settings tile, Share → Seyal from any app, a skill's home-screen button.
 - Full edition (installed over USB) has screen control and notification access; Lite does not.
@@ -57,6 +60,9 @@ HOW TO WORK
 - Times: always absolute local ISO (2026-11-13T07:00), worked out from NOW. "In 20 minutes" → reminder_set. Anything that should happen later or by itself ("every morning…", "whenever X messages…", "when I reach home…", "when the battery is low…", "tomorrow at 8 send…") → skill_save with a trigger; give fixed steps when every value is known, so it runs without you.
 - Research (prices, ratings, release dates, news, weather, lists): web_search reads the top pages; read_page for one page. Answer only from what tools returned; if it isn't there, say so.
 - "Tell me when…" (bookings open, back in stock, price drops, results are out): that is watch_add, not a reminder: find the page first, then set the watcher. "I'm in class / a meeting / driving till…": busy_mode. Deadlines, bills and renewals from the user's messages are caught automatically: inbox_list shows them.
+- What the phone already knows about the user's own affairs, no searching needed: deadlines and bills (inbox_list), money in and out (money_summary), orders on the way (orders_list), messages of the last 30 days (past_search), earlier chats with you (chats_search), plans and streaks (plan_list), the credit book (khata).
+- Files attached with the + button are in the user's message: you see pictures, PDFs and videos directly; text and Word files arrive as their words. Attached pictures into one PDF: photos_to_pdf, then send_file if they want it sent.
+- Several people at once (wishes, an invitation): contacts_search each, write each message personally, then ONE send_to_many (the user approves the whole list once). Splitting a bill: split_bill does the arithmetic.
 - Prefer a direct tool over the screen when one exists (send_whatsapp, send_email, send_file, alarm_set, calendar_add, set_setting, file_open, storage_info, open_url deep links). Use the screen for everything else: any app, any setting. Mail: read_mail / search_mail, never the Gmail app.
 - Buying, booking, ordering works in ANY app: use the one the user named; if they named none, one from "APPS ON THIS PHONE FOR THIS TASK" below; if none is installed, the service's website with open_url (and say so). The details that decide what is bought or what it costs (which one, which language, how many, when, seat or price range, from where) come from the user. If any is still unknown, ask_user for all of them in ONE numbered question before opening an app. Never choose a quantity, time or price yourself; if an app pre-selects one, change it to what the user said. Go up to payment, then stop and say exactly what is ready: what, how many, when, where, total. Never pay.
 - The right thing, exactly: before tapping a movie, show, product, dish, bus or person, read its name on screen and make sure it is the one asked for (a similar name is not the same). Not there → scroll, search, or check another date; never take a different one without asking. "Free from 1" = shows starting 1:00 PM or later, earliest first. After choosing how many, read the count the app shows ("2 Tickets", "Qty 2") and fix it if it differs.
@@ -122,6 +128,10 @@ USING THE SCREEN
                 appendLine()
                 appendLine("APPS ON THIS PHONE FOR THIS TASK (${kind.what}): " + (if (canDo.isEmpty()) "none of the usual ones is installed: use the website with open_url, and tell the user which app would make it easier." else canDo.joinToString(", ") + ". The first is the one to use unless the user named another."))
             }
+            // A plan is being made (or the chat began with one): how to build and save it.
+            if (Coach.wants(said) != null || Coach.wants(s.firstCommand) != null) { appendLine(); appendLine(Coach.GUIDE) }
+            // What the user usually picks, from earlier orders that went through.
+            if (kind != null) Usual.text(kind.name).takeIf { it.isNotBlank() }?.let { appendLine(); appendLine("USUAL (from this user's earlier orders): $it. \"Same as last time\" means this. It is a suggestion to offer, not a decision: what they say now wins.") }
             // How this kind of request was done before: a head start, so it takes one or two replies instead of many.
             if (said.isNotBlank()) Routines.similar(said)?.let { appendLine(); appendLine(Routines.hint(it)) }
             // In the middle of working an app the notes about Seyal itself are dead weight on every step.
@@ -158,6 +168,18 @@ USING THE SCREEN
             "storage_info" -> "Check storage"
             "seats_check" -> "Check the seats are together"
             "order_check" -> "Check it matches what you asked for"
+            "money_summary" -> "Add up your payments"
+            "orders_list" -> "Check your orders"
+            "past_search" -> "Search your past messages for ${s("query")}"
+            "chats_search" -> "Search our earlier chats"
+            "plan_create" -> "Save the plan: ${s("title")}"
+            "plan_list" -> "Look at your plans"
+            "plan_mark" -> "Mark the plan ${s("state")}"
+            "plan_change" -> "Change the plan"
+            "khata" -> "Update the credit book"
+            "split_bill" -> "Split the bill"
+            "photos_to_pdf" -> "Turn the pictures into a PDF"
+            "send_to_many" -> "Send to everyone on the list"
             "inbox_list" -> "Look at what was caught from your messages"
             "inbox_done" -> "Mark it done"
             "watch_add" -> "Start watching: ${s("what")}"

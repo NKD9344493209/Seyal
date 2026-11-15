@@ -52,13 +52,13 @@ import com.seyal.app.device.SeyalNotificationListener
 import com.seyal.app.ui.theme.Ink
 import kotlinx.coroutines.launch
 
-private val IS_FULL get() = BuildConfig.FLAVOR == "full"
+internal val IS_FULL get() = BuildConfig.FLAVOR == "full"
 
 /** Opens a system settings page; some phones don't have every page, so never crash on it. */
 private fun Context.open(intent: Intent) { runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
 
 @Composable
-fun ControlScreen() {
+fun ControlScreen(onSimple: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val paused by Agent.paused.collectAsState()
 
@@ -76,14 +76,19 @@ fun ControlScreen() {
                 SmallButton(if (paused) "Resume" else "Pause all", danger = !paused, filled = paused) { Agent.setPaused(!paused) }
             }
         }
+        KeepAliveSection()
         AiSection()
         ScreenSection()
         GmailSection()
         PermissionsSection()
         YouSection()
+        HelpersSection(onSimple)
+        FamilySection()
         MemorySection()
+        KnowsSection()
         LessonsSection()
         PhoneSection()
+        ReportSection()
         Card {
             Text("Your data", style = MaterialTheme.typography.titleMedium)
             Text("On this phone: conversations, steps, results, skills, memory, your keys (encrypted).\nTo the AI provider you chose: each request and what a step needs (screen text or screenshots only while it works on your task).\nTo Seyal's makers: nothing. There is no Seyal server.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)

@@ -97,6 +97,16 @@ object Agent {
         val tool = byName[plan.tool] ?: return null
         val args = JSONObject(plan.args.toString())
         if (plan.who != null) {
+            // Asked "Which Ram?" before: the answer was remembered.
+            Usual.alias(plan.who)?.let { known ->
+                args.put("phone", known.second).put("name", known.first)
+                val call = Part.Call(newId(), plan.tool, args)
+                val r = runSynthetic(s, call, tool); s.steps++
+                val st = lock.withLock { s.calls[call.id] }
+                if (st?.status == CallStatus.DENIED) return "Okay, I didn't do it."
+                if (r.isError || !r.output.optBoolean("ok", true)) return null
+                return plan.answer?.invoke(r.output) ?: plan.say ?: st?.line?.takeIf { it.isNotBlank() } ?: "Done."
+            }
             val search = byName["contacts_search"] ?: return null
             val c = Part.Call(newId(), "contacts_search", JSONObject().put("name", plan.who))
             val r = runSynthetic(s, c, search); s.steps++
@@ -111,6 +121,7 @@ object Agent {
                 val a = runSynthetic(s, q, ask).output.optString("answer").trim(); s.steps++
                 pick = names.firstOrNull { it.first.equals(a, true) } ?: names.firstOrNull { a.isNotBlank() && (it.first.contains(a, true) || a.contains(it.first, true)) }
                     ?: return "I wasn't sure who you meant, so I did nothing."
+                Usual.setAlias(plan.who, pick.first, pick.second)
             }
             args.put("phone", pick.second).put("name", pick.first)
         }
@@ -167,6 +178,13 @@ object Agent {
             }
         }
         if (changed) Store.saveIndex(index)
+        // A task of the user's that was running a moment ago: the phone closed Seyal. Count it (Control shows the fix) and say so.
+        val cut = interrupted(index.map { Triple(it.optString("status"), it.optString("source"), it.optLong("updated_at")) }, System.currentTimeMillis(), changed)
+        if (cut >= 0) runCatching {
+            Settings.killedCount = Settings.killedCount + 1; Settings.killedAt = System.currentTimeMillis()
+            val e = index[cut]
+            Notify.line(app, "Your phone closed Seyal while it was working on \"${e.optString("title").take(50)}\". Open Seyal and send \"continue\". To stop this: Control → Keep Seyal running.", e.optString("id"))
+        }
         // Bring the latest conversations back so the Chat tab picks up where the user left off.
         index.filter { it.optString("source") == "user" }.take(3).forEach { e ->
             val id = e.optString("id")
@@ -177,6 +195,9 @@ object Agent {
         Lessons.init(context.filesDir)
         Routines.init(context.filesDir)
         Inbox.init(context.filesDir); Watchers.init(context.filesDir)
+        Ledger.init(context.filesDir); Parcels.init(context.filesDir); Past.init(context.filesDir)
+        Coach.init(context.filesDir); Usual.init(context.filesDir); Khata.init(context.filesDir); Habits.init(context.filesDir)
+        Coach.onChange = { runCatching { Scheduler.syncBackground(app) } }
         Inbox.onChange = { runCatching { Scheduler.syncBackground(app) } }
         Watchers.onChange = { runCatching { Scheduler.syncBackground(app) } }
         runCatching { Scheduler.syncBackground(context) }
@@ -251,6 +272,18 @@ object Agent {
      * The whole task as plain text: each message, each step with its arguments, status and result
      * (screens and long outputs shortened). "Share log" sends this so a problem can be seen exactly.
      */
+    /** Tools whose every use is approved by the user, even after "Always allow". */
+    internal fun mustAsk(tool: String): Boolean = tool == "send_to_many"
+
+    /**
+     * Which task (its place in [rows]: status, source, last change) was cut off by the phone closing Seyal: one of the
+     * user's own, failed by the restart, and busy within the last ten minutes. -1 when there is none.
+     */
+    internal fun interrupted(rows: List<Triple<String, String, Long>>, now: Long, restartClosedSome: Boolean): Int {
+        if (!restartClosedSome) return -1
+        return rows.indexOfFirst { (status, source, at) -> status == SessionStatus.FAILED.name && source == "user" && now - at in 0..10 * 60_000L }
+    }
+
     fun debugLog(s: Session): String = buildString {
         val results = HashMap<String, Part.Result>()
         s.messages.filter { it.role == "tool" }.forEach { m -> m.results.forEach { results[it.callId] = it } }
@@ -293,11 +326,14 @@ object Agent {
     // ------------------------------------------------------------ requests
 
     /** Starts a new session for a user request and runs the loop. */
-    fun start(command: String, image: Part.Image? = null, source: String = "user"): Session {
+    fun start(command: String, image: Part.Image? = null, source: String = "user", files: List<Part.Image> = emptyList()): Session {
         val s = Session(newId(), System.currentTimeMillis(), source)
         s.title = titleFrom(command)
         val parts = mutableListOf<Part>(Part.Text(command.trim()))
         image?.let { parts += it }
+        parts += files
+        // What is asked again and again at the same hour is a habit worth offering to automate.
+        if (source == "user" && Habits.worthLogging(command)) runCatching { Habits.log("cmd:" + Routines.normalise(command), System.currentTimeMillis()) }
         s.messages += Msg("user", parts)
         scope.launch {
             lock.withLock {
@@ -316,12 +352,13 @@ object Agent {
      * If a tool round is in flight, it is queued until the results are in (the transcript must stay
      * assistant-calls → tool-results). Otherwise it is appended and the loop runs again.
      */
-    fun say(sessionId: String, text: String, image: Part.Image? = null) = scope.launch {
+    fun say(sessionId: String, text: String, image: Part.Image? = null, files: List<Part.Image> = emptyList()) = scope.launch {
         val msg = text.trim()
         val s = lock.withLock {
             val s = live[sessionId] ?: Store.loadSession(sessionId)?.also { live[sessionId] = it } ?: return@launch
             val parts = mutableListOf<Part>(Part.Text(msg))
             image?.let { parts += it }
+            parts += files
             val question = s.calls.values.firstOrNull { it.status == CallStatus.WAITING_USER && waits.containsKey(it.callId) }
             when {
                 // The answer to the agent's question.
@@ -410,11 +447,17 @@ object Agent {
                             }
                         }
                         // 1a. The everyday commands (call, message, alarm, weather, battery…): understood on the phone, no AI asked.
-                        val basic = if (quick == null) Basics.plan(said, whatsApp = runCatching { Preflight.appLabels().any { it.contains("WhatsApp", true) } }.getOrDefault(true)) else null
+                        val lastPlace = s.messages.asReversed().asSequence().filter { it.role == "tool" }.flatMap { it.results.asSequence() }.firstOrNull { it.name == "weather" && !it.isError }?.output?.optString("place")?.substringBefore(",")?.takeIf { it.isNotBlank() }
+                        val basic = if (quick == null) Basics.plan(said, whatsApp = runCatching { Preflight.appLabels().any { it.contains("WhatsApp", true) } }.getOrDefault(true), lastPlace = lastPlace) else null
                         if (basic != null) {
                             val answer = runBasic(s, basic, byName)
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
-                            if (answer != null) { s.replayed = true; finish(s, SessionStatus.DONE, answer); return }
+                            if (answer != null) {
+                                s.replayed = true
+                                // Asked by voice in Tamil, or simple mode: say it aloud as well.
+                                if (basic.speak && !Settings.speak && !Settings.simpleMode) runCatching { com.seyal.app.device.Speech.say(app, answer) }
+                                finish(s, SessionStatus.DONE, answer); return
+                            }
                         }
                         // 1b. Asked before, done the same way: repeat the steps that worked, with no AI at all.
                         val known = if (quick == null && basic == null && Preflight.kind(said) == null) Routines.exact(said)?.takeIf { r -> r.steps.all { byName[it.name] != null } } else null
@@ -435,6 +478,22 @@ object Agent {
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                             lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + "The steps above were repeated from last time and one did not work. Finish the request yourself: $said"))); touch(s) }
                         }
+                        // 1c. A plan (workout, study, diet): ask about the person first, so the plan fits them.
+                        val coach = if (quick == null && basic == null && known == null) Coach.wants(said) else null
+                        if (coach != null) {
+                            val ask = byName["ask_user"]
+                            if (ask != null) {
+                                report("Thinking about what to ask…")
+                                val pre = try {
+                                    Llm.chat(Coach.system(coach), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Preflight.complete), 600, forceTool = true, onWait = { report(it) })
+                                        .also { r -> lock.withLock { s.llmCalls++; s.tokens += r.tokens; touch(s) } }
+                                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
+                                val q = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
+                                    ?: if (pre?.calls?.any { it.name == "details_complete" } == true) null else Part.Call(newId(), "ask_user", JSONObject().put("question", Coach.fallbackQuestion(coach)))
+                                if (q != null) { runSynthetic(s, q, ask); s.steps++; stepsThisRun++ }
+                                if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
+                            }
+                        }
                         // 2. Buying, booking or ordering: the user gives the details before anything is opened.
                         val kind = if (quick == null && known == null) Preflight.kind(said) else null
                         val ask = byName["ask_user"]
@@ -451,8 +510,9 @@ object Agent {
                                 val words = lock.withLock { requestWords(s) }
                                 val saidComplete = pre?.calls?.any { it.name == "details_complete" } == true
                                 val leaves = Preflight.leavesChoice(words)
-                                val needCount = kind.unit.isNotBlank() && !Preflight.saysHowMany(words)
-                                val needSeat = kind == Preflight.Kind.MOVIE && !Preflight.saysSeatOrBudget(words)
+                                val usual = if (words.any { Usual.asksForSame(it) }) Usual.last(kind.name) else null
+                                val needCount = kind.unit.isNotBlank() && !Preflight.saysHowMany(words) && (usual?.count ?: 0) == 0
+                                val needSeat = kind == Preflight.Kind.MOVIE && !Preflight.saysSeatOrBudget(words) && usual?.let { it.seat.isNotBlank() || it.maxEach > 0 } != true
                                 question = when {
                                     leaves -> null
                                     !saidComplete -> Part.Call(newId(), "ask_user", JSONObject().put("question", Preflight.fallbackQuestion(kind, onlyCount = false)))
@@ -478,10 +538,12 @@ object Agent {
                             val byAi = written?.let { Order.fromJson(JSONObject(it.toString()).put("kind", kind.name)) }
                             val byWords = Order.fromWords(kind, words)
                             // A number the user plainly said beats whatever the AI wrote down.
-                            s.order = if (byAi == null) byWords.takeIf { !it.isEmpty } else Order.fromJson(byAi.toJson().apply {
+                            val noted = if (byAi == null) byWords.takeIf { !it.isEmpty } else Order.fromJson(byAi.toJson().apply {
                                 if (byWords.count > 0) put("count", byWords.count)
                                 if (byWords.maxEach > 0) put("max_each", byWords.maxEach)
                             })
+                            // "Same as last time": what they left out comes from the last order of this kind that went through.
+                            s.order = if (words.any { Usual.asksForSame(it) }) Usual.fill(noted ?: Order(kind.name)).takeIf { !it.isEmpty } else noted
                         }
                     }
                 }
@@ -609,7 +671,7 @@ object Agent {
         idleCheck(if (s.parentId == null) (if (status == SessionStatus.DONE) "Done · " else "Stopped · ") + (s.result ?: "") else null)
         if (s.parentId == null) {
             if (!Settings.quiet || status != SessionStatus.DONE) Notify.line(app, "${s.title}: ${s.result}", s.id)
-            if (Settings.speak && status == SessionStatus.DONE) Speech.say(app, text)
+            if ((Settings.speak || (Settings.simpleMode && s.source == "user")) && status == SessionStatus.DONE) Speech.say(app, text)
         }
     }
 
@@ -775,6 +837,8 @@ object Agent {
         // After the user said No to something in this conversation, screen actions ask first too
         // (so a declined message can't be sent another way through the app).
         if (level == Level.AUTO && tool.group == "screen" && tool.sideEffect && lock.withLock { s.calls.values.any { it.status == CallStatus.DENIED } }) level = Level.ASK
+        // A message to many people is shown in full and approved every single time, whatever was allowed before.
+        if (mustAsk(tool.name)) level = Level.ASK
         if (level == Level.OFF) {
             val r = lock.withLock { fail("\"${tool.name}\" is turned off in Control → Permissions. Tell the user.", CallStatus.DENIED).also { touch(s) } }
             return r
@@ -807,7 +871,7 @@ object Agent {
             )
             val decision = try { withTimeoutOrNull(30 * 60_000L) { wait.await() } ?: "deny" } finally { waits.remove(call.id); Notify.cancelApproval(app, s.id, call.id); ScreenDriver.hideCard(call.id) }
             if (decision == "allow_always") {
-                if (target != null) Settings.allow(tool.name, target) else Settings.setLevel(tool.name, Level.AUTO)
+                if (target != null) Settings.allow(tool.name, target) else if (!mustAsk(tool.name)) Settings.setLevel(tool.name, Level.AUTO)
             }
             if (decision.startsWith("deny")) {
                 val r = lock.withLock { fail("The user said no to: $preview. Do not do it in any other way either; ask what they want instead, or finish.", CallStatus.DENIED).also { if (s.status != SessionStatus.CANCELLED) s.status = SessionStatus.RUNNING; touch(s) } }
@@ -1005,7 +1069,7 @@ object Agent {
         saveJobs.values.forEach { it.cancel() }; saveJobs.clear()
         lock.withLock {
             live.clear(); index.clear()
-            Routines.clear(); Inbox.clear(); Watchers.clear()
+            Routines.clear(); Inbox.clear(); Watchers.clear(); Ledger.clear(); Parcels.clear(); Past.clear(); Coach.clear(); Usual.clear(); Khata.clear(); Habits.clear()
             Skills.wipe()
             Lessons.clear()
             Store.wipe()
@@ -1096,6 +1160,8 @@ object History {
             if (p !is Part.Call || p.args.toString().length <= 400) p
             else Part.Call(p.id, p.name, JSONObject().apply { p.args.keys().forEach { k -> val v = p.args.opt(k); put(k, if (v is String && v.length > 160) v.take(160) + "…" else if (v is org.json.JSONArray && v.toString().length > 200) "(${v.length()} items, sent earlier)" else v) } }, p.signature)
         }, m.at)
+        // A file attached to an earlier request is not sent again with every later one.
+        "user" -> if (m.parts.none { it is Part.Image }) m else Msg("user", m.parts.map { p -> if (p is Part.Image) Part.Text("[a file was attached here earlier: ${p.mime}]") else p }, m.at)
         else -> m
     }
 }

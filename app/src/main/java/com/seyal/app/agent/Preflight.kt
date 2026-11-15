@@ -183,6 +183,7 @@ NEEDED: ${kind.details}
 NOW: ${Times.nowText()}. Home city: ${Settings.homeCity.ifBlank { "unknown" }}.
 APPS ON THIS PHONE FOR THIS: ${if (apps.isEmpty()) "(none found)" else apps.joinToString(", ")}. The app is not a detail to ask about: the one the user named is used, otherwise the first of these.
 KNOWN ABOUT THE USER: ${Memory.text().ifBlank { "(nothing)" }.take(600)}
+LAST TIME (this user's last order of this kind that went through): ${Usual.text(kind.name).ifBlank { "(none yet)" }}. If they say "same as last time" or "the usual", those details count as given (never the day or the time). Otherwise you may offer it as the first choice in your question.
 
 Go through NEEDED one by one against the user's LATEST request and their answers since. Earlier requests in this chat are finished: their numbers, days and places do not carry over. What is known about the user may fill in a favourite place or app, never how many, which day, what time or what price:
 - A detail counts as given only if the user said it. Never fill one in yourself: not the number of tickets or items, not the time, not the price, not the language.

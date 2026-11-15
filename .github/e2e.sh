@@ -100,6 +100,23 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   n=$((n + 1)); tag=$(printf "%02d" "$n")
   # "!post Title|Text": a message notification arrives (from the Shell app); a skill that watches for it should run by itself.
   # "!gpost Group|Sender:Text": the same in a GROUP chat. Nothing may run: skills answer people, not groups.
+  # "!feed Sender|Text": a message arrives that no skill is waiting for. Seyal only reads it (a payment, an order,
+  # a scam, something to find later). The result column says whether a scam warning was shown: warned | quiet.
+  case "$cmd" in "!feed "*)
+    spec="${cmd#!feed }"; ptitle="${spec%%|*}"; ptext="${spec#*|}"
+    echo "== [$tag] message from $ptitle: $ptext"
+    warned_before=$(adb shell dumpsys notification --noredact 2>/dev/null | grep -c "looks like a scam" || true)
+    start=$(date +%s)
+    ptext_q=${ptext//\'/}
+    adb shell "cmd notification post -S messaging --message '$ptitle:$ptext_q' -t '$ptitle' seyalfeed$n '$ptext_q'" >/dev/null 2>&1
+    sleep 5
+    warned_after=$(adb shell dumpsys notification --noredact 2>/dev/null | grep -c "looks like a scam" || true)
+    state="quiet"; [ "${warned_after:-0}" -gt "${warned_before:-0}" ] && state="warned"
+    secs=$(( $(date +%s) - start ))
+    printf "%s\t%s\t%s\n" "$cmd" "$secs" "$state" >> timings.tsv
+    echo "   -> $state in ${secs}s"
+    continue ;;
+  esac
   case "$cmd" in "!post "*|"!gpost "*)
     tries=50
     case "$cmd" in

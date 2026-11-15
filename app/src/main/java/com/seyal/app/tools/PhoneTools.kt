@@ -157,10 +157,21 @@ object PhoneTools {
                 // Only kinds of links that can't move money or reach private files.
                 val allowed = setOf("http", "https", "geo", "google.navigation", "market", "tel", "mailto", "sms", "smsto", "vnd.youtube", "spotify", "whatsapp")
                 if (scheme !in allowed) return@Tool ToolResult.Failed("Seyal doesn't open \"$scheme:\" links (payment apps and local files are the user's to open).")
-                if (!launch(Intent(Intent.ACTION_VIEW, Uri.parse(u)))) return@Tool ToolResult.Failed("Nothing on this phone can open that link")
+                // A link to Swiggy, Zomato, BookMyShow, District or redBus goes straight into that app when it is installed
+                // and accepts the link: no "Open with" box and no browser tab with a separate login.
+                var inApp: String? = null
+                com.seyal.app.agent.Links.owner(u)?.let { owner ->
+                    val pm = ctx.packageManager
+                    for (pkg in owner.packages) {
+                        val view = Intent(Intent.ACTION_VIEW, Uri.parse(u)).setPackage(pkg)
+                        if (runCatching { pm.queryIntentActivities(view, 0).isNotEmpty() }.getOrDefault(false) && launch(view)) { inApp = owner.name; break }
+                    }
+                }
+                if (inApp == null && !launch(Intent(Intent.ACTION_VIEW, Uri.parse(u)))) return@Tool ToolResult.Failed("Nothing on this phone can open that link")
                 val out = JSONObject().put("ok", true).put("url", u)
+                inApp?.let { out.put("opened_in", it) }
                 ScreenDriver.snapshotAfter(1800)?.let { out.put("screen", it) }
-                ToolResult.Done(out, "Opened ${u.take(50)}")
+                ToolResult.Done(out, if (inApp != null) "Opened in $inApp" else "Opened ${u.take(50)}")
             },
 
             Tool("apps_list", "phone", "Names of the apps installed on this phone.", noArgs) { _, _ ->
@@ -177,7 +188,7 @@ object PhoneTools {
                 schema { str("name", "Which setting", required = true); str("value", "New value", required = true) },
                 sideEffect = true,
                 preview = { "Set ${it.optString("name")} to ${it.optString("value")}" },
-            ) { a, _ -> setSetting(a.optString("name").lowercase(), a.optString("value").lowercase()) },
+            ) { a, _ -> com.seyal.app.agent.Habits.own(); setSetting(a.optString("name").lowercase(), a.optString("value").lowercase()) },
 
             Tool(
                 "app_usage", "phone", "Screen time per app for today or the last 7 days. Output: apps[name, minutes], total_minutes.",

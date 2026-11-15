@@ -79,6 +79,7 @@ object PhoneEvents {
                             @Suppress("DEPRECATION") val d = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
                             @SuppressLint("MissingPermission")
                             val name = if (Build.VERSION.SDK_INT < 31 || has(context, Manifest.permission.BLUETOOTH_CONNECT)) runCatching { d?.name }.getOrNull().orEmpty() else ""
+                            if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) Signals.headsetConnected()
                             Skills.onEvent((if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) "bluetooth_connected:" else "bluetooth_disconnected:") + name)
                         }
                     }

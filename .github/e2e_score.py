@@ -8,7 +8,8 @@ e2e-expect.txt: one line per command, "command text => check; check; …". Check
   tool:NAME         NAME was called and worked
   tool:A|B          one of them was
   no:NAME           NAME was never called successfully
-  says:REGEX        the final result matches (case-insensitive)
+  says:REGEX        the final answer matches (case-insensitive)
+  state:REGEX       the outcome column matches (for "!feed": warned | quiet)
   asks              the user was asked something (ask_user)
   noai              no AI call was needed
   under:SECONDS     it took less than this
@@ -55,7 +56,9 @@ def main():
             for p in m.get("parts", []):
                 if p.get("type") == "call" and states.get(p.get("id"), {}).get("status") == "DONE":
                     ok_tools.add(p.get("name"))
-        result = e.get("result") or ""
+        # The whole final answer: the list keeps only a short result, the session has every line.
+        said = [" ".join(p.get("text", "") for p in m.get("parts", []) if p.get("type") == "text") for m in s.get("messages", []) if m.get("role") == "assistant"]
+        result = "\n".join([e.get("result") or "", s.get("result") or ""] + said[-2:])
         failed = []
         for c in checks:
             if c == "done":
@@ -72,6 +75,8 @@ def main():
                 good = c[3:] not in ok_tools
             elif c.startswith("says:"):
                 good = re.search(c[5:], result, re.I) is not None
+            elif c.startswith("state:"):
+                good = re.search(c[6:], state, re.I) is not None
             elif c.startswith("under:"):
                 good = secs.isdigit() and int(secs) < int(c[6:])
             else:

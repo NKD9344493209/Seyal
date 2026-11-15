@@ -125,18 +125,28 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
     val open = current?.takeIf { it.status.isOpen }
     val waitingQuestion = open != null && open.calls.values.any { it.status == CallStatus.WAITING_USER }
 
+    val attached = activity?.attachments?.toList().orEmpty()
+    val attaching = activity?.attaching?.value == true
     val send: (String) -> Unit = { raw ->
         var msg = raw.trim()
-        if (msg.isNotBlank() || sharedText != null || sharedImage != null) {
+        val files = attached.filter { it.ok }
+        if (msg.isNotBlank() || sharedText != null || sharedImage != null || files.isNotEmpty()) {
             if (!Settings.hasKey) {
                 goTo(Tab.CONTROL)
             } else {
                 if (sharedText != null) msg = msg.ifBlank { "Help me with this." } + "\n\nShared with you:\n" + sharedText
-                if (msg.isBlank()) msg = "Look at this picture and help me with it."
-                if (current != null) Agent.say(current.id, msg, sharedImage) else Agent.start(msg, sharedImage)
+                if (msg.isBlank()) msg = if (files.isNotEmpty()) (if (files.size == 1) "Look at the attached ${files[0].kind} and tell me what it is about." else "Look at the attached files and tell me what they are about.") else "Look at this picture and help me with it."
+                // Text and Word files go as their words; pictures, PDFs, videos and voice clips go as they are.
+                files.filter { it.text != null }.forEach { f -> msg += "\n\nAttached file \"${f.name}\":\n${f.text}" }
+                val parts = files.mapNotNull { it.part }
+                if (parts.isNotEmpty()) msg += "\n\n(Attached: " + files.filter { it.part != null }.joinToString(", ") { it.name } + ")"
+                val uris = files.filter { it.kind == "image" }.mapNotNull { it.uri }
+                if (current != null) { Agent.say(current.id, msg, sharedImage, parts); com.seyal.app.device.Attach.remember(current.id, uris) }
+                else com.seyal.app.device.Attach.remember(Agent.start(msg, sharedImage, files = parts).id, uris)
                 text = ""
                 activity?.sharedText?.value = null
                 activity?.sharedImage?.value = null
+                activity?.attachments?.clear()
             }
         }
     }
@@ -202,18 +212,37 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
                     Text("Remove", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.clickable { activity?.sharedText?.value = null; activity?.sharedImage?.value = null })
                 }
             }
+            // Files picked with the + button, each with a way to take it off again.
+            if (attached.isNotEmpty() || attaching) {
+                Column(Modifier.padding(bottom = 6.dp)) {
+                    attached.forEach { f ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+                            Pill((if (f.ok) "${f.kind.replaceFirstChar { it.uppercase() }}: " else "Can't attach: ") + f.name.take(28), if (f.ok) cs.secondaryContainer else cs.errorContainer, if (f.ok) cs.onSecondaryContainer else cs.onErrorContainer)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Remove", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.clickable { activity?.attachments?.remove(f) })
+                        }
+                        f.problem?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.padding(bottom = 4.dp)) }
+                    }
+                    if (attaching) Text("Reading the file…", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+            }
             val shape = RoundedCornerShape(26.dp)
             Row(
-                Modifier.fillMaxWidth().background(cs.surface, shape).border(1.dp, cs.outline, shape).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                Modifier.fillMaxWidth().background(cs.surface, shape).border(1.dp, cs.outline, shape).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Box(
+                    Modifier.size(40.dp).clip(CircleShape).clickable { if (attached.size < com.seyal.app.device.Attach.MAX_FILES) activity?.attach() },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Outlined.Add, "attach a photo, PDF, video or file", tint = if (attached.size < com.seyal.app.device.Attach.MAX_FILES) cs.onSurfaceVariant else cs.outline) }
+                Spacer(Modifier.width(4.dp))
                 Box(Modifier.weight(1f)) {
                     if (text.isEmpty()) Text(
                         when {
                             listening -> "Listening…"
                             waitingQuestion -> "Type your answer…"
                             open != null -> "Add to this task…"
-                            sharedText != null || sharedImage != null -> "What should I do with it?"
+                            sharedText != null || sharedImage != null || attached.any { it.ok } -> "What should I do with it?"
                             current != null -> "Reply in this chat…"
                             else -> "Ask Seyal to do anything…"
                         },
@@ -237,7 +266,7 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
                         Icon(Icons.Outlined.Pause, "stop", tint = Color.White)
                     }
                 } else {
-                    val ready = text.isNotBlank() || sharedText != null || sharedImage != null
+                    val ready = text.isNotBlank() || sharedText != null || sharedImage != null || attached.any { it.ok }
                     Box(Modifier.size(40.dp).clip(CircleShape).background(if (ready) Ink.green else cs.surfaceVariant).clickable { send(text) }, contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.ArrowUpward, "send", tint = if (ready) Color.White else cs.onSurfaceVariant)
                     }

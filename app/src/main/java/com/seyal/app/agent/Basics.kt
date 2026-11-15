@@ -17,7 +17,19 @@ object Basics {
      * its saved name as "name"). [say]: the whole answer, when no tool is needed. [answer]: turns the
      * tool's result into the reply; without it the tool's own one-line summary is used.
      */
-    class Plan(val tool: String, val args: JSONObject = JSONObject(), val who: String? = null, val say: String? = null, val answer: ((JSONObject) -> String)? = null)
+    class Plan(val tool: String, val args: JSONObject = JSONObject(), val who: String? = null, val say: String? = null, val speak: Boolean = false, val answer: ((JSONObject) -> String)? = null)
+
+    /** Chat apps whose notifications are messages from people. */
+    private val messageApps = Regex("whatsapp|messages|message|telegram|sms|signal|instagram|messenger", RegexOption.IGNORE_CASE)
+
+    /** "2 new messages. Amma: come home early. Ram Kumar: where are you?" (for reading aloud). [tamil]: say the frame in Tamil. */
+    fun readOut(items: org.json.JSONArray?, tamil: Boolean): String {
+        val list = (0 until (items?.length() ?: 0)).mapNotNull { items?.optJSONObject(it) }
+            .filter { !it.optBoolean("ongoing") && messageApps.containsMatchIn(it.optString("app")) && it.optString("text").isNotBlank() }.take(6)
+        if (list.isEmpty()) return if (tamil) "புதிய மெசேஜ் எதுவும் இல்லை." else "You have no new messages."
+        val head = if (tamil) "${list.size} புதிய மெசேஜ். " else "${list.size} new message${if (list.size == 1) "" else "s"}. "
+        return head + list.joinToString(" ") { "${it.optString("title")}: ${it.optString("text").take(160).trimEnd('.')}." }
+    }
 
     private fun args(vararg kv: Pair<String, Any>) = JSONObject().apply { kv.forEach { (k, v) -> put(k, v) } }
     private fun enc(s: String) = URLEncoder.encode(s.trim(), "UTF-8")
@@ -51,6 +63,11 @@ object Basics {
         return null
     }
 
+    /** "this month" → "month": the name money_summary uses. */
+    private fun period(w: String): String = when (w.lowercase().trim()) {
+        "yesterday", "netru", "nethu" -> "yesterday"; "this week" -> "week"; "this month" -> "month"; "last month" -> "last_month"; else -> "today"
+    }
+
     /** A message as the user dictated it, tidied: quotes off, first letter up. Null when it is too short to be one. */
     private fun messageText(raw: String): String? {
         val t = raw.trim().trim('"', '\'', '“', '”').trim().trimEnd(',')
@@ -75,7 +92,16 @@ object Basics {
      * The plan for [raw], or null when it is not plainly one of the everyday commands.
      * [whatsApp]: WhatsApp is on the phone (a plain "message" then goes there, otherwise by SMS).
      */
-    fun plan(raw: String, now: LocalDateTime = LocalDateTime.now(), whatsApp: Boolean = true): Plan? {
+    /** "Tomorrow in Coimbatore: overcast, 23 to 30°C, 29% chance of rain." from the weather tool's result. */
+    internal fun weatherDay(o: JSONObject, day: Int): String {
+        val d = o.optJSONArray("days")?.optJSONObject(day) ?: return "I couldn't get the forecast for that day."
+        val where = o.optString("place").substringBefore(",").ifBlank { "your place" }
+        val rain = d.optInt("rain_chance", -1)
+        return (if (day == 1) "Tomorrow" else "The day after tomorrow") + " in $where: ${d.optString("sky")}, ${Math.round(d.optDouble("min_c"))} to ${Math.round(d.optDouble("max_c"))}°C" + (if (rain >= 0) ", $rain% chance of rain." else ".")
+    }
+
+    /** [lastPlace]: the place of the weather answer just given in this chat, so "and tomorrow?" needs no AI. */
+    fun plan(raw: String, now: LocalDateTime = LocalDateTime.now(), whatsApp: Boolean = true, lastPlace: String? = null): Plan? {
         val original = polite.replace(polite.replace(raw.trim(), ""), "").trim().trimEnd('.', '!')
         val t = original.lowercase().replace(Regex("\\s+"), " ").trimEnd('?').trim()
         if (t.length < 3 || t.length > 220 || t.contains('\n')) return null
@@ -84,6 +110,18 @@ object Basics {
         val asTyped = original.replace(Regex("\\s+"), " ").trimEnd('?').trim()
         fun typed(m: MatchResult, group: Int): String = m.groups[group]?.range?.takeIf { asTyped.length == t.length }?.let { r -> asTyped.substring(r) } ?: m.groupValues[group]
 
+        // ---- in Tamil, for those who would rather speak than type (the answers come back in Tamil and are read aloud)
+        if (Regex("^(இப்போ |இப்போது )?(நேரம்|மணி) (என்ன|எத்தனை|எவ்வளவு)( ஆச்சு)?$|^(இப்போ )?மணி என்ன ஆச்சு$").matches(t))
+            return Plan("", say = "இப்போது மணி ${now.format(java.time.format.DateTimeFormatter.ofPattern("h:mm", java.util.Locale.ENGLISH))}.", speak = true)
+        if (Regex("^(இன்று|இன்னைக்கு|இன்றைக்கு) (என்ன )?(தேதி|கிழமை)( என்ன)?$").matches(t))
+            return Plan("", say = "இன்று ${now.dayOfMonth}-${now.monthValue}-${now.year}.", speak = true)
+        if (Regex("^(பேட்டரி|சார்ஜ்) (எவ்வளவு|எத்தனை)( இருக்கு| உள்ளது)?$").matches(t))
+            return Plan("phone_state", speak = true) { o -> "பேட்டரி ${o.optInt("battery_percent")} சதவீதம் உள்ளது." + (if (o.optBoolean("charging")) " சார்ஜ் ஆகிறது." else "") }
+        if (Regex("^(என் |எனக்கு வந்த |புது |புதிய )?(மெசேஜ்|மெசேஜை|மெசேஜ்களை|செய்தி|செய்திகளை|message) (படி|வாசி|சொல்லு|படிச்சு சொல்லு|படித்து சொல்)$|^(என்ன )?மெசேஜ் வந்(திருக்கு|தது|துச்சு)$").matches(t))
+            return Plan("notifications_read", args("max" to 30), speak = true) { o -> readOut(o.optJSONArray("items"), tamil = true) }
+        if (Regex("^(read|read out|tell me|say|check)(?: me)?(?: my| the| any)?(?: new| unread| latest)? (?:messages?|msgs?|whatsapp(?: messages?)?|sms)(?: aloud| out loud| to me| for me)?$|^(?:any|do i have(?: any)?) (?:new |unread )?messages?$|^(?:message|msg) (?:padi|padichu sollu|vasichu sollu|sollu)$|^(?:new|puthu) (?:message|msg) (?:iruka|irukka|vandhucha|padi)$").matches(t))
+            return Plan("notifications_read", args("max" to 30), speak = true) { o -> readOut(o.optJSONArray("items"), tamil = false) }
+
         // ---- the time, the date, the battery: answered from the phone itself
         if (Regex("^(what(?:'s| is)? (?:the )?time(?: (?:is it|now))?|what time is it(?: now)?|time(?: now)?|current time|time enna|mani enna|enna mani)$").matches(t))
             return Plan("", say = "It's ${now.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.ENGLISH))}.")
@@ -91,6 +129,13 @@ object Basics {
             return Plan("", say = "Today is ${now.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", java.util.Locale.ENGLISH))}.")
         if (Regex("^(battery|battery (?:level|percentage|percent|status|left)|how much (?:battery|charge)(?: (?:is )?left| do i have)?|what(?:'s| is) (?:the |my )?battery(?: level| percentage)?|charge evlo(?: irukku)?|battery evlo(?: irukku)?)$").matches(t))
             return Plan("phone_state") { o -> "Battery is at ${o.optInt("battery_percent")}%" + (if (o.optBoolean("charging")) ", charging." else ".") }
+
+        // ---- tomorrow's weather, asked outright or as "and tomorrow?" right after a weather answer
+        Regex("^(?:and |what about |how about |then )?(tomorrow|day after tomorrow|the day after|naalai|naalaiku)$").on { m ->
+            lastPlace?.let { place -> val day = if (m.groupValues[1].contains("after")) 2 else 1; Plan("weather", args("place" to place)) { o -> weatherDay(o, day) } }
+        }?.let { return it }
+        Regex("^(?:what(?:'s| is) the |how(?:'s| is) the |what will be the )?(?:weather|climate|temperature)(?: (?:like|be|for))* tomorrow(?: (?:in|at|for) ([\\p{L} .'-]{2,40}?))?$").on { m -> Plan("weather", args("place" to m.groupValues[1].trim())) { o -> weatherDay(o, 1) } }?.let { return it }
+        Regex("^(?:tomorrow'?s? weather|will it rain tomorrow|naalaiku mazhai varuma)(?: (?:in|at|for) ([\\p{L} .'-]{2,40}?))?$").on { m -> Plan("weather", args("place" to m.groupValues[1].trim())) { o -> weatherDay(o, 1) } }?.let { return it }
 
         // ---- weather now (a forecast for another day is the AI's to word)
         if (!Regex("\\b(tomorrow|week|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next|forecast|naalai)\\b").containsMatchIn(t)) {
@@ -122,7 +167,11 @@ object Basics {
         Regex("^(?:tell|inform|let) (.{2,30}?) (?:know )?(?:that|saying) (.{2,})$").on { m -> message(m.groupValues[1], typed(m, 2), "") }?.let { return it }
         // "send good morning to dad on whatsapp", "send hi to ram"
         Regex("^send (.{2,}?) to (.{2,30}?)(?: (?:on|in|via|through|by) (whatsapp|sms|text|message))?$").on { m ->
-            if (Regex("\\b(file|photo|pic|picture|image|video|pdf|ppt|document|doc|location|contact|link|it|this|that|screenshot|money|rs|₹|rupees)\\b").containsMatchIn(m.groupValues[1])) null
+            val what = m.groupValues[1]
+            // "send today's sales / the weather / my plan to dad" names a thing to look up first; only plain words ("good morning", "hi") are sent as they are.
+            if (Regex("\\b(file|photo|pic|picture|image|video|pdf|ppt|document|doc|location|contact|link|it|this|that|screenshot|money|rs|₹|rupees)\\b").containsMatchIn(what) ||
+                Regex("^(the|my|our|your|his|her|their|these|those|today'?s|yesterday'?s|tomorrow'?s|latest|current|all|list of|details|some|any|me)\\b").containsMatchIn(what) ||
+                Regex("\\b(sales|collection|expenses|spending|summary|report|status|orders?|deadlines?|bills?|plans?|timetable|schedule|news|scores?|prices?|weather|address|number|notes|total|balance|list|results?|update|reminder)\\b").containsMatchIn(what)) null
             else message(m.groupValues[2], typed(m, 1).removePrefix("a ").removePrefix("message "), m.groupValues[3])
         }?.let { return it }
         // "dad ku I will be late nu message pannu"
@@ -184,6 +233,38 @@ object Basics {
                 if (items == null || items.length() == 0) "Nothing is waiting: no deadlines, bills or renewals caught from your messages."
                 else "Caught from your messages:\n" + (0 until items.length()).joinToString("\n") { i -> items.getJSONObject(i).let { c -> "• Due ${c.optString("due")}: ${c.optString("what")}" + (c.optString("link").takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "") } }
             }
+        // ---- money and orders, from what the payment and delivery notifications said
+        Regex("^(?:what(?:'s| is| are) |show (?:me )?|tell me )?(?:my |the )?(?:(today|yesterday|this week|this month|last month)(?:'?s)? )?(?:sales|collection|income|earnings|receipts|vasool|varavu)(?: (?:for |of )?(today|yesterday|this week|this month|last month))?(?: evlo| total)?$|^how much (?:money )?(?:did i|have i|i) (?:receive|received|get|got|earn|earned|collect|collected|make|made)(?: (today|yesterday|this week|this month|last month))?$|^(inniku|innaiku|netru|nethu) (?:evlo |evvalavu )?(?:vasool|varavu|collection|sales)(?: evlo| aachu)?$").on { m ->
+            val w = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
+            Plan("money_summary", args("range" to period(w), "direction" to "in")) { o -> o.optString("summary") }
+        }?.let { return it }
+        Regex("^how much (?:money )?(?:did i|have i|i) (?:spend|spent|pay|paid)(?: (today|yesterday|this week|this month|last month))?$|^(?:what(?:'s| is| are) |show (?:me )?)?(?:my |the )?(?:(today|yesterday|this week|this month|last month)(?:'?s)? )?(?:spending|spendings|expenses|expense|selavu)(?: (?:for |of )?(today|yesterday|this week|this month|last month))?(?: evlo)?$|^(inniku|innaiku|netru|nethu) (?:evlo |evvalavu )?selavu(?: evlo| aachu)?$").on { m ->
+            val w = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
+            Plan("money_summary", args("range" to period(w), "direction" to "out")) { o -> o.optString("summary") }
+        }?.let { return it }
+        if (Regex("^where (?:is|are) (?:my |the )?(?:orders?|parcels?|packages?|deliver(?:y|ies)|couriers?)$|^(?:track|show|list|check) (?:my |the )?(?:orders?|parcels?|packages?|deliver(?:y|ies))$|^(?:my |any )?(?:orders|deliveries|parcels)(?: today| status| coming)?$|^when (?:will|does|is) my (?:order|parcel|package|delivery) (?:come|arrive|coming|arriving|reach)$|^(?:parcel|order) enga(?: irukku)?$").matches(t))
+            return Plan("orders_list") { o -> o.optString("summary") }
+
+        // ---- plans and the credit book
+        if (Regex("^(?:show |list |what are )?(?:my |the )?plans?(?: status| progress)?$|^how (?:is|are) my (?:\\w+ )?plans? (?:going|doing)$|^what(?:'s| is) (?:my |today'?s? )(?:workout|exercise|study plan|plan|session)(?: (?:for )?today)?$|^today'?s? (?:workout|exercise|session|plan)$|^my (?:streak|progress)$").matches(t))
+            return Plan("plan_list") { o -> o.optString("summary").ifBlank { "No plans yet." } }
+        if (Regex("^(?:i )?(?:have )?(?:finished|completed|did|done with) (?:my |today'?s? |the )?(?:workout|exercise|study|session|plan|reading|practice)(?: for today| today)?$|^(?:workout|exercise|study|session|reading|practice|plan) (?:is )?(?:done|finished|over|completed|mudinjathu|mudichiten)(?: for today)?$").matches(t))
+            return Plan("plan_mark", args("state" to "done")) { o -> o.optString("result").ifBlank { o.optString("status") } }
+        if (Regex("^skip (?:my |today'?s? |the )?(?:workout|exercise|study|session|plan|reading|practice)(?: for today| today)?$|^(?:no|not doing) (?:workout|exercise|study) today$").matches(t))
+            return Plan("plan_mark", args("state" to "skip")) { o -> o.optString("result").ifBlank { o.optString("status") } }
+        if (Regex("^who (?:all )?owes? me(?: money)?$|^(?:show |list )?(?:my |the )?(?:credit (?:book|list)|khata|kadan (?:list|kanakku))$|^(?:how much|what) (?:is|am i) owed(?: to me)?$|^yaar(?:u)? kadan (?:kudukanum|tharanum)$").matches(t))
+            return Plan("khata", args("action" to "list")) { o -> o.optString("summary") }
+        Regex("^(.{2,30}?) owes? me (?:₹|rs\\.? ?)?(\\d{1,7})(?: (?:rupees|rs|bucks))?(?: for (.{2,60}))?$|^(?:put|add|write) (?:₹|rs\\.? ?)?(\\d{1,7})(?: (?:rupees|rs))? (?:on|to|in) (.{2,30}?)(?:'s)? (?:account|credit|khata|kadan)$").on { m ->
+            val name = person(m.groupValues[1].ifBlank { m.groupValues[5] }) ?: return@on null
+            val amount = (m.groupValues[2].ifBlank { m.groupValues[4] }).toInt()
+            Plan("khata", args("action" to "gave", "name" to name.replaceFirstChar { it.uppercase() }, "amount" to amount, "note" to m.groupValues[3]))
+        }?.let { return it }
+        // "Ravi paid 200" is the credit book's business only when Ravi has an account in it.
+        Regex("^(.{2,30}?) (?:has )?(?:paid|gave|returned|settled|kuduthutan|kuduthaan)(?: me)?(?: back)? (?:₹|rs\\.? ?)?(\\d{1,7})(?: (?:rupees|rs))?$").on { m ->
+            val name = person(m.groupValues[1]) ?: return@on null
+            if (Khata.balance(name) <= 0) null else Plan("khata", args("action" to "got", "name" to name, "amount" to m.groupValues[2].toInt()))
+        }?.let { return it }
+
         if (Regex("^(?:give me |show me |tell me |what(?:'s| is) )?(?:my |the |today'?s? )?(?:morning |daily |day'?s? )?(?:summary|brief|briefing|digest)(?: for today| today| of (?:the day|today))?$|^what(?:'s| is) on today$|^what do i (?:have|need to do) today$").matches(t))
             return Plan("daily_brief") { o -> o.optString("summary").ifBlank { "Nothing to report today." } }
         if (Regex("^what (?:are you|is seyal) watching(?: for me)?$|^(?:show|list)(?: me)?(?: my| the)? watch(?:ers|es|ed pages|ing list)$|^what are my watchers$").matches(t))

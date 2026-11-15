@@ -36,7 +36,8 @@ sealed class Part {
 
     fun toJson(): JSONObject = when (this) {
         is Text -> JSONObject().put("type", "text").put("text", text)
-        is Image -> JSONObject().put("type", "image").put("mime", mime).put("b64", b64)
+        // A big attached file (a video, a long PDF) is kept for the conversation in hand, not written to disk with every save.
+        is Image -> JSONObject().put("type", "image").put("mime", mime).put("b64", if (b64.length > 700_000 && !mime.startsWith("image/")) "" else b64)
         is Call -> JSONObject().put("type", "call").put("id", id).put("name", name).put("args", args).also { o -> signature?.let { o.put("signature", it) } }
         is Result -> JSONObject().put("type", "result").put("call_id", callId).put("name", name).put("output", output).put("is_error", isError)
             .also { o -> image?.let { o.put("image", it.toJson()) } }

@@ -185,6 +185,69 @@ object Settings {
         get() = str("caught_today", "")
         set(v) = put("caught_today", v)
 
+    /** Warn when an incoming message looks like a scam (rules on the phone; only the user is told). */
+    var scamWarnings: Boolean
+        get() = plain.getBoolean("scam_warnings", true)
+        set(v) = plain.edit().putBoolean("scam_warnings", v).apply()
+
+    /** Senders the user marked "Not a scam", one per line. */
+    var scamTrusted: String
+        get() = str("scam_trusted", "")
+        set(v) = put("scam_trusted", v)
+
+    /** Keep incoming messages for 30 days on the phone so they can be searched later ("the address Ram sent"). */
+    var keepHistory: Boolean
+        get() = plain.getBoolean("keep_history", true)
+        set(v) = plain.edit().putBoolean("keep_history", v).apply()
+
+    /** Family check-in: text [guardianNumber] when this phone has not been unlocked by [guardianTime]. Off until set up. */
+    var guardianOn: Boolean
+        get() = plain.getBoolean("guardian_on", false)
+        set(v) = plain.edit().putBoolean("guardian_on", v).apply()
+    var guardianNumber: String
+        get() = str("guardian_number", "")
+        set(v) = put("guardian_number", v)
+    var guardianTime: String
+        get() = str("guardian_time", "11:00")
+        set(v) = put("guardian_time", v)
+    /** When the phone was last unlocked (epoch ms). */
+    var lastUnlock: Long
+        get() = plain.getLong("last_unlock", 0L)
+        set(v) = plain.edit().putLong("last_unlock", v).apply()
+    /** The day (yyyy-MM-dd) the check-in text was last sent: at most one a day. */
+    var guardianSentDay: String
+        get() = str("guardian_sent_day", "")
+        set(v) = put("guardian_sent_day", v)
+
+    /** Simple mode: one big microphone, big buttons, every answer spoken. For parents and anyone who finds apps hard. */
+    var simpleMode: Boolean
+        get() = plain.getBoolean("simple_mode", false)
+        set(v) = plain.edit().putBoolean("simple_mode", v).apply()
+
+    /** Offer to automate what the user does again and again (at most one offer a day). */
+    var suggestHabits: Boolean
+        get() = plain.getBoolean("suggest_habits", true)
+        set(v) = plain.edit().putBoolean("suggest_habits", v).apply()
+    /** Suggestions the user said no to, one key per line: never offered again. */
+    var suggestDeclined: String
+        get() = str("suggest_declined", "")
+        set(v) = put("suggest_declined", v)
+    /** How many times the phone closed Seyal in the middle of a task (shown with the fix in Control). */
+    var killedCount: Int
+        get() = plain.getInt("killed_count", 0)
+        set(v) = plain.edit().putInt("killed_count", v).apply()
+    var killedAt: Long
+        get() = plain.getLong("killed_at", 0L)
+        set(v) = plain.edit().putLong("killed_at", v).apply()
+    /** Places already looked up for the weather ("coimbatore" → latitude, longitude, name), so the next answer is one request, not two. */
+    var placeCache: String
+        get() = str("place_cache", "")
+        set(v) = put("place_cache", v)
+    /** The day (yyyy-MM-dd) a suggestion was last shown. */
+    var suggestDay: String
+        get() = str("suggest_day", "")
+        set(v) = put("suggest_day", v)
+
     /** The user hid the setup card. */
     var setupHidden: Boolean
         get() = plain.getBoolean("setup_hidden", false)

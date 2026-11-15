@@ -213,6 +213,8 @@ object AgentTools {
                 if (problems.isNotEmpty()) return@Tool ToolResult.Failed("This does NOT match what the user asked for:\n" + problems.mapIndexed { i, p -> "${i + 1}. $p" }.joinToString("\n"))
                 // Something was not read off the screen: ask for it once, then accept what could be read.
                 if (unread.isNotEmpty() && s.checked.add("unread")) return@Tool ToolResult.Failed("Not checked yet, because these were not reported: ${unread.joinToString("; ")}. Read them from the screen (screen_read, or a screenshot) and call order_check again with them. If the screen truly does not show one, call again without it.")
+                // It matches and is at the payment step: these are the user's choices, worth remembering for "same as last time".
+                runCatching { com.seyal.app.agent.Usual.noteOrder(com.seyal.app.agent.Order.fromJson(order.toJson().apply { if (order.place.isBlank() && shown.optString("place").isNotBlank()) put("place", shown.optString("place")) })) }
                 ToolResult.Done(
                     JSONObject().put("ok", true).put("fine", true).put("result", "This matches what the user asked for. Stop at the payment button and tell the user it is ready: place, day and time, how many, seats and the amount."),
                     "Checked: it matches what you asked for",

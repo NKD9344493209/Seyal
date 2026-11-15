@@ -79,6 +79,71 @@ object Notify {
         NotificationManagerCompat.from(ctx).notify("caught${c.id}".hashCode(), b.build())
     }
 
+    private fun action(ctx: Context, code: String, fill: Intent.() -> Unit): PendingIntent = PendingIntent.getBroadcast(
+        ctx, code.hashCode(), Intent(ctx, com.seyal.app.agent.ActionReceiver::class.java).setAction("com.seyal.app.$code").apply(fill),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    /** Today's piece of a plan, with one-tap answers. [adjust]: it has slipped several times, so offer to lighten or pause it. */
+    fun plan(ctx: Context, planId: String, title: String, body: String, adjust: Boolean) {
+        if (!allowed(ctx)) return
+        fun act(state: String) = action(ctx, "PLAN_${state.uppercase()}_$planId") { putExtra("plan", planId); putExtra("state", state) }
+        val b = NotificationCompat.Builder(ctx, CH_ALARM)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(70))
+            .setContentText(body.lines().first())
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(openApp(ctx))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .addAction(0, "Done", act("done"))
+        if (adjust) b.addAction(0, "Make it easier", act("easier")).addAction(0, "Pause", act("pause"))
+        else b.addAction(0, "Later", act("later")).addAction(0, "Skip", act("skip"))
+        NotificationManagerCompat.from(ctx).notify("plan$planId".hashCode(), b.build())
+        if (com.seyal.app.data.Settings.speak) runCatching { Speech.say(ctx, title) }
+    }
+
+    /** An offer to automate something the user keeps doing by hand: Yes / No thanks. */
+    fun offer(ctx: Context, key: String, title: String, text: String) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(60))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openApp(ctx))
+            .setAutoCancel(true)
+            .addAction(0, "Yes, do it", action(ctx, "OFFER_YES") { putExtra("offer", key); putExtra("yes", true) })
+            .addAction(0, "No thanks", action(ctx, "OFFER_NO") { putExtra("offer", key); putExtra("yes", false) })
+            .build()
+        NotificationManagerCompat.from(ctx).notify("offer".hashCode(), n)
+    }
+
+    /** A message that looks like a scam: say why, and what not to do. "Not a scam" stops warnings for that sender. */
+    fun scam(ctx: Context, sender: String, why: String) {
+        if (!allowed(ctx)) return
+        val trust = PendingIntent.getBroadcast(
+            ctx, ("trust$sender").hashCode(),
+            Intent(ctx, com.seyal.app.agent.ActionReceiver::class.java).setAction("com.seyal.app.SCAM_OK").putExtra("scam_sender", sender),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = "$why\nDon't tap its link, don't call its number, and don't share any code."
+        val n = NotificationCompat.Builder(ctx, CH_ALARM)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Careful: the message from ${sender.take(30)} looks like a scam")
+            .setContentText(why)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openApp(ctx))
+            .addAction(0, "Not a scam", trust)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(("scam$sender").hashCode(), n)
+        if (com.seyal.app.data.Settings.simpleMode) runCatching { Speech.say(ctx, "Careful. The new message from $sender looks like a scam. Do not open its link or share any code.") }
+    }
+
     /** A watcher's news, or anything else with a page to open: tap opens [url]. */
     fun alert(ctx: Context, id: String, title: String, text: String, url: String) {
         if (!allowed(ctx)) return

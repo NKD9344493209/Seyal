@@ -132,6 +132,10 @@ object Skills {
         Template("Ringer on in the morning", "Ringer back to normal at 6:30 AM. Runs without the AI", "Set the ringer back to normal.", Trigger("time", "06:30"), listOf("set_setting" to args("name" to "ringer", "value" to "normal"))),
         Template("Read urgent messages aloud", "Speaks any message that says urgent or emergency. Runs without the AI", "Read the urgent message aloud.", Trigger("notification", contains = "urgent|emergency|avasaram|asap"),
             listOf("say" to args("text" to "{{sender}} says: {{text}}"))),
+        Template("Today's collection at closing", "For shops: the UPI money that came in today and from how many payments, at 9:30 PM. Runs without the AI", "Tell me today's total collection.", Trigger("time", "21:30"),
+            listOf("money_summary" to args("range" to "today", "direction" to "in", "notify" to true))),
+        Template("My spending, every night", "What went out today, by kind (food, travel, shopping, bills), at 10 PM. Runs without the AI", "Tell me what I spent today.", Trigger("time", "22:00"),
+            listOf("money_summary" to args("range" to "today", "direction" to "out", "notify" to true))),
         Template("Screen time at 9 PM", "How long you used the phone today and your top apps", "Tell me how long I used my phone today and my top 3 apps, in two lines.", Trigger("time", "21:00")),
     )
 

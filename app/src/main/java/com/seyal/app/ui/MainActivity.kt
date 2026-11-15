@@ -48,6 +48,20 @@ import com.seyal.app.ui.theme.SeyalTheme
 
 class MainActivity : ComponentActivity() {
     private val askPerms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { resumeTick.value = resumeTick.value + 1 }
+    /** Files the user picked with the + button in the chat, waiting to be sent with the next message. */
+    val attachments = androidx.compose.runtime.mutableStateListOf<com.seyal.app.device.Attachment>()
+    val attaching = mutableStateOf(false)
+    private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNullOrEmpty()) return@registerForActivityResult
+        attaching.value = true
+        val room = com.seyal.app.device.Attach.MAX_FILES - attachments.size
+        Thread {
+            val loaded = uris.take(room.coerceAtLeast(0)).map { com.seyal.app.device.Attach.load(applicationContext, it, com.seyal.app.data.Settings.provider) }
+            runOnUiThread { attachments.addAll(loaded); attaching.value = false }
+        }.start()
+    }
+    /** Opens the phone's file picker: photos, PDFs, videos, voice clips, documents. */
+    fun attach() = runCatching { pickFiles.launch(arrayOf("image/*", "application/pdf", "video/*", "audio/*", "text/*", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.presentationml.presentation")) }
     var openSessionId = mutableStateOf<String?>(null)
     /** Text shared into Seyal from another app (Share → Seyal, or select text → Ask Seyal). */
     val sharedText = mutableStateOf<String?>(null)
@@ -130,6 +144,7 @@ enum class Tab(val label: String, val icon: ImageVector) {
 @Composable
 fun Shell(openSessionId: String?) {
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
+    var simple by rememberSaveable { mutableStateOf(Settings.simpleMode) }
     LaunchedEffect(openSessionId) { if (openSessionId != null) tab = Tab.HISTORY }
     // Anything shared into Seyal, or a "listen" request, belongs on the Chat tab.
     val activity = LocalContext.current as? MainActivity
@@ -138,13 +153,15 @@ fun Shell(openSessionId: String?) {
     LaunchedEffect(listen, hasShared) { if (listen > 0 || hasShared) tab = Tab.HOME }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         // Bottom bar and composer stay above the navigation bar and the keyboard.
-        Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
+        // Simple mode: one big microphone and nothing else, until "Normal mode" is tapped.
+        if (simple && openSessionId == null) Column(Modifier.fillMaxSize().navigationBarsPadding()) { SimpleScreen { simple = false } }
+        else Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             Column(Modifier.weight(1f)) {
                 when (tab) {
                     Tab.HOME -> ChatScreen(openSessionId) { tab = it }
                     Tab.SKILLS -> SkillsScreen { tab = it }
                     Tab.HISTORY -> HistoryScreen(openSessionId)
-                    Tab.CONTROL -> ControlScreen()
+                    Tab.CONTROL -> ControlScreen { simple = true }
                 }
             }
             BottomBar(tab) { tab = it }

@@ -75,7 +75,7 @@ object Scheduler {
      */
     fun syncBackground(ctx: Context) {
         val now = System.currentTimeMillis()
-        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now)).minOrNull()
+        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now)).minOrNull()
         if (next == null) { am(ctx).cancel(pending(ctx, "tick", "bg", 0, "")); forget("tick", "bg"); return }
         val at = maxOf(next, now + 5_000)
         remember("tick", "bg", at, "")
@@ -171,6 +171,28 @@ class EventReceiver : BroadcastReceiver() {
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == "com.seyal.app.STOP_ALL") { Agent.cancelAll(); return }
+        // A plan's reminder: Done / Skip / Later / Make it easier / Pause.
+        intent.getStringExtra("plan")?.let { id ->
+            val state = intent.getStringExtra("state") ?: "done"
+            val p = Coach.find(id)
+            val say = if (p != null) Coach.mark(p, state, System.currentTimeMillis()) else "That plan no longer exists."
+            runCatching { androidx.core.app.NotificationManagerCompat.from(context).cancel("plan$id".hashCode()) }
+            Notify.line(context, say)
+            Scheduler.syncBackground(context)
+            return
+        }
+        // An offer to automate a habit: Yes / No thanks.
+        intent.getStringExtra("offer")?.let { key ->
+            Background.answerOffer(context, key, intent.getBooleanExtra("yes", false))
+            runCatching { androidx.core.app.NotificationManagerCompat.from(context).cancel("offer".hashCode()) }
+            return
+        }
+        // "Not a scam" on a scam warning: that sender is trusted from now on.
+        intent.getStringExtra("scam_sender")?.let { sender ->
+            if (!Scam.trusted(sender, Settings.scamTrusted)) Settings.scamTrusted = (Settings.scamTrusted + "\n" + sender.trim()).trim()
+            runCatching { androidx.core.app.NotificationManagerCompat.from(context).cancel(("scam$sender").hashCode()) }
+            return
+        }
         // Buttons on a "caught for you" notification.
         intent.getStringExtra("caught")?.let { id ->
             Inbox.mark(id, if (intent.action == "com.seyal.app.CAUGHT_DROP") "dismissed" else "done")
@@ -200,6 +222,45 @@ object Background {
         return true
     }
 
+    private fun zoneDay(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault())
+
+    /** When to look for a habit worth offering: early evening, once a day. Null when offers are off. */
+    fun nextOffer(now: Long): Long? {
+        if (!Settings.suggestHabits) return null
+        val today = zoneDay(now).toLocalDate()
+        val at = today.atTime(18, 30).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        return if (now < at && Settings.suggestDay != today.toString()) at else at + 24 * 3600_000L
+    }
+
+    private fun offerHabit(ctx: Context, now: Long) {
+        if (!Settings.suggestHabits || Settings.paused) return
+        val z = zoneDay(now); val today = z.toLocalDate().toString()
+        if (Settings.suggestDay == today || z.hour !in 9..21 || (z.hour == 18 && z.minute < 30) || z.hour < 18) return
+        Settings.suggestDay = today
+        val offer = Habits.offer(now, Settings.suggestDeclined.split('\n').filter { it.isNotBlank() }.toSet(), Skills.all().map { it.name }.toSet()) ?: return
+        pendingOffer = offer
+        Notify.offer(ctx, offer.key, offer.title, offer.text)
+    }
+
+    /** The offer currently shown (kept so "Yes" can create it). */
+    @Volatile var pendingOffer: Habits.Offer? = null
+
+    /** The user answered an offer. Yes creates the skill; no is remembered so it is never offered again. */
+    fun answerOffer(ctx: Context, key: String, yes: Boolean) {
+        val offer = pendingOffer?.takeIf { it.key == key } ?: Habits.offer(System.currentTimeMillis(), emptySet(), Skills.all().map { it.name }.toSet())?.takeIf { it.key == key }
+        if (!yes || offer == null) {
+            Settings.suggestDeclined = (Settings.suggestDeclined + "\n" + key).trim()
+            return
+        }
+        val j = offer.skill
+        val steps = j.optJSONArray("steps")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.map { com.seyal.app.data.Part.Call(com.seyal.app.data.newId(), it.optString("name"), it.optJSONObject("args") ?: org.json.JSONObject()) } }.orEmpty()
+        val trigger = if (j.optString("event").isNotBlank()) com.seyal.app.data.Trigger("event", event = j.optString("event")) else com.seyal.app.data.Trigger("time", j.optString("time"))
+        Skills.save(j.optString("name"), "Suggested from what you do every day", j.optString("goal"), steps, trigger)
+        Settings.suggestDeclined = (Settings.suggestDeclined + "\n" + key).trim()
+        pendingOffer = null
+        Notify.line(ctx, "Done. \"${j.optString("name")}\" is now in Skills; turn it off there any time.")
+    }
+
     /** [done] is called when the work is over (the alarm's receiver waits for it, so Android keeps the app alive meanwhile). */
     fun tick(ctx: Context, done: () -> Unit = {}) {
         if (!running.compareAndSet(false, true)) { done(); return }
@@ -212,6 +273,11 @@ object Background {
                 val now = System.currentTimeMillis()
                 // 1. Reminders whose time has come.
                 Inbox.dueReminders(now).forEach { c -> Inbox.told(c.id, now); Notify.caught(ctx, c, "Reminder") }
+                // 1b. Plans: today's piece, at the time the user chose.
+                Coach.dueNudges(now).forEach { p -> Coach.nudged(p, now); val (title, body) = Coach.nudgeText(p); Notify.plan(ctx, p.id, title, body, p.skipsInRow >= 3) }
+                // 1c. The family check-in, and an offer to automate a habit (one a day at most).
+                runCatching { com.seyal.app.device.Guardian.check(ctx, now) }
+                runCatching { offerHabit(ctx, now) }
                 // 2. Watched pages whose turn it is.
                 // A few per wake-up, so it always finishes in time; the rest follow a minute later.
                 if (!Settings.paused) Watchers.dueNow(now).take(3).forEach { w ->

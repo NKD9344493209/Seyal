@@ -284,6 +284,7 @@ private fun CaughtList() {
     val now = System.currentTimeMillis()
     val caught = remember(version) { com.seyal.app.agent.Inbox.open(now) }
     val watchers = remember(version) { com.seyal.app.agent.Watchers.all() }
+    val plans = remember(version) { com.seyal.app.agent.Coach.all() }
     val busy = remember(version) { com.seyal.app.device.Busy.active() }
     fun open(url: String) = runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -305,6 +306,8 @@ private fun CaughtList() {
                 SmallButton("End now", filled = false) { com.seyal.app.device.Busy.stop(ctx); version++ }
             }
         }
+        items(plans, key = { "p" + it.id }) { p -> PlanCard(p) { version++ } }
+        item { TodayCards(version) { version++ } }
         if (caught.isEmpty()) item { Text(if (reading) "Nothing waiting. When a message has a deadline, a form to fill, a bill or a renewal, it shows up here and you get a reminder." else "Reading is off.", color = cs.onSurfaceVariant) }
         items(caught, key = { it.id }) { c ->
             Card {
@@ -337,6 +340,6 @@ private fun CaughtList() {
                 }
             }
         }
-        item { Text("Ask in chat: \"tell me when bookings open for … at …\", \"tell me when this drops below ₹…\", \"I'm in class till 4\".", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
+        item { Text("Ask in chat: \"tell me when bookings open for … at …\", \"make me a workout plan\", \"today's sales\", \"where are my orders\", \"I'm in class till 4\".", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
     }
 }

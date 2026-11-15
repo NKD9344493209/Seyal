@@ -84,15 +84,26 @@ object WebTools {
         61 to "light rain", 63 to "rain", 65 to "heavy rain", 66 to "freezing rain", 67 to "freezing rain", 71 to "light snow", 73 to "snow", 75 to "heavy snow", 80 to "rain showers", 81 to "rain showers", 82 to "heavy showers",
         95 to "thunderstorm", 96 to "thunderstorm with hail", 99 to "thunderstorm with hail")
 
+    /** Tries once more when the first attempt is slow or fails: a short wait twice beats one long one. */
+    private fun quick(url: String): String = runCatching { http(url, "application/json", 7_000) }.getOrElse { http(url, "application/json", 9_000) }
+
     private suspend fun weather(place: String): ToolResult = withContext(Dispatchers.IO) {
         if (place.isBlank()) return@withContext ToolResult.Failed("Which place? (No home city set in Control → You.)")
-        val geo = runCatching { JSONObject(http("https://geocoding-api.open-meteo.com/v1/search?name=${URLEncoder.encode(place, "UTF-8")}&count=1&language=en&format=json", "application/json")) }
-            .getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message})", retryable = true) }
-        val g = geo.optJSONArray("results")?.optJSONObject(0) ?: return@withContext ToolResult.Failed("No place called \"$place\" found")
+        // A place looked up before is remembered, so the next answer needs one request instead of two.
+        val key = place.trim().lowercase()
+        val cache = runCatching { JSONObject(Settings.placeCache) }.getOrElse { JSONObject() }
+        var g = cache.optJSONObject(key)
+        if (g == null) {
+            val geo = runCatching { JSONObject(quick("https://geocoding-api.open-meteo.com/v1/search?name=${URLEncoder.encode(place, "UTF-8")}&count=1&language=en&format=json")) }
+                .getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message})", retryable = true) }
+            val found = geo.optJSONArray("results")?.optJSONObject(0) ?: return@withContext ToolResult.Failed("No place called \"$place\" found")
+            g = JSONObject().put("latitude", found.optDouble("latitude")).put("longitude", found.optDouble("longitude")).put("name", found.optString("name")).put("admin1", found.optString("admin1")).put("country", found.optString("country"))
+            runCatching { if (cache.length() > 40) cache.keys().asSequence().toList().take(10).forEach { cache.remove(it) }; cache.put(key, g); Settings.placeCache = cache.toString() }
+        }
         val lat = g.optDouble("latitude"); val lon = g.optDouble("longitude")
         val name = listOf(g.optString("name"), g.optString("admin1"), g.optString("country")).filter { it.isNotBlank() }.distinct().joinToString(", ")
         val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto&forecast_days=3"
-        val w = runCatching { JSONObject(http(url, "application/json")) }.getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message})", retryable = true) }
+        val w = runCatching { JSONObject(quick(url)) }.getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message})", retryable = true) }
         val c = w.optJSONObject("current") ?: JSONObject()
         val current = JSONObject().put("temp_c", c.optDouble("temperature_2m")).put("feels_like_c", c.optDouble("apparent_temperature")).put("humidity", c.optInt("relative_humidity_2m"))
             .put("rain_mm", c.optDouble("precipitation")).put("wind_kmh", c.optDouble("wind_speed_10m")).put("sky", codes[c.optInt("weather_code")] ?: "unknown")

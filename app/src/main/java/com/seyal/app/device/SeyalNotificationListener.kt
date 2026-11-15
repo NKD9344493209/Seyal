@@ -25,6 +25,8 @@ class SeyalNotificationListener : NotificationListenerService() {
     private var lastCallKey: String? = null
 
     private var lastCaller: String? = null
+    /** Senders already warned about today (one scam warning per sender per day). */
+    private val scamWarned = java.util.Collections.synchronizedSet(HashSet<String>())
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (sbn.key != lastCallKey) return
@@ -74,11 +76,26 @@ class SeyalNotificationListener : NotificationListenerService() {
         }
         val label = ScreenDriver.appLabel(this, sbn.packageName)
         Skills.onNotification(label, sbn.packageName, title, mask("$title $text").removePrefix("$title "), isGroup(sbn), sbn.key)
-        // Deadlines, bills and renewals in what just arrived: caught on the phone (no AI), and only the user is told.
-        if (Settings.catchMessages && !Settings.paused) runCatching {
+        // What this message means for the user: a deadline, a scam, a payment, an order, something to find later.
+        // Worked out on the phone (no AI); only the user is told, nobody is answered.
+        if (!Settings.paused) runCatching {
             val now = System.currentTimeMillis()
-            com.seyal.app.agent.Catcher.scan(label, title, text, now)?.let { c ->
-                if (com.seyal.app.agent.Inbox.add(c, now) && com.seyal.app.agent.Background.mayNotify()) {
+            val f = com.seyal.app.agent.Feeds.take(
+                label, title, text, isGroup(sbn), now,
+                com.seyal.app.agent.Feeds.Allow(Settings.catchMessages, Settings.scamWarnings, Settings.keepHistory && Settings.catchMessages, Settings.scamTrusted),
+                // A message from someone: Android's own label, the chat layout (sender and text), or a known chat app.
+                message = n.category == Notification.CATEGORY_MESSAGE || n.category == Notification.CATEGORY_EMAIL || n.extras?.containsKey(Notification.EXTRA_MESSAGES) == true ||
+                    sbn.packageName == "com.google.android.gm" || chatApps.any { sbn.packageName.contains(it, true) },
+            )
+            f.scam?.let { v ->
+                if (scamWarned.add(title.lowercase() + "|" + java.time.LocalDate.now()) && scamWarned.size < 400) {
+                    Notify.scam(this, title, v.why)
+                    // Simple mode is for people who may not read the warning: say it aloud as well.
+                    if (Settings.simpleMode) runCatching { Speech.say(this, com.seyal.app.agent.Scam.spoken(Settings.language == "ta")) }
+                }
+            }
+            f.caught?.let { c ->
+                if (com.seyal.app.agent.Background.mayNotify()) {
                     com.seyal.app.agent.Inbox.told(c.id, now)
                     Notify.caught(this, c, when (c.kind) { "deadline" -> "Deadline"; "bill" -> "Bill"; "renewal" -> "Auto-charge"; "recharge" -> "Recharge"; else -> "Return" })
                 }

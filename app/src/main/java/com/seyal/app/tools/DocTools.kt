@@ -113,7 +113,7 @@ object DocTools {
     }
 
     /** Saves into the phone's shared Documents/Seyal folder, where file managers and other apps can see it. */
-    private fun save(name: String, mime: String, bytes: ByteArray): Uri? {
+    internal fun save(name: String, mime: String, bytes: ByteArray): Uri? {
         if (Build.VERSION.SDK_INT < 29) return null
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name); put(MediaStore.MediaColumns.MIME_TYPE, mime)

@@ -46,7 +46,7 @@ class SeyalAccessibilityService : AccessibilityService() {
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && !own) AdSkipper.onWindow(cls)
         AdSkipper.onScreenChanged(this, pkg)
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (ScreenDriver.noteForeground(pkg)) Skills.onEvent("app_opened:" + ScreenDriver.appLabel(this, pkg))
+            if (ScreenDriver.noteForeground(pkg)) { Skills.onEvent("app_opened:" + ScreenDriver.appLabel(this, pkg)); runCatching { Signals.onApp(this, pkg) } }
         }
     }
 }

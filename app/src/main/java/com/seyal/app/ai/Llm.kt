@@ -482,7 +482,9 @@ object Llm {
                 else -> m.parts.forEach { p ->
                     when (p) {
                         is Part.Text -> content.put(JSONObject().put("type", "text").put("text", p.text.ifBlank { "." }))
-                        is Part.Image -> content.put(JSONObject().put("type", "image").put("source", JSONObject().put("type", "base64").put("media_type", p.mime).put("data", p.b64)))
+                        // Claude takes pictures and PDFs; other files were turned away when they were attached.
+                        is Part.Image -> if (p.b64.isNotBlank() && (p.mime.startsWith("image/") || p.mime == "application/pdf"))
+                            content.put(JSONObject().put("type", if (p.mime == "application/pdf") "document" else "image").put("source", JSONObject().put("type", "base64").put("media_type", p.mime).put("data", p.b64)))
                         else -> {}
                     }
                 }
@@ -540,7 +542,7 @@ object Llm {
                     m.parts.forEach { p ->
                         when (p) {
                             is Part.Text -> content.put(JSONObject().put("type", "text").put("text", p.text.ifBlank { "." }))
-                            is Part.Image -> content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:${p.mime};base64,${p.b64}")))
+                            is Part.Image -> if (p.b64.isNotBlank() && p.mime.startsWith("image/")) content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:${p.mime};base64,${p.b64}")))
                             else -> {}
                         }
                     }

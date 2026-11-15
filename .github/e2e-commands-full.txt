@@ -48,3 +48,21 @@ Remember that my favourite theatre is Broadway Cinemas
 Set the brightness to 30 percent and turn on do not disturb
 Set the brightness to 30 percent and turn on do not disturb.
 Every morning at 8, give me AI news
+!feed 9876500011|Dear customer your electricity power will be disconnected tonight at 9.30 pm because your previous month bill was not updated. Please immediately contact our electricity officer 8240471159
+!feed AX-HDFCBK|482913 is your OTP for txn of INR 250.00 at SWIGGY. Do not share it with anyone. -HDFC Bank
+!feed Google Pay|Ram Kumar paid you Rs.500.00
+!feed PhonePe|Received Rs.1,250 from Priya S
+!feed VM-SBIUPI|Dear UPI user A/C X1234 debited by 250.0 on date 16Nov26 trf to SWIGGY Refno 631234567890. If not u? call 1800111109. -SBI
+Today's sales
+How much did I spend today?
+!feed Amazon|Your package with boAt Rockerz 255 is out for delivery
+Where are my orders?
+Kumar owes me 350 for tea
+Who owes me money?
+!feed Ram Kumar|My new address is 14, Gandhi Street, RS Puram, Coimbatore 641002
+Find the address Ram sent me
+What is the weather tomorrow in Coimbatore?
+Split 1200 among me, Ram and Priya
+Make me a home workout plan. I am a beginner, 20 minutes a day, Monday to Friday at 6 pm, no equipment, my goal is to lose fat, no injuries
+My plans
+Workout done

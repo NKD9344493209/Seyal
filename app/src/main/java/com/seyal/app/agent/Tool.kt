@@ -67,6 +67,8 @@ class Schema {
     fun bool(name: String, desc: String, required: Boolean = false) = add(name, "boolean", desc, required)
     fun strList(name: String, desc: String, required: Boolean = false) =
         add(name, "array", desc, required) { put("items", JSONObject().put("type", "string")) }
+    /** A list whose items have the given JSON schema. */
+    fun arr(name: String, desc: String, item: JSONObject, required: Boolean = false) = add(name, "array", desc, required) { put("items", item) }
     fun objList(name: String, desc: String, required: Boolean = false, item: Schema.() -> Unit) =
         add(name, "array", desc, required) { put("items", Schema().apply(item).build()) }
 
