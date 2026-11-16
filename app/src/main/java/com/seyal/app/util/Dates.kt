@@ -20,6 +20,8 @@ object Dates {
     private val monD = Regex("\\b$MON\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b,?\\s*(\\d{4})?", RegexOption.IGNORE_CASE)
     private val relative = Regex("\\b(day after tomorrow|tomorrow|tmrw|tmr|today|tonight|naalaikku|nalaiku|naalai|inniku|innaiku|indru)\\b|நாளை மறுநாள்|நாளை|இன்று", RegexOption.IGNORE_CASE)
     private val weekday = Regex("\\b(this|next|coming)?\\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\\b", RegexOption.IGNORE_CASE)
+    /** "due by 20th", "on the 5th": a day of the month with no month named. Means the next such day. */
+    private val dayOnly = Regex("\\b(?:by|on|before|due|till|until|upto)\\s+(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)\\b(?!\\s*(?:sem|semester|floor|std|standard|year|class|time|place|rank|anniversary|birthday|of|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))", RegexOption.IGNORE_CASE)
     private val inDays = Regex("\\b(?:in|within)\\s+(\\d{1,2})\\s+(day|days|hour|hours|hrs?)\\b", RegexOption.IGNORE_CASE)
     private val clock = Regex("\\b(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm|a\\.m\\.?|p\\.m\\.?)(?![a-z])|\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b(?!\\s*(am|pm))", RegexOption.IGNORE_CASE)
     private val endOfDay = Regex("\\b(eod|end of (the )?day|midnight)\\b", RegexOption.IGNORE_CASE)
@@ -73,6 +75,13 @@ object Dates {
             var add = (dow.value - today.dayOfWeek.value + 7) % 7
             if (add == 0 && m.groupValues[1].isNotBlank()) add = 7
             out += m.range.first to today.plusDays(add.toLong())
+        }
+        dayOnly.findAll(text).forEach { m ->
+            val d = m.groupValues[1].toInt()
+            if (d !in 1..31 || out.any { kotlin.math.abs(it.first - m.range.first) < 14 }) return@forEach
+            val thisMonth = runCatching { today.withDayOfMonth(d) }.getOrNull()
+            val day = if (thisMonth != null && !thisMonth.isBefore(today)) thisMonth else runCatching { today.plusMonths(1).withDayOfMonth(d) }.getOrNull()
+            day?.let { out += m.range.first to it }
         }
         inDays.findAll(text).forEach { m ->
             val n = m.groupValues[1].toLong()

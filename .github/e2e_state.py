@@ -44,8 +44,10 @@ def main():
     elif cmd == "anywaiting":
         print("yes" if any(e.get("status") == "WAITING" for e in index[:12]) else "no")
     elif cmd == "calls":
-        # AI calls made so far in the newest top-level session (to see a follow-up being worked on)
-        print(session(sys.argv[3], tops[0]["id"]).get("llm_calls", 0) if tops else 0)
+        # How far the newest top-level session has got (to see a follow-up being worked on): its AI calls
+        # plus its messages, because a follow-up answered without the AI makes no AI call at all.
+        s = session(sys.argv[3], tops[0]["id"]) if tops else {}
+        print(s.get("llm_calls", 0) + len(s.get("messages", [])))
     elif cmd == "report":
         dirname = sys.argv[3]
         timings = {}

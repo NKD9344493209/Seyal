@@ -6,6 +6,7 @@ import com.seyal.app.data.Part
 import com.seyal.app.data.Settings
 import com.seyal.app.data.newId
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -256,17 +257,35 @@ object Llm {
             used(model, t0)
             Settings.aiRequestsToday = Settings.aiRequestsToday + 1
             try {
-                mustCall.set(forceTool && tools.isNotEmpty())
-                val out = try {
-                    when (Settings.provider) {
-                        "anthropic" -> anthropic(system, messages, tools, maxTokens, model)
-                        "openai" -> openai(system, messages, tools, maxTokens, model)
-                        else -> gemini(system, messages, tools, maxTokens, model)
-                    }
-                } finally { mustCall.remove() }
-                log("$model: ok in ${System.currentTimeMillis() - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
-                if (coolWhy.remove(model) == "daily") saveDailyRests()
-                coolUntil.remove(model); strikes.remove(model); busyTries.remove(model)
+                // One request, on whichever thread runs it.
+                val ask: (String) -> LlmResponse = { m ->
+                    mustCall.set(forceTool && tools.isNotEmpty())
+                    try {
+                        when (Settings.provider) {
+                            "anthropic" -> anthropic(system, messages, tools, maxTokens, m)
+                            "openai" -> openai(system, messages, tools, maxTokens, m)
+                            else -> gemini(system, messages, tools, maxTokens, m)
+                        }
+                    } finally { mustCall.remove() }
+                }
+                // A normal answer takes one or two seconds. When nothing has come back after ten, the request is
+                // most likely stuck (it used to sit for 25 s before giving up): ask a second model as well and take
+                // whichever answers first.
+                val (winner, out) = hedged(
+                    model, if (maxTokens > 3000) 18_000L else HEDGE_AFTER_MS,
+                    backup = { val n = System.currentTimeMillis(); models().firstOrNull { it != model && coolWhy[it] != "missing" && roomAt(it, n) <= n } },
+                    onBackup = { b ->
+                        used(b, System.currentTimeMillis()); Settings.aiRequestsToday = Settings.aiRequestsToday + 1
+                        log("$model: no answer after ${System.currentTimeMillis() - t0} ms, also asking $b")
+                        onWait("The AI is slow · asking a second one too")
+                    },
+                    ask = ask,
+                )
+                val end = System.currentTimeMillis()
+                if (winner != model) { strikes[model] = (strikes[model] ?: 0) + 2; struckAt[model] = end; rest(model, end + 2 * 60_000L, "busy") }
+                log("$winner: ok in ${end - t0} ms, ${out.tokens} tokens, ${out.calls.size} calls")
+                if (coolWhy.remove(winner) == "daily") saveDailyRests()
+                coolUntil.remove(winner); strikes.remove(winner); busyTries.remove(winner)
                 Settings.tokensUsed = Settings.tokensUsed + out.tokens
                 return@withContext out
             } catch (e: LlmException) {
@@ -308,6 +327,29 @@ object Llm {
         )
     }
 
+    internal const val HEDGE_AFTER_MS = 10_000L
+    private val hedgeScope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+
+    /**
+     * Asks [first]; if it has not answered after [hedgeAfter] ms, also asks the model [backup] names (when there is
+     * one) and returns whichever answers first, with its name. A model that fails quickly is not hedged: its error
+     * comes straight back. When both fail, the first model's error is the one reported.
+     */
+    internal suspend fun <T> hedged(first: String, hedgeAfter: Long, backup: () -> String?, onBackup: (String) -> Unit, ask: (String) -> T): Pair<String, T> {
+        val a = hedgeScope.async { runCatching { ask(first) } }
+        val early = kotlinx.coroutines.withTimeoutOrNull(hedgeAfter) { a.await() }
+        if (early != null) return first to early.getOrThrow()
+        val second = backup() ?: return first to a.await().getOrThrow()
+        onBackup(second)
+        val b = hedgeScope.async { runCatching { ask(second) } }
+        val (who, res) = kotlinx.coroutines.selects.select<Pair<String, Result<T>>> { a.onAwait { first to it }; b.onAwait { second to it } }
+        if (res.isSuccess) return who to res.getOrThrow()
+        // The quicker one failed: the other may still answer.
+        val other = if (who == first) second to b.await() else first to a.await()
+        if (other.second.isSuccess) return other.first to other.second.getOrThrow()
+        throw (if (who == first) res else other.second).exceptionOrNull() ?: LlmException("The AI did not answer.")
+    }
+
     /** Plain text in, plain text out (titles, summaries, the key test). */
     suspend fun complete(system: String, user: String, maxTokens: Int = 512): String =
         chat(system, listOf(Msg("user", listOf(Part.Text(user)))), emptyList(), maxTokens).text
@@ -325,6 +367,13 @@ object Llm {
             log("$model rejected thinking level ${thinkLevels[i]}, using ${thinkLevels[i + 1] ?: "none"}")
             gemini(system, messages, tools, maxTokens, model)
         } else throw e
+    }
+
+    /** Some models leak the word "thought" (their thinking marker) as the text of a reply. It is not something to show the user. */
+    internal fun cleanText(text: String): String {
+        val t = text.trim()
+        if (t.equals("thought", true) || t.equals("thinking", true) || t.equals("thoughts", true)) return ""
+        return Regex("^(thought|thinking)\\s*\n+", RegexOption.IGNORE_CASE).replace(text.trimStart(), "")
     }
 
     /** Gemini 2.x models: thinking is set by budget, and they neither need nor know Gemini 3's thought signatures. */
@@ -429,6 +478,7 @@ object Llm {
             p.optJSONObject("functionCall")?.let { fc -> calls += Part.Call(newId(), fc.optString("name"), fc.optJSONObject("args") ?: JSONObject(), p.optString("thoughtSignature").ifBlank { null }) }
             if (p.has("text")) text.append(p.optString("text"))
         }
+        cleanText(text.toString()).let { text.setLength(0); text.append(it) }
         val stop = cand.optString("finishReason", "")
         if (text.isBlank() && calls.isEmpty() && stop == "SAFETY") throw LlmException("Gemini declined (safety filter)")
         val usage = res.optJSONObject("usageMetadata")

@@ -40,6 +40,18 @@ object Parsers {
     }
 
     /** DuckDuckGo HTML results → results[title, url, snippet]. */
+    /**
+     * The same search in plainer words: no quotes, no site: limits, no years or filler, at most seven words.
+     * Null when that would change nothing.
+     */
+    fun simplerQuery(query: String): String? {
+        val filler = setOf("the", "a", "an", "of", "for", "in", "on", "at", "to", "and", "or", "with", "near", "me", "online", "best", "latest", "now", "today", "tomorrow", "please", "list", "listings")
+        val words = query.replace(Regex("site:\\S+|[\"“”'‘’()\\[\\]]"), " ").replace(Regex("\\b(19|20)\\d{2}\\b"), " ")
+            .split(Regex("[\\s,;:|]+")).map { it.trim() }.filter { it.isNotBlank() && it.lowercase() !in filler && !Regex("^\\d{1,2}(st|nd|rd|th)?$").matches(it) }
+        val plain = words.take(7).joinToString(" ")
+        return plain.takeIf { it.length >= 3 && !it.equals(query.trim(), true) }
+    }
+
     fun searchResults(html: String, count: Int): JSONArray {
         val results = JSONArray()
         val linkRe = Regex("<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>")

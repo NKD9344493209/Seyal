@@ -218,7 +218,7 @@ object Skills {
      * position), the skill keeps only the goal and an agent works it out each time.
      */
     fun fromSession(session: Session): Skill? {
-        val skip = setOf("screen_read", "screenshot", "screen_wait", "ask_user", "memory_save", "memory_forget", "skill_save", "skill_save_this", "skill_list", "skill_run", "skill_delete", "delegate", "wait", "notifications_read", "contacts_search", "web_search", "read_page", "news", "weather", "wikipedia", "read_mail", "search_mail", "calendar_list", "phone_state", "app_usage", "apps_list", "location", "clipboard")
+        val skip = setOf("more_tools", "screen_read", "screenshot", "screen_wait", "ask_user", "memory_save", "memory_forget", "skill_save", "skill_save_this", "skill_list", "skill_run", "skill_delete", "delegate", "wait", "notifications_read", "contacts_search", "web_search", "read_page", "news", "weather", "wikipedia", "read_mail", "search_mail", "calendar_list", "phone_state", "app_usage", "apps_list", "location", "clipboard")
         val unsafeToReplay = setOf("alarm_set", "reminder_set", "calendar_add", "timer_set", "screen_tap_at", "screen_swipe")
         val results = session.messages.filter { it.role == "tool" }.flatMap { it.results }.associateBy { it.callId }
         // Split the conversation into requests: each user message and the calls that answered it.

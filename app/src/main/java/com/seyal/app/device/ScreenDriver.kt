@@ -524,6 +524,7 @@ object ScreenDriver {
      */
     suspend fun type(text: String, id: Int?, enter: Boolean, append: Boolean): JSONObject = lock.withLock {
         val s = svc()
+        repeatGuard.looked()
         var node: AccessibilityNodeInfo? = null
         var note: String? = null
         if (id != null && id > 0) {
@@ -603,6 +604,7 @@ object ScreenDriver {
     /** Scrolls the biggest scrollable list on screen (or the one holding element [id]). */
     suspend fun scroll(direction: String, id: Int?): JSONObject = lock.withLock {
         val s = svc()
+        repeatGuard.looked()
         val dir = direction.lowercase()
         val vertical = dir == "up" || dir == "down"
         var node: AccessibilityNodeInfo? = null
@@ -639,6 +641,7 @@ object ScreenDriver {
 
     /** Swipe between two points on the 0-1000 scale of the screen. */
     suspend fun swipe(u1: Int, v1: Int, u2: Int, v2: Int, ms: Int): JSONObject = lock.withLock {
+        repeatGuard.looked()
         val (x1, y1) = toPixels(u1, v1)
         val (x2, y2) = toPixels(u2, v2)
         val start = nodeAt(x1, y1)

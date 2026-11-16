@@ -13,6 +13,9 @@ import com.seyal.app.agent.Did
 import com.seyal.app.agent.Seats
 import com.seyal.app.agent.Order
 import com.seyal.app.agent.Basics
+import com.seyal.app.ai.LlmException
+import com.seyal.app.agent.Prompts
+import com.seyal.app.agent.Router
 import com.seyal.app.agent.Links
 import com.seyal.app.device.KeepAlive
 import com.seyal.app.device.Report
@@ -1289,8 +1292,208 @@ fun testReliability() {
     T.eq("next week's weather is still the AI's", null, plan("weather next week in Ooty"))
 }
 
+fun testQuality() {
+    println("Every answer is shown in the chat")
+    T.check("an answer made without the AI is added as a message", Agent.needsBubble(null, "tool", "Your orders:\n- Amazon: boAt Rockerz 255, out for delivery"))
+    T.check("…also when nothing at all was shown (the time)", Agent.needsBubble(null, "user", "It's 10:05 AM."))
+    T.check("the AI's own answer is not shown twice", !Agent.needsBubble("Alarm set for 7:15 AM.", "assistant", "Alarm set for 7:15 AM. "))
+    T.check("a later no-AI answer in the same chat is still shown", Agent.needsBubble("Coimbatore: 25°C, overcast", "tool", "Tomorrow in Coimbatore: overcast, 23 to 30°C."))
+    T.check("nothing to show for an empty answer", !Agent.needsBubble(null, "tool", "  "))
+    T.eq("the short line keeps a list's first items, not just its heading", "Your orders: Amazon: boAt Rockerz 255, out for delivery; Flipkart: Puma shoes, shipped", Agent.shortResult("Your orders:\n- Amazon: boAt Rockerz 255, out for delivery\n- Flipkart: Puma shoes, shipped"))
+    T.eq("a one-line answer stays as it is", "It's 10:05 AM.", Agent.shortResult("It's 10:05 AM."))
+    T.eq("bold marks are dropped", "Test Kumar has been added to your contacts.", Agent.shortResult("**Test Kumar** has been added to your contacts."))
+    T.eq("an empty answer", "Done", Agent.shortResult("  \n "))
+    T.check("it is never longer than the list has room for", Agent.shortResult("Caught from your messages:\n" + (1..30).joinToString("\n") { "- item number $it with a long description" }).length <= 140)
+
+    println("The AI's stray words are not shown")
+    T.eq("'thought' alone is dropped", "", Llm.cleanText("thought"))
+    T.eq("'thought' before the answer is dropped", "The alarm is set.", Llm.cleanText("thought\nThe alarm is set."))
+    T.eq("a real sentence starting with the word is kept", "Thought you might like this: 3 new jobs.", Llm.cleanText("Thought you might like this: 3 new jobs."))
+    T.eq("a normal answer is untouched", "Done. **2 tickets** booked.", Llm.cleanText("Done. **2 tickets** booked."))
+
+    println("A stuck AI call gets a second model")
+    val log = java.util.Collections.synchronizedList(ArrayList<String>())
+    fun ask(delays: Map<String, Long>, fail: Set<String> = emptySet()): (String) -> String = { m -> log += m; Thread.sleep(delays[m] ?: 0); if (m in fail) throw LlmException("boom $m") else "answer from $m" }
+    kotlinx.coroutines.runBlocking {
+        log.clear()
+        T.eq("a quick answer is used as it is", "lite" to "answer from lite", Llm.hedged("lite", 300, { "flash" }, {}, ask(mapOf("lite" to 20))))
+        T.eq("…and no second model is asked", listOf("lite"), log.toList())
+        log.clear(); var told = ""
+        val t0 = System.currentTimeMillis()
+        T.eq("a stuck one is overtaken by the second model", "flash" to "answer from flash", Llm.hedged("lite", 150, { "flash" }, { told = it }, ask(mapOf("lite" to 3000, "flash" to 50))))
+        T.check("…without waiting for the stuck one", System.currentTimeMillis() - t0 < 1500)
+        T.eq("…and the caller is told which model was added", "flash", told)
+        T.eq("with no second model free it waits for the first", "lite" to "answer from lite", Llm.hedged("lite", 100, { null }, {}, ask(mapOf("lite" to 400))))
+        T.eq("a slow first that still beats the second wins", "lite" to "answer from lite", Llm.hedged("lite", 100, { "flash" }, {}, ask(mapOf("lite" to 300, "flash" to 2000))))
+        T.eq("the second failing leaves the first to answer", "lite" to "answer from lite", Llm.hedged("lite", 100, { "flash" }, {}, ask(mapOf("lite" to 500, "flash" to 20), fail = setOf("flash"))))
+        log.clear()
+        val quickFail = runCatching { Llm.hedged("lite", 300, { "flash" }, {}, ask(mapOf("lite" to 20), fail = setOf("lite"))) }
+        T.check("a quick failure comes straight back, with no second request", quickFail.exceptionOrNull()?.message == "boom lite" && log.toList() == listOf("lite"))
+        val bothFail = runCatching { Llm.hedged("lite", 100, { "flash" }, {}, ask(mapOf("lite" to 300, "flash" to 20), fail = setOf("lite", "flash"))) }
+        T.check("when both fail the first model's error is reported", bothFail.exceptionOrNull()?.message == "boom lite")
+    }
+
+    println("Only the tools a request needs are sent")
+    val everyTool = (Router.core + Router.groups.flatMap { it.tools } + "some_new_tool").toList()
+    fun shown(text: String, used: List<String> = emptyList(), asked: List<String> = emptyList(), purchase: Boolean = false, skill: Boolean = false) =
+        Router.pick(everyTool, Router.groupsFor(text, used, asked, purchase, fromSkill = skill))
+    // Real requests from the emulator runs, with the tools each one actually used. None may go missing.
+    val real = listOf(
+        "Amma ku call pannu" to "call contacts_search",
+        "Battery level" to "phone_state",
+        "Book 2 tickets for Ramayana at Broadway Cinemas Coimbatore tomorrow evening, maximum 250 per ticket" to "ask_user open_app open_url order_check screen_scroll screen_tap screen_tap_at screen_type screen_wait screenshot web_search",
+        "Call Amma" to "call contacts_search",
+        "End busy mode" to "busy_mode",
+        "Every morning at 8, give me AI news" to "skill_save",
+        "Find buses from Coimbatore to Bangalore this Friday night and give me the link to the list" to "web_search",
+        "Find the address Ram sent me" to "past_search",
+        "Find the video called Seyal Test Clip on my phone and play it" to "file_open files_find screen_tap screen_tap_at screenshot",
+        "Get my current location using location, then show a notification with the location name and map link using notify." to "location notify web_search",
+        "Get my current location with location, then notification_reply to the sender with the place and map_link" to "contacts_search location notification_reply send_sms send_whatsapp web_search",
+        "Give me my summary for today" to "daily_brief",
+        "Give me todays top AI news in 5 points" to "news",
+        "How much did I spend today?" to "money_summary",
+        "How much storage is used on this phone, and which folders and apps take the most space?" to "storage_info",
+        "I am in class till 4 pm, tell people who call that I will call back after 4" to "busy_mode",
+        "In the Contacts app add a new contact named Test Kumar with the number 9876512345" to "open_app screen_tap screen_tap_at screen_type screenshot",
+        "Kumar owes me 350 for tea" to "khata",
+        "List the videos on this phone and send the list to priya@example.com as a PPT" to "contacts_search doc_create files_find send_email send_file",
+        "Make a PDF with a packing list for a 2 day trip to Ooty" to "doc_create",
+        "Make a PowerPoint about the benefits of rooftop solar power for homes, 6 slides || Email it to priya@example.com" to "contacts_search doc_create file_open send_file web_search",
+        "Make a meeting link for Priya tomorrow 4 PM, email it to her and remind me before it starts" to "calendar_add contacts_search meeting_link reminder_set send_email",
+        "Make me a home workout plan. I am a beginner, 20 minutes a day, Monday to Friday at 6 pm, no equipment, my goal is to lose fat, no injuries" to "ask_user plan_create",
+        "My plans" to "plan_list",
+        "Navigate to Gandhipuram bus stand" to "open_url",
+        "Open Chrome, search for Broadway Cinemas Coimbatore and tell me the title of the first result" to "open_app screen_tap screen_type web_search",
+        "Open Settings, find the Android version of this phone and tell me || Save this as a skill called Version check" to "open_app screen_scroll screen_tap skill_save_this",
+        "Open Settings, find the Android version of this phone and tell me || The recorded steps above ran. Tell me the result in one or two lines. Call tools only if the goal is clearly not done yet." to "open_app screen_scroll screen_tap",
+        "Open the Clock app and add an alarm for 7:15 AM using its screen" to "alarm_set open_app",
+        "Order a biryani from a nearby hotel" to "apps_list ask_user location open_app open_url screen_back screen_scroll screen_tap screen_tap_at screen_type screen_wait screenshot wait web_search",
+        "Play the oldest video from the YouTube channel @Google" to "open_app open_url screen_read screen_scroll screen_tap screen_type screenshot wait web_search",
+        "Remember that my favourite theatre is Broadway Cinemas" to "memory_save",
+        "Remind me in 10 minutes to drink water" to "reminder_set",
+        "Run my Version check skill" to "skill_run",
+        "Send a message to my dad saying I will be late today" to "contacts_search send_sms",
+        "Set an alarm for 6:30 am" to "alarm_set",
+        "Set the brightness to 30 percent and turn on do not disturb" to "set_setting",
+        "Set the brightness to 30 percent and turn on do not disturb." to "set_setting",
+        "Split 1200 among me, Ram and Priya" to "ask_user contacts_search send_sms send_whatsapp split_bill",
+        "Summarise the book Atomic Habits in 5 lines" to "web_search",
+        "Tell Amma that I reached Coimbatore" to "contacts_search send_sms",
+        "Tell me when the page https://example.com says Book tickets" to "watch_add",
+        "Today's sales" to "money_summary",
+        "Tomorrow at 8 am send a WhatsApp to my dad saying good morning" to "contacts_search skill_save",
+        "Torch on" to "say set_setting",
+        "What are you watching for me?" to "watch_list",
+        "What deadlines do I have?" to "inbox_list",
+        "What is the weather in Coimbatore today? || And tomorrow?" to "weather",
+        "What is the weather tomorrow in Coimbatore?" to "weather",
+        "What notifications do I have right now?" to "notifications_read",
+        "When the battery goes below 20 percent after 9 pm, set the brightness to 10" to "skill_save",
+        "Whenever any app shows a message from Amma asking where are you, tell me my current location" to "contacts_search skill_save",
+        "Where are my orders?" to "orders_list",
+        "Where is the share log button in this app?" to "say",
+        "Who owes me money?" to "khata",
+        "Workout done" to "plan_mark",
+    )
+    for ((said, used) in real) {
+        val need = used.split(' ').filter { it.isNotBlank() }
+        val got = shown(said.replace(" || ", "\n"), purchase = Preflight.kind(said.substringBefore(" || ")) != null)
+        T.eq("has what it used: ${said.take(60)}", emptyList<String>(), need.filter { it !in got })
+    }
+    val small = shown("Send a message to my dad saying I will be late today")
+    T.check("a plain message needs no skill builder, plan coach, watcher or file maker", listOf("skill_save", "plan_create", "watch_add", "doc_create", "khata", "delegate").none { it in small })
+    T.check("…but can still call, message, search and work the screen", listOf("send_whatsapp", "contacts_search", "web_search", "open_app", "screen_tap", "ask_user", Router.MORE).all { it in small })
+    T.check("a simple request leaves out a large part of the tools", small.size < everyTool.size * 0.6)
+    T.check("a tool no group knows is always sent", "some_new_tool" in small)
+    T.check("a tool used earlier in the chat stays", "doc_create" in shown("ok", used = listOf("doc_create")))
+    T.check("what the AI asks for is loaded", "plan_create" in shown("help", asked = listOf("plans")) && "skill_save" !in shown("help", asked = listOf("plans")))
+    T.check("'all' loads everything", shown("help", asked = listOf("all")).size == everyTool.size)
+    T.check("a booking always has the order check", "order_check" in shown("Ramayana ku rendu seat", purchase = true))
+    T.check("…also when only the words say so", "order_check" in shown("Book 2 tickets for Leo"))
+    T.check("a skill run has the notification tools", "notification_reply" in shown("Answer Amma", skill = true))
+    for ((said, tool) in listOf(
+        "Every day at 9 pm tell me my screen time" to "skill_save", "When I reach home turn on wifi" to "skill_save", "Tomorrow at 8 am send a WhatsApp to my dad" to "skill_save",
+        "Make a PPT about solar power" to "doc_create", "Find the video called Seyal Test Clip and play it" to "files_find", "How much storage is used" to "storage_info", "Email it to priya@example.com" to "send_file",
+        "Any mail from HR today?" to "read_mail", "Reply to Amma that I am coming" to "notification_reply", "What notifications do I have" to "notifications_read",
+        "Add a meeting with Priya on Friday 4 pm" to "calendar_add", "Set a timer for 5 minutes" to "timer_set", "Tell me when bookings open for Leo at Broadway" to "watch_add",
+        "I am in class till 4" to "busy_mode", "What deadlines do I have" to "inbox_list", "How much did I spend this month" to "money_summary", "Where are my orders" to "orders_list",
+        "Ravi owes me 500" to "khata", "Split the bill among 4" to "split_bill", "Make me a workout plan" to "plan_create", "Find the address Ram sent me" to "past_search",
+        "Book the same as last time" to "chats_search", "Wish everyone in my family happy Diwali" to "send_to_many", "Send the invite to Ram, Priya and Kumar" to "send_to_many",
+        "Compare these three phones in a detailed report" to "delegate", "Make these photos into a PDF" to "photos_to_pdf", "தினமும் காலை 7 மணிக்கு நியூஸ் சொல்லு" to "skill_save",
+        "inniku evlo selavu" to "money_summary", "Amma anupina address enna" to "past_search",
+    )) T.check("\"$said\" has $tool", tool in shown(said))
+    T.check("a very long request gets everything", shown("x ".repeat(400)).size == everyTool.size)
+
+    println("Asking for more tools")
+    T.check("loading says what arrived", Router.loadedNote(listOf("files"), emptySet()).let { it.startsWith("Loaded: files (") && it.contains("doc_create") })
+    T.check("already loaded is said plainly", Router.loadedNote(listOf("files"), setOf("files")).startsWith("Already loaded"))
+    T.check("an unknown group lists the real ones", Router.loadedNote(listOf("payments"), emptySet()).let { it.startsWith("No group called payments") && it.contains("money") })
+    T.eq("groups can come as a list", listOf("files", "mail"), Router.asked(JSONObject().put("groups", JSONArray().put("files").put("mail"))))
+    T.eq("…or as one word", listOf("all"), Router.asked(JSONObject().put("group", "all")))
+    T.check("the description names what is not loaded", Router.moreAbout(setOf("screen", "files")).let { it.contains("mail =") && !it.contains("files =") })
+    T.check("'I can't do that' is a give-up", Router.givesUp("I'm sorry, I can't create PowerPoint files."))
+    T.check("'I don't have a tool' is a give-up", Router.givesUp("I don't have a tool to read your mail."))
+    T.check("a real answer is not", !Router.givesUp("Alarm set for 6:30 AM tomorrow."))
+    T.check("'bookings are not open' is not", !Router.givesUp("Broadway Cinemas has not opened bookings for tomorrow yet."))
+    T.check("a question about the app gets the app notes", Router.asksAboutApp("Where is the share log button in this app?") && Router.asksAboutApp("What can you do?"))
+    T.check("an ordinary command does not", !Router.asksAboutApp("Call Amma") && !Router.asksAboutApp("Order a biryani"))
+
+    println("Nothing is sent that nobody asked for")
+    val nowDt = java.time.LocalDateTime.of(2026, 11, 16, 10, 0)
+    T.eq("names to split among", listOf("me", "Ram", "Priya"), Split.people("me, Ram and Priya"))
+    T.eq("a head count", listOf("me", "Person 2", "Person 3", "Person 4"), Split.people("4 people"))
+    T.eq("'the 3 of us'", 3, Split.people("the 3 of us").size)
+    T.eq("one name is not a split", emptyList<String>(), Split.people("Ram"))
+    T.eq("a sentence is not a list of names", emptyList<String>(), Split.people("the people who came to dinner yesterday night and those who left early"))
+    T.eq("named shares are spelled out, with an offer to send", "₹1,200 among 3: me ₹400, Ram ₹400, Priya ₹400.\nSay \"send it to them\" and I'll message each person their share.", Split.say(1200, Split.shares(1200, listOf("me", "Ram", "Priya"))!!))
+    T.eq("a head count gives the amount each", "₹1,200 among 4: ₹300 each.", Split.say(1200, Split.shares(1200, Split.people("4"))!!))
+    val sp = Basics.plan("Split 1200 among me, Ram and Priya", nowDt, true)
+    T.check("splitting a bill needs no AI", sp?.tool == "split_bill" && sp.args.optInt("total") == 1200 && sp.args.optJSONArray("people")?.length() == 3)
+    T.eq("…in other words too", "split_bill", Basics.plan("divide ₹900 between 3 people", nowDt, true)?.tool)
+    T.eq("a split with more to do is the AI's", null, Basics.plan("Split the bill in this photo among us", nowDt, true))
+    T.check("'split 1200 among us three' asked to nobody", !Agent.asksToContact("Split 1200 among me, Ram and Priya"))
+    T.check("…nor is a booking", !Agent.asksToContact("Book 2 tickets for Ramayana tomorrow evening"))
+    T.check("…nor a question", !Agent.asksToContact("How much did I spend this month?"))
+    for (x in listOf("Send a message to my dad saying I will be late", "Tell Amma that I reached", "Email it to priya@example.com", "Wish Ram happy birthday", "Split 1200 among us and send each their share",
+        "Amma ku call pannu", "Appa kitta sollu naan late nu", "Remind them to pay", "அம்மாவுக்கு மெசேஜ் அனுப்பு", "Reply to Amma that I am coming", "Call Amma"))
+        T.check("asks to reach someone: $x", Agent.asksToContact(x))
+
+    println("What counts as a deadline")
+    val z = java.time.ZoneId.systemDefault()
+    val nowMs = nowDt.atZone(z).toInstant().toEpochMilli()
+    fun caught(chat: String, text: String, app: String = "WhatsApp") = Catcher.scan(app, chat, text, nowMs)
+    fun dayOf(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(z).toLocalDate().toString()
+    T.eq("'come home before 8' is not a deadline", null, caught("Family: Amma", "Come home before 8 today, guests are coming"))
+    T.eq("'movie by 6 tomorrow?' is not one", null, caught("Ram Kumar", "da reach the theatre by 6 tomorrow ok"))
+    T.eq("'submit the record before 4' is", "deadline", caught("CSE Final Year: Class Rep", "Submit the DC record before 4 PM tomorrow")?.kind)
+    T.eq("'last date tomorrow' still is", "deadline", caught("CSE Final Year: Ram Kumar", "bro last date for the assignment is tomorrow it seems")?.kind)
+    val maint = caught("Apartment Residents: Secretary", "Maintenance of Rs 1500 for November is due by 20th. Pay to the association account.")
+    T.eq("'due by 20th' is a bill", "bill", maint?.kind); T.eq("…on the 20th of this month", "2026-11-20", maint?.let { dayOf(it.due) })
+    val quiz = caught("Coursera", "Your assignment is due in 2 days: Week 3 Quiz", "Gmail")
+    T.eq("'due in 2 days' is caught", "deadline", quiz?.kind); T.eq("…two days from now", "2026-11-18", quiz?.let { dayOf(it.due) })
+    T.eq("a day already past this month means next month", "2026-12-05", com.seyal.app.util.Dates.find("Pay the rent by 5th", nowDt)?.at?.toLocalDate()?.toString())
+    T.eq("'4th semester' is not a date", null, com.seyal.app.util.Dates.find("on 4th semester students only", nowDt))
+    T.eq("a promo with a date stays ignored", null, caught("AD-MYNTRA", "End of Reason Sale ends today midnight! Last chance to grab 50-80% off.", "Messages"))
+
+    println("Searching the web")
+    T.eq("quotes and site: are dropped", "Ramayana Coimbatore showtimes", com.seyal.app.util.Parsers.simplerQuery("site:in.bookmyshow.com \"Ramayana\" Coimbatore showtimes"))
+    T.eq("years, dates and filler go", "Broadway Cinemas Coimbatore movie November", com.seyal.app.util.Parsers.simplerQuery("Broadway Cinemas Coimbatore movie listings November 17 2026"))
+    T.eq("a long question is cut to its first words", 7, com.seyal.app.util.Parsers.simplerQuery("best chicken biryani under 300 near me Coimbatore swiggy zomato online order")?.split(' ')?.size)
+    T.eq("plain words have nothing simpler", null, com.seyal.app.util.Parsers.simplerQuery("Atomic Habits summary"))
+
+    println("Guidance follows the tools in view")
+    val none: (String) -> Boolean = { false }
+    val all: (String) -> Boolean = { true }
+    T.check("booking rules are left out when nothing is being bought", !Prompts.keep("- Seats: people who book together sit together.", none))
+    T.check("…and kept when something is", Prompts.keep("- Seats: people who book together sit together.", all))
+    T.check("general rules always stay", Prompts.keep("- Act, don't narrate.", none) && Prompts.keep("- Safety: never type passwords", none))
+    T.check("a question is not a screen task", !Prompts.screenTask("What is the capital of France?") && !Prompts.screenTask("Summarise the book Atomic Habits in 5 lines"))
+    T.check("opening or ordering is", Prompts.screenTask("Open Settings and find the Android version") && Prompts.screenTask("Order a biryani from a nearby hotel") && Prompts.screenTask("Play the oldest video from the YouTube channel @Google"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -1299,7 +1502,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

@@ -272,6 +272,46 @@ object Agent {
      * The whole task as plain text: each message, each step with its arguments, status and result
      * (screens and long outputs shortened). "Share log" sends this so a problem can be seen exactly.
      */
+    /** The tool groups this chat needs: from what the user said, what was already used, and what the AI asked for. */
+    internal fun loadedGroups(s: Session, excludeLatestAsk: Boolean = false): Set<String> {
+        val calls = s.messages.flatMap { it.calls }
+        val asks = calls.filter { it.name == Router.MORE }.let { if (excludeLatestAsk) it.dropLast(1) else it }.flatMap { Router.asked(it.args) }
+        val said = lastSaid(s)
+        return Router.groupsFor(
+            text = (userWords(s) + s.firstCommand).joinToString("\n"),
+            used = calls.map { it.name },
+            asked = if (s.allTools) asks + "all" else asks,
+            purchase = s.order != null || Preflight.kind(said) != null || Preflight.kind(s.firstCommand) != null,
+            attached = s.messages.any { m -> m.role == "user" && m.parts.any { it is Part.Image } },
+            fromSkill = s.source.startsWith("skill"),
+        )
+    }
+
+    /** The one line kept in the task list and the notification: the first line that says something, not a lead-in ending in a colon when more follows. */
+    internal fun shortResult(text: String): String {
+        val lines = plain(text).lines().map { it.trim().trimStart('-', '•', '*', ' ') }.filter { it.isNotBlank() }
+        val first = lines.firstOrNull() ?: return "Done"
+        val pick = if (first.endsWith(":") && lines.size > 1) first.trimEnd(':') + ": " + lines.drop(1).take(3).joinToString("; ") else first
+        return pick.take(140)
+    }
+
+    /**
+     * Whether the final answer still has to be added to the chat as a message. The AI's own answer is already
+     * there ([lastAnswer] is the newest assistant text, [lastRole] who spoke last); an answer made without the AI is not.
+     */
+    internal fun needsBubble(lastAnswer: String?, lastRole: String?, text: String): Boolean {
+        val t = text.trim()
+        if (t.isBlank()) return false
+        return !(lastRole == "assistant" && lastAnswer != null && lastAnswer.trim() == t)
+    }
+
+    /** Whether the user's own words ask to reach someone: send, tell, message, call, mail, reply, wish, remind them… */
+    internal fun asksToContact(words: String): Boolean = Regex(
+        "\\b(send|sending|sent|message|msg|text|texting|tell|inform|let \\w+ know|notify|ping|whatsapp|sms|mail|e-?mail|reply|respond|answer|forward|share|wish|greet|invite|ask|request|remind (him|her|them|\\w+ to)|call|ring|dial|phone|post|announce|say (hi|hello|sorry|thanks|bye) to)\\b" +
+            "|anuppu|anupu|anupidu|sollu|solli|kelu|kooptu|kupdu|pesu|(message|msg|call|phone|mail|whatsapp|sms) pannu|அனுப்பு|சொல்லு|கேளு|கூப்பிடு|மெசேஜ்",
+        RegexOption.IGNORE_CASE,
+    ).containsMatchIn(words)
+
     /** Tools whose every use is approved by the user, even after "Always allow". */
     internal fun mustAsk(tool: String): Boolean = tool == "send_to_many"
 
@@ -414,8 +454,12 @@ object Agent {
             while (coroutineContext.isActive) {
                 pauseGate.await()
                 // Tools can appear mid-task (the user turns screen control on), so look each step.
-                val tools = Toolbox.available().filter { allowDelegate || it.name != "delegate" }
-                val byName = tools.associateBy { it.name }
+                val every = Toolbox.available().filter { allowDelegate || it.name != "delegate" }
+                // Any tool can be run; only the ones this request can need are described to the AI (see Router).
+                val byName = every.associateBy { it.name }
+                val loaded = lock.withLock { loadedGroups(s) }
+                val shown = Router.pick(every.map { it.name }, loaded)
+                val tools = every.filter { it.name in shown }
                 val decls = tools.map { it.decl() }
                 // Bookings and orders are long by nature (search, pick, seats, review): give them room.
                 if (stepsThisRun >= (if (s.order != null) maxOf(maxSteps, 50) else maxSteps)) {
@@ -554,7 +598,7 @@ object Agent {
                 ScreenDriver.freezeIds(s.id)
                 val t0 = System.currentTimeMillis()
                 val resp = try {
-                    Llm.chat(Prompts.system(s, tools), snapshot, decls, 2048, onWait = { report(it) })
+                    Llm.chat(Prompts.system(s, tools, loaded), snapshot, decls, 2048, onWait = { report(it) })
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -575,6 +619,12 @@ object Agent {
                     touch(s)
                 }
                 if (resp.calls.isEmpty()) {
+                    // "I can't" while only part of the tools was in view: show them all and let it try once more.
+                    if (!s.allTools && s.parentId == null && Router.missing(loaded).isNotEmpty() && Router.givesUp(resp.text)) {
+                        s.allTools = true
+                        lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + "You answered that it can't be done while seeing only part of your tools. Every tool is in your list now. Look through it and do the request if any tool can; say it can't be done only if none can."))); touch(s) }
+                        continue
+                    }
                     // "Done" has to mean done: compare what was asked with what happened, and send the AI back once per gap.
                     val gap = if (s.source == "user" && s.parentId == null && s.checked.size < 5) lock.withLock {
                         val said = lastSaid(s)
@@ -645,7 +695,11 @@ object Agent {
         lock.withLock {
             if (s.status == SessionStatus.CANCELLED) return
             s.status = status
-            s.result = plain(text).lines().map { it.trim().trimStart('-', '•', ' ') }.firstOrNull { it.isNotBlank() }?.take(140) ?: "Done"
+            s.result = shortResult(text)
+            // An answer worked out without the AI (the time, a list, "Alarm set") was never written into the chat:
+            // only its first line showed in the task list. Every answer is a message the user can read and copy.
+            if (status == SessionStatus.DONE && needsBubble(s.messages.lastOrNull { it.role == "assistant" && it.calls.isEmpty() }?.text, s.messages.lastOrNull()?.role, text))
+                s.messages += Msg("assistant", listOf(Part.Text(text.trim())))
             s.calls.values.forEach { if (!it.status.isFinished) { it.status = CallStatus.CANCELLED } }
             if (s.queued.isNotEmpty()) { s.messages += s.queued; s.queued.clear(); s.status = SessionStatus.RUNNING; run(s) }
             if (!s.status.isOpen) ScreenDriver.release(s.id)
@@ -839,6 +893,9 @@ object Agent {
         if (level == Level.AUTO && tool.group == "screen" && tool.sideEffect && lock.withLock { s.calls.values.any { it.status == CallStatus.DENIED } }) level = Level.ASK
         // A message to many people is shown in full and approved every single time, whatever was allowed before.
         if (mustAsk(tool.name)) level = Level.ASK
+        // The user never said to contact anyone, yet the AI is about to (a bill split that "helpfully" texts the
+        // friends): that message is always shown first, even to someone on the always-allow list.
+        if (level == Level.AUTO && tool.group == "comms" && tool.sideEffect && s.source == "user" && s.parentId == null && !lock.withLock { asksToContact(userWords(s).joinToString("\n")) }) level = Level.ASK
         if (level == Level.OFF) {
             val r = lock.withLock { fail("\"${tool.name}\" is turned off in Control → Permissions. Tell the user.", CallStatus.DENIED).also { touch(s) } }
             return r

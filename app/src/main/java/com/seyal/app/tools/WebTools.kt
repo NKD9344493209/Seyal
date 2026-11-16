@@ -47,10 +47,13 @@ object WebTools {
 
     private suspend fun search(query: String, count: Int, read: Int): ToolResult = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext ToolResult.Failed("Empty search")
-        val html = runCatching { http("https://html.duckduckgo.com/html/?q=${URLEncoder.encode(query, "UTF-8")}") }
-            .getOrElse { return@withContext ToolResult.Failed("Search failed (${it.message})", retryable = true) }
-        val results = Parsers.searchResults(html, count.coerceIn(1, 10))
-        if (results.length() == 0) return@withContext ToolResult.Failed("No results for \"$query\"", retryable = true)
+        fun find(q: String): JSONArray? = runCatching { Parsers.searchResults(http("https://html.duckduckgo.com/html/?q=${URLEncoder.encode(q, "UTF-8")}"), count.coerceIn(1, 10)) }.getOrNull()
+        var asked = query
+        var results = find(query) ?: find(query) ?: return@withContext ToolResult.Failed("Search failed (no connection to the search site). Try once more.", retryable = true)
+        // Long, quoted or site-limited searches often come back empty. Try the same thing in plainer words before
+        // giving the AI a failure it would spend a whole step working around.
+        if (results.length() == 0) Parsers.simplerQuery(query)?.let { plain -> find(plain)?.takeIf { it.length() > 0 }?.let { results = it; asked = plain } }
+        if (results.length() == 0) return@withContext ToolResult.Failed("No results for \"$query\", nor for plainer words. Use 3 to 6 plain words (no quotes, no site:), or open the site itself with open_url.", retryable = true)
         val urls = Parsers.readableUrls(results, read.coerceIn(0, 3))
         val pages = JSONArray()
         coroutineScope {
@@ -60,7 +63,7 @@ object WebTools {
             if (text.length > 200) pages.put(JSONObject().put("url", u).put("title", Parsers.pageTitle(page)).put("text", text))
         }
         val line = "Searched: $query" + if (pages.length() > 0) " · read ${pages.length()} pages" else ""
-        ToolResult.Done(JSONObject().put("query", query).put("results", results).put("pages", pages), line)
+        ToolResult.Done(JSONObject().put("query", asked).put("results", results).put("pages", pages), line)
     }
 
     private suspend fun readPage(url: String): ToolResult = withContext(Dispatchers.IO) {

@@ -61,6 +61,26 @@ object Khata {
 
 /** Splitting a bill exactly, so nobody is a rupee short or over. */
 object Split {
+    /** "₹1,200 among 3: me ₹400, Ram ₹400, Priya ₹400." (or "₹300 each" when nobody is named). */
+    fun say(total: Int, shares: List<Pair<String, Int>>): String {
+        val unnamed = shares.all { it.first == "me" || it.first.startsWith("Person ") }
+        val same = shares.map { it.second }.distinct().size == 1
+        val head = "₹${"%,d".format(total)} among ${shares.size}: "
+        return head + (if (unnamed && same) "₹${"%,d".format(shares.first().second)} each." else shares.joinToString(", ") { "${it.first} ₹${"%,d".format(it.second)}" } + ".") +
+            (if (!unnamed) "\nSay \"send it to them\" and I'll message each person their share." else "")
+    }
+
+    /** "me, Ram and Priya" → [me, Ram, Priya]; "4" / "4 people" / "the 4 of us" → [me, Person 2, Person 3, Person 4]. */
+    fun people(text: String): List<String> {
+        val t = text.trim().trimEnd('.', '?', '!')
+        Regex("^(?:the )?(\\d{1,2})(?: (?:people|persons|of us|friends|ways|members|heads|per))?$", RegexOption.IGNORE_CASE).find(t)?.let { m ->
+            val n = m.groupValues[1].toInt(); if (n in 2..50) return listOf("me") + (2..n).map { "Person $it" }
+        }
+        val names = t.split(Regex("\\s*(?:,|&|\\band\\b|\\bmatrum\\b)\\s*", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotBlank() }
+            .map { if (it.lowercase() in setOf("me", "i", "myself", "us", "naan", "nan")) "me" else it.replaceFirstChar { c -> c.uppercase() } }
+        return if (names.size >= 2 && names.all { it.length <= 30 && it.split(' ').size <= 3 }) names.distinct() else emptyList()
+    }
+
     /**
      * Each person's share of [total]. With [own] (what each one's own items cost, same order as [people]),
      * everyone pays their own and the rest (tax, shared dishes) is split equally. Rounding leftovers go to

@@ -55,11 +55,14 @@ object Catcher {
     private val recharge = Regex("\\b(recharge|plan|pack|validity|data pack)\\b[^.]{0,50}\\b(expire[sd]?|expiring|ends?|ending|valid (till|until|upto)|over)\\b", RegexOption.IGNORE_CASE)
     private val returns = Regex("\\b(return|replace(ment)?|refund|exchange)\\b[^.]{0,50}\\b(window|closes?|ends?|last day|till|until|by|before|eligible)\\b", RegexOption.IGNORE_CASE)
     private val deadline = Regex(
-        "last date|last day|deadline|due (on|by|date)|on or before|\\bbefore\\s+\\d|\\bby\\s+(\\d|tomorrow|today|tonight|mon|tue|wed|thu|fri|sat|sun|eod)|closes? (on|by|at|today|tomorrow)|ends? (on|by|today|tomorrow)|" +
+        "last date|last day|deadline|due (on|by|date|in|within|today|tomorrow)|\\bis due\\b|on or before|" +
             "\\b(register|registration|registrations|apply|application|applications|enrol+|enrol+ment|submit|submission|upload)\\b|fill (up |in |out )?(the |this )?(form|details)|google form|form link|" +
             "hall ticket|exam fee|fee payment|\\b(placement|recruitment|internship|hackathon|interview) (drive|form|registration|round|schedule|on)\\b|\\b(assignment|record|viva|internal|test|exam|seminar|project review)\\b[^.]{0,40}\\b(on|by|before|tomorrow|today|date)\\b|கடைசி நாள்|கடைசி தேதி",
         RegexOption.IGNORE_CASE,
     )
+    /** Weak signs of a deadline ("before 8", "by Friday"): they count only next to a word about something to hand in or pay. */
+    private val soft = Regex("\\bbefore\\s+\\d|\\bby\\s+(\\d|tomorrow|today|tonight|mon|tue|wed|thu|fri|sat|sun|eod)|closes? (on|by|at|today|tomorrow)|ends? (on|by|today|tomorrow)", RegexOption.IGNORE_CASE)
+    private val work = Regex("\\b(register\\w*|apply|appl\\w+|submit\\w*|submission|pay|paid|payment|fees?|forms?|assignment|exam|record|project|report|bill|renew\\w*|booking|admission|tickets?|documents?|certificates?|upload|fill|complete|send|mail|review|presentation|ppt|interview|test|quiz|lab|viva|order|slot|offer letter|joining)\\b", RegexOption.IGNORE_CASE)
     private val campus = Regex("\\b(exam|semester|tuition|college|hostel|registration|application|arrear|revaluation|convocation|bus) fees?\\b|hall ticket|\\b(placement|internship|hackathon|symposium|scholarship)\\b", RegexOption.IGNORE_CASE)
     private val formLink = Regex("forms\\.gle|docs\\.google\\.com/forms|forms\\.office\\.com|typeform\\.com|unstop\\.com|\\b(register|apply|registration|form)\\b", RegexOption.IGNORE_CASE)
 
@@ -98,7 +101,8 @@ object Catcher {
 
         // Deadlines: a deadline word with a date; or a form to fill with a date anywhere in the message.
         if (promo.containsMatchIn(t)) return null
-        val m = deadline.find(t)
+        // "Come home before 8" is not a deadline; "submit the record before 8" is.
+        val m = deadline.find(t) ?: soft.find(t)?.takeIf { work.containsMatchIn(t) }
         val hasForm = link.isNotBlank() && formLink.containsMatchIn(t)
         if (m == null && !hasForm) return null
         val at = Dates.find(t, nowDt, m?.range?.first ?: 0) ?: return null

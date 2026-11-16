@@ -252,6 +252,12 @@ object Basics {
             return Plan("plan_mark", args("state" to "done")) { o -> o.optString("result").ifBlank { o.optString("status") } }
         if (Regex("^skip (?:my |today'?s? |the )?(?:workout|exercise|study|session|plan|reading|practice)(?: for today| today)?$|^(?:no|not doing) (?:workout|exercise|study) today$").matches(t))
             return Plan("plan_mark", args("state" to "skip")) { o -> o.optString("result").ifBlank { o.optString("status") } }
+        // ---- splitting a bill: plain arithmetic, nobody is messaged
+        Regex("^(?:split|divide|share) (?:a |the |this )?(?:bill (?:of )?|amount (?:of )?)?(?:₹|rs\\.? ?)?(\\d{2,7})(?: (?:rupees|rs|bucks))? (?:equally )?(?:among|between|amongst|with|by|for|into|in) (.{1,80}?)(?: equally)?$").on { m ->
+            val people = Split.people(m.groupValues[2])
+            if (people.size < 2) null else Plan("split_bill", args("total" to m.groupValues[1].toInt(), "people" to org.json.JSONArray(people))) { o -> o.optString("summary") }
+        }?.let { return it }
+
         if (Regex("^who (?:all )?owes? me(?: money)?$|^(?:show |list )?(?:my |the )?(?:credit (?:book|list)|khata|kadan (?:list|kanakku))$|^(?:how much|what) (?:is|am i) owed(?: to me)?$|^yaar(?:u)? kadan (?:kudukanum|tharanum)$").matches(t))
             return Plan("khata", args("action" to "list")) { o -> o.optString("summary") }
         Regex("^(.{2,30}?) owes? me (?:₹|rs\\.? ?)?(\\d{1,7})(?: (?:rupees|rs|bucks))?(?: for (.{2,60}))?$|^(?:put|add|write) (?:₹|rs\\.? ?)?(\\d{1,7})(?: (?:rupees|rs))? (?:on|to|in) (.{2,30}?)(?:'s)? (?:account|credit|khata|kadan)$").on { m ->

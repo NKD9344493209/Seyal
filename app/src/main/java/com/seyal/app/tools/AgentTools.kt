@@ -145,6 +145,17 @@ object AgentTools {
                 ToolResult.ok("Saved skill \"${a.optString("name").ifBlank { skill.name }}\" · ${skill.steps.size} steps · ${trigger?.describe() ?: "manual"}", "id" to skill.id, "steps" to skill.steps.size)
             },
 
+            // Only part of the tools is sent with each request (see Router); this is how the AI gets the rest.
+            Tool(
+                com.seyal.app.agent.Router.MORE, "agent", com.seyal.app.agent.Router.moreAbout(emptySet()),
+                schema { arr("groups", "The groups to load, e.g. [\"files\", \"mail\"], or [\"all\"]", JSONObject().put("type", "string"), required = true) },
+            ) { a, ctx ->
+                val session = com.seyal.app.agent.Agent.session(ctx.sessionId)
+                val before = session?.let { runCatching { com.seyal.app.agent.Agent.loadedGroups(it, excludeLatestAsk = true) }.getOrNull() } ?: emptySet()
+                val note = com.seyal.app.agent.Router.loadedNote(com.seyal.app.agent.Router.asked(a), before)
+                if (note.startsWith("No group")) ToolResult.Failed(note) else ToolResult.ok(note.substringBefore(" (").take(80), "note" to note)
+            },
+
             Tool("skill_list", "agent", "The user's saved skills.", noArgs) { _, _ ->
                 val arr = JSONArray()
                 Skills.all().forEach { s -> arr.put(JSONObject().put("name", s.name).put("description", s.description).put("when", s.trigger?.describe() ?: "manual").put("enabled", s.enabled).put("steps", s.steps.size)) }

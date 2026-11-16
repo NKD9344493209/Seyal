@@ -308,7 +308,7 @@ object AssistTools {
 
             Tool(
                 "split_bill", "agent",
-                "Split an amount among people, exactly (use this instead of working it out yourself). Equal shares, or by what each one had. Gives each person's share and a ready message for each.",
+                "Split an amount among people, exactly (use this instead of working it out yourself). Equal shares, or by what each one had. It only works out the shares: tell them to the user. Message the others only when the user asked to send, request or remind.",
                 schema {
                     int("total", "The bill total in rupees, tax and tip included", required = true)
                     strList("people", "Everyone sharing, the user included as \"me\"", required = true)
@@ -321,7 +321,8 @@ object AssistTools {
                 val shares = com.seyal.app.agent.Split.shares(a.optInt("total"), people, own) ?: return@Tool ToolResult.Failed("Give the total and at least two people; each one's own amounts must not add up to more than the total.")
                 val what = a.optString("what").ifBlank { "the bill" }
                 val arr = JSONArray(shares.map { (n, amt) -> JSONObject().put("name", n).put("share", amt).put("message", "Hi $n, your share for $what is ₹$amt (total ₹${a.optInt("total")}, ${people.size} people). Please send it when you can.") })
-                ToolResult.Done(JSONObject().put("ok", true).put("shares", arr).put("note", "To send them: contacts_search each person, then send_whatsapp with their message (skip \"me\"). Add the user's UPI ID to the message only if they gave it."), shares.joinToString(", ") { "${it.first} ₹${it.second}" })
+                ToolResult.Done(JSONObject().put("ok", true).put("shares", arr).put("summary", com.seyal.app.agent.Split.say(a.optInt("total"), shares))
+                    .put("note", "Tell the user the shares. Do NOT message anyone unless the user's own words asked to send or request the money; if they did not, end with: Say \"send it to them\" and I'll message each person their share."), shares.joinToString(", ") { "${it.first} ₹${it.second}" })
             },
 
             Tool(
