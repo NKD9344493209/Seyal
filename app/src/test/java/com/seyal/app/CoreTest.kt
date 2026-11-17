@@ -1812,8 +1812,61 @@ fun testThirdVideos() {
     T.check("the order's item is written with the spelling put right", Order.decl(Preflight.Kind.MOVIE).params.toString().contains("ramyana"))
 }
 
+fun testFourthVideo() {
+    // 17 Nov, 12:41, on v3.14.0: "book a ticket to scene movie" · "2d scene, any nearby, today, night, 2, 160".
+    val asked = listOf("book a ticket to scene movie", "2d scene, any nearby, today, night, 2, 160")
+
+    println("The film is the user's word, not another title the AI knows")
+    T.check("'Sikandar' is not what the user said", !Order.grounded("Sikandar", asked))
+    T.check("'Scene' is", Order.grounded("Scene", asked))
+    T.check("'Scene 2D' is", Order.grounded("Scene 2D", asked))
+    T.check("a slip of spelling put right is fine", Order.grounded("Ramayana", listOf("book ticket for ramyana")))
+    T.check("…also for a dish", Order.grounded("Mutton Biryani", listOf("buy me mutton briyani from nearby restaurant")))
+    T.check("a longer official name that starts with the user's word is fine", Order.grounded("Jailer 2", listOf("book jailer tickets")))
+    T.check("'bus' and the like are never questioned", Order.grounded("bus", listOf("coimbatore to bangalore tomorrow night")))
+    T.check("Tamil script cannot be compared letter by letter: let through", Order.grounded("Ramayana", listOf("ராமாயணம் படத்துக்கு டிக்கெட் புக் பண்ணு")))
+    T.check("nothing written down, nothing to question", Order.grounded("", asked))
+    T.eq("the film taken straight from the request", "scene", Order.itemFromWords(asked))
+    T.eq("…and a dish", "mutton briyani", Order.itemFromWords(listOf("buy me mutton briyani from nearby restaurant")))
+    T.eq("…and the first video's request", "ramyana", Order.itemFromWords(listOf("book ticket for ramyana")))
+    T.eq("a request that names nothing gives nothing", "", Order.itemFromWords(listOf("book tickets for tonight")))
+    T.check("the order tells the AI the name is exact", Order(kind = "MOVIE", item = "Scene").text().contains("What: Scene") && Order(kind = "MOVIE", item = "Scene").text().contains("similar-sounding"))
+    T.check("the AI is told never to swap in another title", Order.decl(Preflight.Kind.MOVIE).params.toString().contains("NEVER replace"))
+    T.eq("what is typed into the search", "scene", (Opener.plan(Preflight.Kind.MOVIE, "BookMyShow", Order(kind = "MOVIE", item = Order.itemFromWords(asked))) as? Opener.Plan.Movie)?.title)
+
+    println("A film that has left the cinemas is never opened to book")
+    val rows = """
+2 [field] Sikandar (focused) @400,45
+5 [text] Showing 34 results @110,103
+6 [tap] Sikandar · In movies | Out of Cinemas | … · OUT OF CINEMAS @500,150
+7 [tap] Magic Show by Magician … · In performances · UNAVAILABLE @500,205
+8 [tap] Jadugar Sikandar Live Ma… · In performances · UNAVAILABLE @500,260
+9 [tap] jadugar sikandar live magic show · In performances | 20th Nov - 29th Nov · Town Hall: Nandyal @500,330
+    """.trimIndent()
+    val rs = Opener.movieResults(Opener.items(rows), "Sikandar")
+    T.eq("'Out of cinemas' is read as gone", Opener.Showing.GONE, rs.first().showing)
+    val tell = Opener.chooseMovie(rs, "Sikandar") as? Opener.Choice.Tell
+    T.check("…nothing is opened and the user is asked", tell != null && tell.note.contains("Sikandar (no longer in cinemas)") && tell.note.contains("ask_user"))
+    val scene = Opener.items("2 [field] scene (focused) @400,45\n6 [tap] Scene · In cinemas now | Tamil @500,150\n7 [tap] Scene Stealers Live · In comedy shows | 5th Dec @500,205\n8 [tap] Behind The Scene · In upcoming movies | Hindi @500,260")
+    T.eq("'Scene' in cinemas is the one opened", 6, (Opener.chooseMovie(Opener.movieResults(scene, "scene"), "scene") as? Opener.Choice.Tap)?.result?.item?.id)
+    val trending = Opener.items("2 [field]  (hint: Search for Movies, Events, focused) @400,45\n6 [tap] Ramayana · Movies @200,350\n7 [tap] Scene · Movies @700,350\n8 [tap] John Doe · Movies @700,410")
+    T.eq("before the results arrive, the film in the trending list is still the right one", 7, (Opener.chooseMovie(Opener.movieResults(trending, "scene"), "scene") as? Opener.Choice.Tap)?.result?.item?.id)
+    val page = "1 [button] Navigate up @40,45\n2 [text] Sikandar @300,45\n3 [text] No watch options @500,790\n4 [text] 6/10 (36.6K+ Votes) @200,820\n5 [text] 2D, IMAX 2D @100,850\n6 [text] Top offers for you @200,890"
+    T.check("the page of a film that has left the cinemas is a wrong turn", Detour.ended(page) && Detour.note(page) == Detour.ENDED)
+    T.check("…the note sends it back and forbids another film", Detour.ENDED.contains("Press Back") && Detour.ENDED.contains("Never book a different film"))
+    T.check("an upcoming film's page still gets its own note", Detour.note("3 [text] Releasing on 20 Nov, 2026 @500,330\n6 [button] I'm interested @840,385") == Detour.UPCOMING)
+    T.check("a page with Book tickets gets none", Detour.note("2 [text] Scene @300,45\n9 [button] Book tickets @500,940") == null)
+    T.check("BookMyShow's notes name 'Out of cinemas'", Lessons.textFor(listOf("BookMyShow")).contains("Out of cinemas"))
+
+    println("Things lying over an app are closed by their own button")
+    T.eq("an X", 3, Opener.closeButton(Opener.items("2 [text] Now Order 'em Together @500,410\n3 [button] ✕ @900,385\n4 [button] Order Now @500,660"))?.id)
+    T.eq("'Not now'", 4, Opener.closeButton(Opener.items("2 [text] Want to stay updated? @500,410\n3 [button] Allow @500,600\n4 [button] Not now @500,660"))?.id)
+    T.check("'Order Now' and 'Apply Now' are not close buttons", Opener.closeButton(Opener.items("4 [button] Order Now @500,660\n5 [button] Apply Now @560,250")) == null)
+    T.check("'Closed on Sundays' is not one either", Opener.closeButton(Opener.items("4 [text] Closed on Sundays @500,660")) == null)
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -1822,7 +1875,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

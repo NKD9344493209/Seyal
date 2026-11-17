@@ -551,13 +551,18 @@ object ScreenDriver {
                 delay(500); settle()
             }
         }
-        if (node == null) node = s.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
-        if (node == null) {
+        fun findField(): AccessibilityNodeInfo? {
+            s.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }?.let { return it }
             var first: AccessibilityNodeInfo? = null
             fun walk(n: AccessibilityNodeInfo?, d: Int) { if (n == null || first != null || d > 45) return; if (n.isEditable && n.isVisibleToUser) { first = n; return }; for (i in 0 until n.childCount) walk(n.getChild(i), d + 1) }
             walk(s.rootInActiveWindow, 0)
-            node = first
+            return first
         }
+        if (node == null) node = findField()
+        // A search page that is still sliding in has no box yet (seen on a real phone: "No text field on screen",
+        // one second too early, and a whole AI step lost). Give it up to two seconds before saying so.
+        var waited = 0
+        while (node == null && waited < 2000 && !imeStarted(s)) { delay(250); waited += 250; node = findField() }
         if (node == null) {
             // No field in the screen's list, but the keyboard may be up on one the app does not describe:
             // type through the keyboard's own channel (Android 13+).
@@ -629,6 +634,10 @@ object ScreenDriver {
      * that ignore set-text and paste, and boxes the app does not describe at all.
      * True = the words are in; false = tried and they are not; null = that channel is not open (older Android, no cursor).
      */
+    /** The keyboard is up on some field (Android 13+), whether or not the app describes that field. */
+    private fun imeStarted(s: SeyalAccessibilityService): Boolean =
+        Build.VERSION.SDK_INT >= 33 && runCatching { s.inputMethod?.currentInputStarted == true }.getOrDefault(false)
+
     private suspend fun imeType(s: SeyalAccessibilityService, value: String, replace: Boolean): Boolean? {
         if (Build.VERSION.SDK_INT < 33) return null
         val im = runCatching { s.inputMethod }.getOrNull() ?: return null

@@ -98,11 +98,12 @@ object Opener {
 
     // ------------------------------------------------------------------ the film among the search results
 
-    enum class Showing { NOW, UPCOMING, OTHER, UNKNOWN }
+    enum class Showing { NOW, UPCOMING, GONE, OTHER, UNKNOWN }
     class Result(val item: Item, val title: String, val showing: Showing)
 
     private val nowRx = Regex("\\bin cinemas?\\b|\\bnow showing\\b|\\bin theat(re|er)s\\b|\\bnow running\\b", I)
     private val upcomingRx = Regex("\\bupcoming\\b|\\bcoming soon\\b|\\breleasing\\b|\\bnot (yet )?released\\b", I)
+    private val goneRx = Regex("\\bout of cinemas?\\b|\\bno longer (in|running|showing)\\b|\\bunavailable\\b", I)
     private val kindRx = Regex("^\\s*(as an?|in)\\b", I)
     /** A row reads "Title · what it is" (or "Title, In cinemas now" where the app joins them itself). */
     private val splitRx = Regex("^(.*?)(?:\\s*[·•|]\\s*|,\\s+(?=(?:in|as an?)\\b))(.*)$", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
@@ -130,6 +131,7 @@ object Opener {
             // In some layouts the line under the title is an element of its own: the one or two just below it.
             if (tail.isBlank()) tail = items.drop(i + 1).take(3).filter { n -> !n.isField && n.y - it.y in 0..60 && !about(n.label, wanted) }.joinToString(" | ") { n -> n.label }
             val showing = when {
+                goneRx.containsMatchIn(tail) -> Showing.GONE
                 nowRx.containsMatchIn(tail) -> Showing.NOW
                 upcomingRx.containsMatchIn(tail) -> Showing.UPCOMING
                 kindRx.containsMatchIn(tail) -> Showing.OTHER
@@ -149,7 +151,7 @@ object Opener {
         object Leave : Choice()
     }
 
-    private fun word(s: Showing) = when (s) { Showing.NOW -> "in cinemas now"; Showing.UPCOMING -> "upcoming, cannot be booked"; Showing.OTHER -> "not a film in cinemas"; Showing.UNKNOWN -> "no label" }
+    private fun word(s: Showing) = when (s) { Showing.NOW -> "in cinemas now"; Showing.UPCOMING -> "upcoming, cannot be booked"; Showing.GONE -> "no longer in cinemas"; Showing.OTHER -> "not a film in cinemas"; Showing.UNKNOWN -> "no label" }
 
     /**
      * Which result is the film to book. Only one that the app marks as in cinemas now is opened by code; an upcoming
@@ -172,6 +174,10 @@ object Opener {
         )
     }
 
+    private val closeRx = Regex("^(close|dismiss|✕|×|x|not now|skip|maybe later|later|no,? thanks)$", I)
+    /** The button that closes an offer or a notice lying over the app. */
+    fun closeButton(items: List<Item>): Item? = items.firstOrNull { !it.isField && closeRx.matches(it.label.trim()) }
+
     /** The "Book tickets" button of a film's page. */
     fun bookButton(items: List<Item>): Item? = items.firstOrNull { !it.isField && Regex("^book( tickets?| now)?$", I).matches(it.label.trim()) }
 }
@@ -184,6 +190,16 @@ object Detour {
 
     /** A film's page that has no shows to book: it is not released yet. */
     fun upcoming(screen: String): Boolean = notOut.containsMatchIn(screen) && !bookable.containsMatchIn(screen)
+
+    private val over = Regex("\\bno watch options\\b|\\bout of cinemas?\\b", I)
+    /** A film's page whose run in cinemas is over. */
+    fun ended(screen: String): Boolean = over.containsMatchIn(screen) && !bookable.containsMatchIn(screen)
+
+    const val ENDED = "WRONG TURN: this film is NOT in cinemas any more (\"Out of cinemas\", \"No watch options\"). Nothing can be booked here. Press Back now. " +
+        "Only a search result marked \"In cinemas now\" whose name is the film the user asked for can be booked. If there is none, ask_user: say their film is not running and what the search shows. Never book a different film."
+
+    /** What to tell the AI about the page it has landed on, or null when the page is fine. */
+    fun note(screen: String): String? = when { upcoming(screen) -> UPCOMING; ended(screen) -> ENDED; else -> null }
 
     const val UPCOMING = "WRONG TURN: this page is a film that is NOT in cinemas yet (\"Releasing…\", \"I'm interested\"). Nothing can be booked here and scrolling will not change that. " +
         "Press Back now and open the search result whose name is the film AND says \"In cinemas now\". If no result says that, the film is not running: ask_user, telling them what the search shows. Do not look it up on the web."

@@ -604,6 +604,8 @@ object Agent {
                             val noted = if (byAi == null) byWords.takeIf { !it.isEmpty } else Order.fromJson(byAi.toJson().apply {
                                 if (byWords.count > 0) put("count", byWords.count)
                                 if (byWords.maxEach > 0) put("max_each", byWords.maxEach)
+                                // The thing itself must be the user's own word. The AI once wrote "Sikandar" for "scene".
+                                if (!Order.grounded(byAi.item, words)) put("item", Order.itemFromWords(words))
                             })
                             // "Same as last time": what they left out comes from the last order of this kind that went through.
                             s.order = if (words.any { Usual.asksForSame(it) }) Usual.fill(noted ?: Order(kind.name)).takeIf { !it.isEmpty } else noted
@@ -747,25 +749,52 @@ object Agent {
         suspend fun tell(text: String) = lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + text))); touch(s) }
         fun tap(it: Item) = JSONObject().put("id", it.id).put("text", it.label.take(60))
 
+        var address: String? = null
+        /**
+         * Gets to the app's search box, whatever the app opened on: an address sheet (food), an offer lying over the
+         * home page, a page left open last time, or a home page still drawing. True = the search is open.
+         * It never presses Back while there is anything else to try: on a real phone that Back closed the app.
+         */
+        suspend fun toSearch(pkg: String, first: JSONObject?, food: Boolean): Boolean {
+            var screen = first
+            var backed = false; var closed = 0; var looks = 0
+            for (round in 0 until 9) {
+                val items = els(screen)
+                val row = if (food && address == null) Opener.addressRow(items) else null
+                if (row != null) {
+                    address = row.label.substringBefore(" · ").take(40)
+                    step("screen_tap", tap(row)) ?: return false
+                    screen = look(1200); looks = 0
+                    continue
+                }
+                if (items.any { it.isField }) return true
+                val close = if (closed < 2 && screen?.optBoolean("popup") == true) Opener.closeButton(items) else null
+                if (close != null) {
+                    closed++
+                    screen = (step("screen_tap", tap(close)) ?: return false).optJSONObject("screen")
+                    continue
+                }
+                val entry = Opener.searchEntry(items)
+                if (entry != null) { step("screen_tap", tap(entry)) ?: return false; return true }
+                // A long home page is cut short in the list, yet the bar is on screen: tap it by its words.
+                val bar = if (food) "Search for" else "Search"
+                if (ScreenDriver.isVisible(bar, exactOnly = !food)) { step("screen_tap", JSONObject().put("text", bar)) ?: return false; return true }
+                // Still drawing? Look again before trying anything else.
+                if (looks < 3) { looks++; screen = look(800); continue }
+                if (backed) return false
+                backed = true
+                val o = step("screen_back", JSONObject()) ?: return false
+                screen = if (ScreenDriver.frontPackage() == pkg) o.optJSONObject("screen") else { ScreenDriver.bringToFront(pkg); look(900) }
+                looks = 1
+            }
+            return false
+        }
+
         when (plan) {
             is Opener.Plan.Link -> { step("open_url", JSONObject().put("url", plan.url)) }
             is Opener.Plan.Movie -> {
                 var o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
-                val pkg = o.optString("package")
-                var screen = o.optJSONObject("screen")
-                // To the search box: close what lies over the app, tap the Search tab, or Back out of a page left open last time.
-                var tapped = false
-                var rounds = 0
-                while (rounds < 4 && els(screen).none { it.isField }) {
-                    rounds++
-                    val entry = if (screen?.optBoolean("popup") == true) null else Opener.searchEntry(els(screen))
-                    if (entry != null && tapped) break
-                    o = (if (entry != null) step("screen_tap", tap(entry)).also { tapped = true } else step("screen_back", JSONObject())) ?: return n
-                    if (ScreenDriver.frontPackage() != pkg) return n
-                    screen = o.optJSONObject("screen")
-                    if (els(screen).none { it.isField }) screen = look(500)
-                }
-                if (els(screen).none { it.isField } && !tapped) return n
+                if (!toSearch(o.optString("package"), o.optJSONObject("screen"), food = false)) return n
                 o = step("screen_type", JSONObject().put("text", plan.title)) ?: return n
                 var results = Opener.movieResults(els(o.optJSONObject("screen")), plan.title)
                 // The list comes from the network: give it a moment before deciding nothing is in cinemas.
@@ -774,7 +803,7 @@ object Agent {
                 when (val c = Opener.chooseMovie(results, plan.title)) {
                     is Opener.Choice.Tap -> {
                         o = step("screen_tap", tap(c.result.item)) ?: return n
-                        if (Detour.upcoming(o.optJSONObject("screen")?.optString("elements").orEmpty())) { step("screen_back", JSONObject()); tell(Detour.UPCOMING); return n }
+                        Detour.note(o.optJSONObject("screen")?.optString("elements").orEmpty())?.let { wrong -> step("screen_back", JSONObject()); tell(wrong); return n }
                         val book = Opener.bookButton(els(o.optJSONObject("screen"))) ?: Opener.bookButton(els(look(900)))
                         if (book != null) step("screen_tap", tap(book))
                     }
@@ -783,41 +812,14 @@ object Agent {
                 }
             }
             is Opener.Plan.Food -> {
-                var o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
-                val pkg = o.optString("package")
-                var screen = o.optJSONObject("screen")
-                var address: String? = null
-                var closed = 0
-                var rounds = 0
-                // Clear the way to the search bar: the "choose your address" sheet, then any offer lying over the home screen.
-                while (rounds < 5) {
-                    rounds++
-                    val items = els(screen)
-                    val row = if (address == null) Opener.addressRow(items) else null
-                    if (row != null) {
-                        address = row.label.substringBefore(" · ").take(40)
-                        step("screen_tap", tap(row)) ?: return n
-                        screen = look(1200)
-                        continue
-                    }
-                    if (screen?.optBoolean("popup") == true && closed < 2) {
-                        closed++
-                        o = step("screen_back", JSONObject()) ?: return n
-                        if (ScreenDriver.frontPackage() != pkg) return n
-                        screen = o.optJSONObject("screen")
-                        continue
-                    }
-                    if (items.any { it.isField }) break
-                    val entry = Opener.searchEntry(items) ?: return n
-                    step("screen_tap", tap(entry)) ?: return n
-                    break
-                }
+                val o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
+                val open = toSearch(o.optString("package"), o.optJSONObject("screen"), food = true)
                 // Typing goes in whichever way the box accepts; if it accepts none, the user types this one line.
-                if (step("screen_type", JSONObject().put("text", plan.query)) == null) {
+                if (open && step("screen_type", JSONObject().put("text", plan.query)) == null) {
                     if (lock.withLock { s.status == SessionStatus.CANCELLED }) return n
                     step("your_turn", JSONObject().put("what", "Type \"${plan.query}\" in the search box, then tap Done"))
                 }
-                if (address != null) tell("The app asked for a delivery address and \"$address\" was chosen (the one already in use, or the first saved one). Name this address in your final message so the user can check it.")
+                address?.let { tell("The app asked for a delivery address and \"$it\" was chosen (the one already in use, or the first saved one). Name this address in your final message so the user can check it.") }
             }
         }
         return n
@@ -1124,9 +1126,9 @@ object Agent {
                 r.output.remove("note"); r.output.remove("pressed")
                 r.output.put("ok", false).put("error", Detour.strayNote(ScreenDriver.appLabel(app, frontBefore!!), ScreenDriver.appLabel(app, now)))
                 screen?.let { r.output.put("screen", it) }
-            } else if (s.order?.kind == Preflight.Kind.MOVIE.name && Detour.upcoming(r.output.optJSONObject("screen")?.optString("elements").orEmpty())) {
-                // 2. the page of a film that is not out yet: nothing to book there, however far it is scrolled.
-                r.output.put("wrong_turn", Detour.UPCOMING)
+            } else if (s.order?.kind == Preflight.Kind.MOVIE.name) {
+                // 2. the page of a film that is not out yet, or no longer running: nothing to book there, however far it is scrolled.
+                Detour.note(r.output.optJSONObject("screen")?.optString("elements").orEmpty())?.let { r.output.put("wrong_turn", it) }
             }
         }
         if (usesScreen(tool.name)) ScreenDriver.workAppNow()?.let { s.workApp = it }

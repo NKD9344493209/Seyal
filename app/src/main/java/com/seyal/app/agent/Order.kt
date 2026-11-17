@@ -38,7 +38,7 @@ class Order(
 
     /** The lines the AI sees on every step. */
     fun text(): String = buildList {
-        if (item.isNotBlank()) add("What: $item" + (if (language.isNotBlank()) " ($language)" else ""))
+        if (item.isNotBlank()) add("What: $item" + (if (language.isNotBlank()) " ($language)" else "") + "  ← exactly this, as the user said it; a different or similar-sounding film, dish or product is NOT it")
         if (place.isNotBlank()) add("Where: $place  ← this exact place; a different theatre, restaurant or operator is NOT acceptable")
         if (from.isNotBlank() || to.isNotBlank()) add("Route: $from → $to")
         if (date.isNotBlank()) add("Day: $date" + (if (time.isNotBlank()) ", $time" else ""))
@@ -59,6 +59,40 @@ class Order(
             maxEach = o.optInt("max_each", 0).coerceAtLeast(0), app = o.optString("app").clean(),
         )
 
+        private val latinOnly = Regex("^[\\p{IsLatin}\\p{N}\\p{P}\\p{Z}\\p{S}\\p{C}₹]*$")
+        private val generic = setOf("the", "and", "movie", "movies", "film", "ticket", "tickets", "show", "bus", "train", "flight", "cab", "auto", "taxi", "food", "item", "items", "order", "plate", "plates", "seat", "seats")
+        private fun bits(s: String) = s.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotBlank() }
+        private fun near(a: String, b: String): Boolean {
+            if (a == b) return true
+            val m = minOf(a.length, b.length)
+            if (m < 4) return false
+            return a.startsWith(b) || b.startsWith(a) || distance(a, b) <= (if (m >= 6) 2 else 1)
+        }
+
+        /**
+         * Whether [item] (what the AI wrote down) is made of the user's own [words], slips of spelling aside.
+         * Seen on a real phone: the user said "scene" (a film called Scene) and the AI wrote down, and searched for,
+         * "Sikandar". Words in another script cannot be compared letter by letter and are let through.
+         */
+        fun grounded(item: String, words: List<String>): Boolean {
+            val said = words.joinToString(" ")
+            if (item.isBlank() || said.isBlank() || !latinOnly.matches(said) || !latinOnly.matches(item)) return true
+            val have = bits(said)
+            val want = bits(item).filter { it.length >= 3 && it !in generic }
+            if (want.isEmpty()) return true
+            return want.count { w -> have.any { h -> near(w, h) } } * 2 >= want.size
+        }
+
+        private val notTheThing = setOf(
+            "book", "order", "buy", "get", "purchase", "reserve", "me", "us", "we", "my", "i", "a", "an", "the", "some", "one", "ticket", "tickets", "seat", "seats", "to", "for", "of", "from", "in", "on", "at", "and",
+            "movie", "film", "padam", "show", "please", "pls", "want", "need", "nearby", "near", "any", "best", "good", "restaurant", "hotel", "shop", "theatre", "theater", "today", "tomorrow", "tonight", "now", "pannu", "venum",
+        )
+        /** What the user asked for, taken straight from their request: "book a ticket to scene movie" → "scene". "" when it cannot be told. */
+        fun itemFromWords(words: List<String>): String {
+            val left = words.firstOrNull().orEmpty().trim().split(Regex("\\s+")).filter { w -> w.lowercase().trim(',', '.', '!', '?') !in notTheThing && !Regex("^\\d+$").matches(w) }
+            return if (left.size in 1..5) left.joinToString(" ").trim(',', '.', '!', '?') else ""
+        }
+
         /** "any", "you choose", "-" and the like mean the user left it open. */
         private fun String.clean(): String = trim().takeIf { it.isNotBlank() && !Regex("^(any|anything|none|n/?a|-|unknown|not (said|given|specified)|you choose|nearby|any nearby|best( rated)?( nearby)?)$", RegexOption.IGNORE_CASE).matches(it) }.orEmpty().take(120)
 
@@ -66,7 +100,7 @@ class Order(
         fun decl(kind: Preflight.Kind): ToolDecl {
             fun p(type: String, d: String) = JSONObject().put("type", type).put("description", d)
             val props = JSONObject()
-                .put("item", p("string", "Exactly what: the movie, dish, product, or 'bus' / 'train' / 'flight' / 'cab'. The user's words, with an obvious slip of spelling put right ('ramyana' → 'Ramayana', 'briyani' → 'biryani'). Only the name: no language, count, day or price here."))
+                .put("item", p("string", "Exactly what: the movie, dish, product, or 'bus' / 'train' / 'flight' / 'cab'. The user's OWN words: you may put right a slip of one or two letters ('ramyana' → 'Ramayana'), but NEVER replace their word with another title you know ('scene' stays 'Scene'; it is not some other film). Only the name: no language, count, day or price here."))
                 .put("place", p("string", "The theatre, restaurant, shop or operator the user named, exactly as they said it. Empty if they left it open ('any nearby')."))
                 .put("date", p("string", "The day as YYYY-MM-DD, worked out from NOW. Empty if not said."))
                 .put("time", p("string", "The time or part of the day as the user said it ('after 1 pm', 'evening', '18:30'). Empty if not said."))
