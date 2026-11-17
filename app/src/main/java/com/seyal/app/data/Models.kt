@@ -151,6 +151,8 @@ class Session(
     @Volatile var blameNudged: Boolean = false
     /** What the user asked to buy or book, written down before any app is opened (see agent/Order). Not saved. */
     @Volatile var order: com.seyal.app.agent.Order? = null
+    /** One line shown above the chat ("Started a new chat for this…"); not part of what the AI sees. */
+    @Volatile var note: String = ""
     /** Self-checks already made before saying "done" in this run (each is made once). Not saved. */
     val checked: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
     /** Follow-ups typed while a tool round is in flight; appended once the round's results are in (keeps the transcript valid). Not saved. */
@@ -166,6 +168,7 @@ class Session(
         put("calls", JSONArray().apply { calls.values.forEach { put(it.toJson()) } })
         result?.let { put("result", it) }; parentId?.let { put("parent_id", it) }
         put("updated_at", updatedAt); put("steps", steps); put("llm_calls", llmCalls); put("tokens", tokens); put("llm_ms", llmMs)
+        if (note.isNotBlank()) put("note", note)
     }
 
     /** What lists need, without the transcript. */
@@ -186,7 +189,7 @@ class Session(
 
     companion object {
         fun fromJson(o: JSONObject): Session = Session(o.optString("id", newId()), o.optLong("created_at", System.currentTimeMillis()), o.optString("source", "user")).apply {
-            title = o.optString("title"); result = o.optString("result").ifBlank { null }; parentId = o.optString("parent_id").ifBlank { null }
+            title = o.optString("title"); result = o.optString("result").ifBlank { null }; parentId = o.optString("parent_id").ifBlank { null }; note = o.optString("note")
             status = runCatching { SessionStatus.valueOf(o.optString("status")) }.getOrDefault(SessionStatus.DONE)
             updatedAt = o.optLong("updated_at", createdAt); steps = o.optInt("steps"); llmCalls = o.optInt("llm_calls"); tokens = o.optLong("tokens"); llmMs = o.optLong("llm_ms")
             o.optJSONArray("messages")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { messages += Msg.fromJson(it) } }

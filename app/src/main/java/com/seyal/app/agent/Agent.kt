@@ -419,11 +419,39 @@ object Agent {
                     parts[0] = Part.Text(MIDTASK + msg)
                     s.queued += Msg("user", parts); touch(s); return@launch
                 }
+                // A new job typed into an old chat: a fresh chat, because every AI step carries the whole chat along.
+                // On a real phone one chat was used all day and a booking started at "step 73", slow and confused.
+                newTask(s, msg) -> {
+                    // (The lock is held here; start() takes it in its own coroutine, so the note lands before anything reads the chat.)
+                    start(msg, image, files = files).note = NEW_CHAT_NOTE
+                    return@launch
+                }
                 // A finished, stopped or failed conversation carries on.
                 else -> { s.messages += Msg("user", parts); s.status = SessionStatus.RUNNING; touch(s); run(s) }
             }
             s
         }
+    }
+
+    const val NEW_CHAT_NOTE = "Started a new chat for this: long chats make every step slower. The old chat is under ☰."
+    private val followUp = Regex(
+        "^(and|also|but|then|now|next|again|same|another|one more|more|it|that|this|those|these|there|here|no|yes|yeah|ok|okay|fine|instead|change|make it|cancel|stop|wait|why|what about|how about|same as|repeat|continue|go on|carry on|undo|redo|try again|retry|" +
+            "அதே|இன்னொரு|மறுபடியும்|அது|இது|இல்ல|சரி|ஆமா)(?![\\p{L}\\p{M}])|^[^\\p{L}]*$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Whether [msg], typed into the finished chat [s], is a new job rather than a follow-up: a buy, booking or
+     * order, or any longer request in a chat that has already served two or more. Short answers, "and…", "same
+     * again", "it", "that" and the like stay in the chat they refer to.
+     */
+    internal fun newTask(s: Session, msg: String): Boolean {
+        if (s.status.isOpen || s.parentId != null) return false
+        val m = msg.trim()
+        if (m.length < 12 || followUp.containsMatchIn(m)) return false
+        if (Preflight.kind(m) != null) return true
+        val served = s.messages.count { fromUser(it) }
+        return served >= 2 && m.split(Regex("\\s+")).size >= 4
     }
 
     private fun run(s: Session) {
@@ -750,75 +778,124 @@ object Agent {
         fun tap(it: Item) = JSONObject().put("id", it.id).put("text", it.label.take(60))
 
         var address: String? = null
+        // What was done and why it stopped, in a few words each: left in the chat so a recording or a report shows it.
+        val trace = ArrayList<String>()
+        /** The film itself was on the screen: tapped. Null = it was not there. */
+        var filmTapped: JSONObject? = null
         /**
          * Gets to the app's search box, whatever the app opened on: an address sheet (food), an offer lying over the
          * home page, a page left open last time, or a home page still drawing. True = the search is open.
          * It never presses Back while there is anything else to try: on a real phone that Back closed the app.
+         * Every tap meant to open the search is checked: the box must really appear before typing is tried.
          */
-        suspend fun toSearch(pkg: String, first: JSONObject?, food: Boolean): Boolean {
+        suspend fun toSearch(pkg: String, first: JSONObject?, food: Boolean, film: String? = null): Boolean {
             var screen = first
-            var backed = false; var closed = 0; var looks = 0
-            for (round in 0 until 9) {
+            var backed = false; var closed = 0; var looks = 0; var searchTaps = 0
+            for (round in 0 until 10) {
                 val items = els(screen)
+                if (film != null) Opener.onScreen(items, film)?.let { f ->
+                    trace += "saw \"${f.label}\" on the page and tapped it"
+                    filmTapped = step("screen_tap", tap(f))
+                    return false
+                }
                 val row = if (food && address == null) Opener.addressRow(items) else null
                 if (row != null) {
                     address = row.label.substringBefore(" · ").take(40)
+                    trace += "chose the address \"$address\""
                     step("screen_tap", tap(row)) ?: return false
                     screen = look(1200); looks = 0
                     continue
                 }
-                if (items.any { it.isField }) return true
+                if (items.any { it.isField }) { trace += "the search box is open"; return true }
                 val close = if (closed < 2 && screen?.optBoolean("popup") == true) Opener.closeButton(items) else null
                 if (close != null) {
                     closed++
+                    trace += "closed a popup (\"${close.label}\")"
                     screen = (step("screen_tap", tap(close)) ?: return false).optJSONObject("screen")
                     continue
                 }
-                val entry = Opener.searchEntry(items)
-                if (entry != null) { step("screen_tap", tap(entry)) ?: return false; return true }
-                // A long home page is cut short in the list, yet the bar is on screen: tap it by its words.
-                val bar = if (food) "Search for" else "Search"
-                if (ScreenDriver.isVisible(bar, exactOnly = !food)) { step("screen_tap", JSONObject().put("text", bar)) ?: return false; return true }
+                if (searchTaps < 2) {
+                    val entry = Opener.searchEntry(items)
+                    val bar = if (food) "Search for" else "Search"
+                    val how = when {
+                        entry != null -> { trace += "tapped \"${entry.label}\""; tap(entry) }
+                        // A long home page is cut short in the list, yet the bar is on screen: tap it by its words.
+                        ScreenDriver.isVisible(bar, exactOnly = !food) -> { trace += "tapped \"$bar\""; JSONObject().put("text", bar) }
+                        !food -> Opener.cornerIcon(items)?.let { trace += "tapped the icon in the top right corner"; tap(it) }
+                        else -> null
+                    }
+                    if (how != null) {
+                        searchTaps++
+                        screen = (step("screen_tap", how) ?: return false).optJSONObject("screen")
+                        if (els(screen).none { it.isField }) screen = look(900)
+                        if (els(screen).none { it.isField }) screen = look(900)
+                        continue
+                    }
+                }
                 // Still drawing? Look again before trying anything else.
                 if (looks < 3) { looks++; screen = look(800); continue }
-                if (backed) return false
+                if (backed) { trace += "found no search on this page"; return false }
                 backed = true
+                trace += "pressed Back"
                 val o = step("screen_back", JSONObject()) ?: return false
-                screen = if (ScreenDriver.frontPackage() == pkg) o.optJSONObject("screen") else { ScreenDriver.bringToFront(pkg); look(900) }
-                looks = 1
+                screen = if (ScreenDriver.frontPackage() == pkg) o.optJSONObject("screen") else { trace += "that left the app, so it was opened again"; ScreenDriver.bringToFront(pkg); look(900) }
+                looks = 1; searchTaps = 0
             }
+            trace += "found no search"
             return false
+        }
+        /** The film's page: Book tickets, or the two wrong turns. Returns whether booking went on. */
+        suspend fun onFilmPage(o: JSONObject): Boolean {
+            Detour.note(o.optJSONObject("screen")?.optString("elements").orEmpty())?.let { wrong -> trace += "that page cannot be booked, went back"; step("screen_back", JSONObject()); tell(wrong); return false }
+            val book = Opener.bookButton(els(o.optJSONObject("screen"))) ?: Opener.bookButton(els(look(900)))
+            if (book == null) { trace += "no Book tickets button on its page"; return false }
+            trace += "tapped \"${book.label}\""
+            step("screen_tap", tap(book))
+            return true
+        }
+        suspend fun leaveTrace() {
+            if (n == 0 || trace.isEmpty()) return
+            tell("Seyal did the first steps itself: ${trace.joinToString("; ")}. Carry on from the screen as it is now.")
         }
 
         when (plan) {
             is Opener.Plan.Link -> { step("open_url", JSONObject().put("url", plan.url)) }
             is Opener.Plan.Movie -> {
                 var o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
-                if (!toSearch(o.optString("package"), o.optJSONObject("screen"), food = false)) return n
-                o = step("screen_type", JSONObject().put("text", plan.title)) ?: return n
+                trace += "opened ${plan.app}"
+                val open = toSearch(o.optString("package"), o.optJSONObject("screen"), food = false, film = plan.title)
+                filmTapped?.let { onFilmPage(it); leaveTrace(); return n }
+                if (!open) { leaveTrace(); return n }
+                o = step("screen_type", JSONObject().put("text", plan.title)) ?: run { trace += "typing \"${plan.title}\" did not go in"; leaveTrace(); return n }
+                trace += "typed \"${plan.title}\""
                 var results = Opener.movieResults(els(o.optJSONObject("screen")), plan.title)
                 // The list comes from the network: give it a moment before deciding nothing is in cinemas.
                 var waits = 0
                 while (results.none { it.showing == Opener.Showing.NOW } && waits < 3) { waits++; results = Opener.movieResults(els(look(700)), plan.title) }
                 when (val c = Opener.chooseMovie(results, plan.title)) {
                     is Opener.Choice.Tap -> {
-                        o = step("screen_tap", tap(c.result.item)) ?: return n
-                        Detour.note(o.optJSONObject("screen")?.optString("elements").orEmpty())?.let { wrong -> step("screen_back", JSONObject()); tell(wrong); return n }
-                        val book = Opener.bookButton(els(o.optJSONObject("screen"))) ?: Opener.bookButton(els(look(900)))
-                        if (book != null) step("screen_tap", tap(book))
+                        trace += "opened \"${c.result.title}\" (${if (c.result.showing == Opener.Showing.NOW) "in cinemas now" else "the only match"})"
+                        o = step("screen_tap", tap(c.result.item)) ?: run { leaveTrace(); return n }
+                        onFilmPage(o)
                     }
-                    is Opener.Choice.Tell -> tell(c.note)
-                    Opener.Choice.Leave -> {}
+                    is Opener.Choice.Tell -> { trace += "no result in cinemas matched"; tell(c.note) }
+                    Opener.Choice.Leave -> trace += "could not tell which result is the film"
                 }
+                leaveTrace()
             }
             is Opener.Plan.Food -> {
                 val o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
+                trace += "opened ${plan.app}"
                 val open = toSearch(o.optString("package"), o.optJSONObject("screen"), food = true)
                 // Typing goes in whichever way the box accepts; if it accepts none, the user types this one line.
-                if (open && step("screen_type", JSONObject().put("text", plan.query)) == null) {
-                    if (lock.withLock { s.status == SessionStatus.CANCELLED }) return n
-                    step("your_turn", JSONObject().put("what", "Type \"${plan.query}\" in the search box, then tap Done"))
+                if (open) {
+                    if (step("screen_type", JSONObject().put("text", plan.query)) == null) {
+                        if (lock.withLock { s.status == SessionStatus.CANCELLED }) return n
+                        trace += "typing did not go in, asked the user to type \"${plan.query}\""
+                        step("your_turn", JSONObject().put("what", "Type \"${plan.query}\" in the search box, then tap Done"))
+                    } else trace += "typed \"${plan.query}\""
                 }
+                leaveTrace()
                 address?.let { tell("The app asked for a delivery address and \"$it\" was chosen (the one already in use, or the first saved one). Name this address in your final message so the user can check it.") }
             }
         }

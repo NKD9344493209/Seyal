@@ -2010,8 +2010,60 @@ fun testBrain() {
     T.check("kinds have plain names", Brain.kindName("calendar") == "calendar entries" && Brain.kindName("reply", plural = false) == "reply")
 }
 
+fun testFifthVideo() {
+    // 17 Nov, 21:06, on v3.16.0: "book ramayana ticket" typed into the day's old chat (step 73); BookMyShow opened on a
+    // "Now Showing" list with the film's poster right there, and nothing happened for twenty seconds.
+    println("The film already on the screen is tapped, not searched for")
+    val nowShowing = Opener.items("1 [button] Navigate up @40,50\n2 [text] Now Showing @200,48\n3 [text] Coimbatore | 16 Movies @200,66\n4 [button] (unlabeled) @1020,50\n5 [tap] Save ₹75 on blockbusters! Devi Cineplex USE CODE DEVI75 @540,330\n6 [tap] New Releases @150,560\n7 [tap] Tamil @330,560\n8 [tap] Coming Soon Explore Upcoming Movies @540,680\n9 [tap] Ramayana @160,1080\n10 [text] 9.2 408K+ votes @160,1050\n11 [tap] Scene @480,1080\n12 [tap] Browse by Cinemas @160,1250")
+    T.eq("'Ramayana' is right there", 9, Opener.onScreen(nowShowing, "Ramayana")?.id)
+    T.eq("…also with the user's spelling", 9, Opener.onScreen(nowShowing, "ramyana")?.id)
+    T.eq("'Scene' too", 11, Opener.onScreen(nowShowing, "scene")?.id)
+    T.check("not the offer banner, not the Coming Soon strip", Opener.onScreen(nowShowing, "blockbusters") == null && Opener.onScreen(nowShowing, "Coming Soon") == null)
+    T.check("a film that is not on the page", Opener.onScreen(nowShowing, "Jailer") == null)
+    T.check("the search box with the name typed in it is not the film", Opener.onScreen(Opener.items("2 [field] Ramayana (focused) @400,45"), "Ramayana") == null)
+    T.eq("the unlabeled icon in the top right corner is the search", 4, Opener.cornerIcon(nowShowing)?.id)
+    T.check("…but not an unlabeled button lower down or on the left", Opener.cornerIcon(Opener.items("1 [button] (unlabeled) @40,50\n2 [button] (unlabeled) @1020,900")) == null)
+
+    println("A new job typed into an old chat gets a fresh chat")
+    fun chat(requests: Int, status: SessionStatus = SessionStatus.DONE): Session {
+        val s = Session("old", 1L)
+        repeat(requests) { i -> s.messages += Msg("user", listOf(Part.Text("request number $i about something"))); s.messages += Msg("assistant", listOf(Part.Text("done $i"))) }
+        s.status = status
+        return s
+    }
+    T.check("a booking after one finished request", Agent.newTask(chat(1), "book ramayana ticket"))
+    T.check("a food order too", Agent.newTask(chat(1), "order mutton biryani from a nearby restaurant"))
+    T.check("a long new request in a chat that served two", Agent.newTask(chat(2), "what is the weather in coimbatore tomorrow"))
+    T.check("a long new request in a chat that served one stays (it may build on it)", !Agent.newTask(chat(1), "what is the weather in coimbatore tomorrow"))
+    T.check("'and tomorrow?' stays", !Agent.newTask(chat(3), "and tomorrow?"))
+    T.check("'same again for 2 people' stays", !Agent.newTask(chat(3), "same again for 2 people"))
+    T.check("'no, the other one' stays", !Agent.newTask(chat(3), "no, the other one please"))
+    T.check("'book another ticket for it' stays", !Agent.newTask(chat(3), "another ticket for the same show please"))
+    T.check("a short answer stays", !Agent.newTask(chat(3), "2 tickets"))
+    T.check("Tamil follow-up stays", !Agent.newTask(chat(3), "அதே மாதிரி இன்னொரு டிக்கெட்"))
+    T.check("a chat still running is never split", !Agent.newTask(chat(3, SessionStatus.RUNNING), "book ramayana ticket") && !Agent.newTask(chat(3, SessionStatus.WAITING), "book ramayana ticket"))
+    T.check("a child session is never split", !Agent.newTask(chat(3).apply { parentId = "p" }, "book ramayana ticket"))
+    val s = Session("n", 1L).apply { note = Agent.NEW_CHAT_NOTE }
+    T.check("the note survives saving", Session.fromJson(s.toJson()).note == Agent.NEW_CHAT_NOTE && !Session("m", 1L).toJson().has("note"))
+
+    println("Every message the Brain hears gets a visible fate")
+    val dir = java.io.File(System.getProperty("java.io.tmpdir"), "seyal-brain2-" + System.nanoTime()).apply { mkdirs() }
+    BrainStore.init(dir)
+    val h = BrainStore.heard("Priya S", "WhatsApp", "happy birthday da!   have a great day", "dropped: nothing asked")
+    T.check("logged, with the text tidied", BrainStore.heardList().single().let { it.who == "Priya S" && it.text == "happy birthday da! have a great day" && it.fate.startsWith("dropped") })
+    h.fate = "offered a reminder"; BrainStore.save()
+    BrainStore.init(dir)
+    T.check("the fate survives a restart", BrainStore.heardList().single().fate == "offered a reminder")
+    repeat(45) { BrainStore.heard("A", "SMS", "x$it", "dropped: advert") }
+    T.check("forty kept, newest first", BrainStore.heardList().size == 40 && BrainStore.heardList().first().text == "x44")
+    BrainStore.forget()
+    T.check("'forget' clears it too", BrainStore.heardList().isEmpty())
+    dir.deleteRecursively()
+    T.check("the wait for the rest of a message is short", Brain.WAIT_MS <= 15_000L)
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -2020,7 +2072,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

@@ -278,6 +278,8 @@ ${if (memory.isNotBlank()) "What you know about the user:\n${memory.take(1500)}\
 
     // ------------------------------------------------------------------ 5. how often it may think and speak
 
+    /** How long to wait for the rest of what someone is typing before thinking. */
+    const val WAIT_MS = 15_000L
     const val GAP_MS = 45_000L
     const val THINKS_A_DAY = 40
     const val OFFERS_A_DAY = 12
@@ -302,10 +304,17 @@ ${if (memory.isNotBlank()) "What you know about the user:\n${memory.take(1500)}\
     fun kindName(kind: String, plural: Boolean = true) = when (kind) { "reminder" -> if (plural) "reminders" else "reminder"; "calendar" -> if (plural) "calendar entries" else "calendar entry"; "reply" -> if (plural) "replies" else "reply"; "call" -> if (plural) "calls" else "call"; else -> kind }
 }
 
+/** One message the Brain heard and what became of it ("dropped: a code", "offered", "AI failed: …"). */
+class Heard(val id: String, val at: Long, val who: String, val app: String, val text: String, @Volatile var fate: String) {
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("at", at).put("who", who).put("app", app).put("text", text).put("fate", fate)
+    companion object { fun fromJson(o: JSONObject) = Heard(o.optString("id"), o.optLong("at"), o.optString("who"), o.optString("app"), o.optString("text"), o.optString("fate")) }
+}
+
 /** What the Brain has noticed, offered and done, and what it has learnt from the answers. Kept on the phone. */
 object BrainStore {
     private var file: File? = null
     private val thoughts = ArrayList<Brain.Thought>()
+    private val heard = ArrayList<Heard>()
     var trust = Brain.Trust(); private set
     private var day = ""; private var thinks = 0; private var offers = 0
     @Volatile var lastThinkAt = 0L
@@ -313,20 +322,31 @@ object BrainStore {
     val version = kotlinx.coroutines.flow.MutableStateFlow(0)
 
     @Synchronized fun init(dir: File) {
-        file = File(dir, "seyal/brain.json"); thoughts.clear(); trust = Brain.Trust()
+        file = File(dir, "seyal/brain.json"); thoughts.clear(); heard.clear(); trust = Brain.Trust()
         runCatching {
             val o = JSONObject(file!!.readText())
             o.optJSONArray("thoughts")?.let { a -> for (i in 0 until a.length()) thoughts += Brain.Thought.fromJson(a.getJSONObject(i)) }
             trust = Brain.Trust(o.optJSONObject("trust") ?: JSONObject())
             day = o.optString("day"); thinks = o.optInt("thinks"); offers = o.optInt("offers")
+            o.optJSONArray("heard")?.let { a -> for (i in 0 until a.length()) heard += Heard.fromJson(a.getJSONObject(i)) }
         }
     }
+
+    /** A message reached the Brain. Returns its entry; set its fate as things happen, then [save]. */
+    @Synchronized fun heard(who: String, app: String, text: String, fate: String): Heard {
+        val h = Heard(newId(), System.currentTimeMillis(), who, app, text.replace(Regex("\\s+"), " ").take(90), fate)
+        heard += h; while (heard.size > 40) heard.removeAt(0)
+        save()
+        return h
+    }
+    /** Newest first. */
+    @Synchronized fun heardList(): List<Heard> = heard.asReversed().toList()
 
     @Synchronized fun save() {
         val f = file
         if (f != null) runCatching {
             f.parentFile?.mkdirs()
-            f.writeText(JSONObject().put("thoughts", JSONArray(thoughts.map { it.toJson() })).put("trust", trust.toJson()).put("day", day).put("thinks", thinks).put("offers", offers).toString())
+            f.writeText(JSONObject().put("thoughts", JSONArray(thoughts.map { it.toJson() })).put("heard", JSONArray(heard.map { it.toJson() })).put("trust", trust.toJson()).put("day", day).put("thinks", thinks).put("offers", offers).toString())
         }
         version.value = version.value + 1
     }
@@ -337,7 +357,7 @@ object BrainStore {
     @Synchronized fun all(): List<Brain.Thought> = thoughts.asReversed().toList()
     @Synchronized fun newest(): Brain.Thought? = thoughts.lastOrNull()
     @Synchronized fun clear() { thoughts.clear(); save() }
-    @Synchronized fun forget() { thoughts.clear(); trust = Brain.Trust(); thinks = 0; offers = 0; save() }
+    @Synchronized fun forget() { thoughts.clear(); heard.clear(); trust = Brain.Trust(); thinks = 0; offers = 0; save() }
 
     private fun roll(today: String) { if (day != today) { day = today; thinks = 0; offers = 0 } }
     @Synchronized fun thinksToday(today: String): Int { roll(today); return thinks }

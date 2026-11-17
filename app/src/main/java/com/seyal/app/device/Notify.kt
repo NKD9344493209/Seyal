@@ -31,7 +31,7 @@ object Notify {
         })
     }
 
-    private fun allowed(ctx: Context) =
+    fun allowed(ctx: Context) =
         android.os.Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     private fun openApp(ctx: Context, sessionId: String? = null): PendingIntent {

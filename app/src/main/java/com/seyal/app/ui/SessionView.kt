@@ -60,6 +60,7 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
     for (m in s.messages) if (m.role == "tool") for (r in m.results) results[r.callId] = r
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (s.note.isNotBlank()) Text(s.note, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
         var stepNo = 0
         for ((i, m) in s.messages.withIndex()) {
             // Seyal's own check before finishing, and the half-answer it corrected, are not part of the conversation.

@@ -88,6 +88,37 @@ fun BrainScreen() {
                 SmallButton("Turn on Notification access") { runCatching { ctx.startActivity(Intent(SysSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
             }
             if (on && !Settings.hasKey) Text("Add your AI key first (Control → AI).", style = MaterialTheme.typography.bodySmall, color = Ink.red, modifier = Modifier.padding(top = 6.dp))
+            if (on && !com.seyal.app.device.Notify.allowed(ctx)) Text("Seyal may not show notifications, so offers will appear only here. Allow notifications for Seyal in the phone's settings.", style = MaterialTheme.typography.bodySmall, color = Ink.red, modifier = Modifier.padding(top = 6.dp))
+        }
+
+        // Where things stand: the last message heard and what became of it, and a way to see it work right now.
+        val heard = remember(version) { BrainStore.heardList() }
+        Card {
+            Text("Is it working?", style = MaterialTheme.typography.titleMedium)
+            val last = heard.firstOrNull()
+            Text(
+                if (last == null) "No message has reached the Brain yet. A message reaches it only as a notification: it must arrive while the phone is locked or WhatsApp is not open on that chat. A message you send yourself is never heard."
+                else "Last heard ${ago(last.at, now)}: ${last.who} (${last.app}) → ${last.fate}.",
+                style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SmallButton("Try it now", filled = on && Settings.hasKey) { if (on && Settings.hasKey) BrainLoop.tryNow(ctx) }
+                Spacer(Modifier.width(10.dp))
+                Text("Runs a made-up message (\"Ram Kumar: project review tomorrow 10 AM\") through the Brain. The offer appears in about 10 seconds.", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.weight(1f))
+            }
+            if (heard.isNotEmpty()) {
+                var showHeard by remember { mutableStateOf(false) }
+                Spacer(Modifier.height(6.dp))
+                Text(if (showHeard) "Hide what it heard" else "Show the last ${heard.size} messages it heard", style = MaterialTheme.typography.labelMedium, color = cs.primary, modifier = Modifier.clickable { showHeard = !showHeard }.padding(vertical = 4.dp))
+                if (showHeard) heard.take(25).forEach { h ->
+                    Column(Modifier.padding(vertical = 3.dp)) {
+                        Text("${h.who} · ${h.app} · ${ago(h.at, now)}", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                        Text("\"${h.text}\"", style = MaterialTheme.typography.bodySmall)
+                        Text("→ ${h.fate}", style = MaterialTheme.typography.bodySmall, color = if (h.fate.startsWith("AI failed") || h.fate.startsWith("failed")) Ink.red else cs.primary)
+                    }
+                }
+            }
         }
 
         if (waiting.isNotEmpty()) {

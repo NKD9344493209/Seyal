@@ -178,6 +178,22 @@ object Opener {
     /** The button that closes an offer or a notice lying over the app. */
     fun closeButton(items: List<Item>): Item? = items.firstOrNull { !it.isField && closeRx.matches(it.label.trim()) }
 
+    /**
+     * The film itself, already on the screen (BookMyShow opens on "Now Showing" lists where the poster's name is a
+     * label): one tap beats a search. Only a label that is the film's name, word for word.
+     */
+    fun onScreen(items: List<Item>, wanted: String): Item? =
+        items.firstOrNull { !it.isField && it.role != "heading" && it.label.length <= 60 && it.label != "(unlabeled)" && same(it.label, wanted) }
+
+    /**
+     * The unlabeled icon in the top right corner: on BookMyShow's list pages that is the search magnifier. A last
+     * resort, used only when nothing on the screen says "Search".
+     */
+    fun cornerIcon(items: List<Item>): Item? {
+        val right = items.maxOfOrNull { it.x } ?: return null
+        return items.filter { (it.role == "button" || it.role == "tap") && it.label == "(unlabeled)" && it.y in 1..160 && it.x >= right * 0.85 }.maxByOrNull { it.x }
+    }
+
     /** The "Book tickets" button of a film's page. */
     fun bookButton(items: List<Item>): Item? = items.firstOrNull { !it.isField && Regex("^book( tickets?| now)?$", I).matches(it.label.trim()) }
 }
