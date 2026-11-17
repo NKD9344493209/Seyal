@@ -43,7 +43,7 @@ object Lessons {
         val k = app.trim().lowercase().removeSuffix(" app")
         return builtInNames.firstOrNull { k == it || k.startsWith("$it ") || k.startsWith("$it:") || k.startsWith("$it-") } ?: k
     }
-    private val builtInNames = listOf("youtube", "swiggy", "zomato", "bookmyshow", "district", "redbus", "google meet", "chrome", "whatsapp", "google maps")
+    private val builtInNames = listOf("youtube", "amazon", "flipkart", "swiggy", "zomato", "bookmyshow", "district", "redbus", "google meet", "chrome", "whatsapp", "google maps")
     private fun norm(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
 
     /** Whether two notes say much the same (most of the shorter one's words are in the longer one). */
@@ -94,9 +94,24 @@ object Lessons {
             "Zomato opens with a \"Device location not enabled\" sheet over a list of saved addresses: tap the saved address (Home) under it; never tap Enable. A \"Want to stay updated…\" popup: tap Not now. \"Introducing Host Mode\": close it with X.",
             "Do NOT open zomato.com links: open the Zomato app with open_app and use its search bar. Filters under the search results sort by rating and price.",
         ),
+        "amazon" to listOf(
+            "Start from a filtered list, not the search bar: open_url https://www.amazon.in/s?k=WORDS&rh=p_36%3A-MAXPAISE&s=review-rank (WORDS = what it is in 3 to 5 plain words joined by +, e.g. men+black+walking+shoes+memory+foam; MAXPAISE = the budget in rupees times 100, e.g. 90000 for ₹900). It lists what fits the budget, best rated first. Do not put the size or the word \"sole\" in WORDS (that finds insoles).",
+            "Choose from the list itself: each row has the name, stars, number of ratings and price. Skip rows marked Sponsored when an unsponsored one fits. Open at most three products in all.",
+            "On the product page tap the size by its TEXT (e.g. \"11 UK\"). \"Currently unavailable\" for that size means this product is out: go back and open the next one; do not read the size guide.",
+            "Then Add to Cart. For more than one, open the cart and use + on that item. If the cart already holds other things, leave them, tell the user, and stop before Proceed to Buy.",
+            "A full-screen Prime offer (\"Get Prime… Make Payment\") can open first: press Back once. Never tap Make Payment, and never tap Alexa in the bottom bar.",
+        ),
+        "flipkart" to listOf(
+            "Start from a filtered list: open_url https://www.flipkart.com/search?q=WORDS&sort=popularity&p%5B%5D=facets.price_range.from%3DMin&p%5B%5D=facets.price_range.to%3DMAX (WORDS joined by +, MAX = the budget in rupees). Choose from the list (name, rating, price); open at most three products.",
+            "On the product page tap the size by its TEXT, then Add to cart. A size shown greyed or struck out is not available: take the next product. Stop before Place Order.",
+        ),
         "bookmyshow" to listOf(
+            "Search is the magnifier in the bar at the BOTTOM of the home screen (Home · Live Events · Search). The round icon at the top right is the profile: never tap it. Ignore the \"Pick Up Where You Left Off / Resume booking\" card: it carries the old day and the old ticket count.",
+            "The day is the user's day, always. If that day has no show near the time they asked, tell them the show times that day has (ask_user) and let them choose; never switch to another day by yourself.",
+            "An area instead of a theatre name (\"near Somanur\"): scroll the whole theatre list for names with that area in them. None there → ask the user which of the listed theatres they want; do not take the first one.",
             "Theatre: after opening the film, the show list has many theatres. Find the one the user named by its NAME (scroll the list, or use the search icon on that list); the first one listed is usually a big multiplex and is NOT the one asked for. If the user's theatre is not in the list, it has no show for that film or day on this app: ask the user (say so, and name two nearby theatres that do), never book another one by yourself.",
             "Day: the date strip at the top of the show list starts on today. Tap the user's day BEFORE picking a show time, and read the day back from the review screen.",
+            "How many: tap the number with screen_tap by its TEXT (\"2\"), never by position: the numbers sit close together and a position tap hits the wrong one. The seat map's top right then shows \"N Tickets\": it must be the user's number BEFORE you call your_turn; if not, tap it and fix the number.",
             "How many: the \"How many seats?\" sheet opens with a number already chosen, often left from last time. Tap the user's number (the row of 1 to 10) and check the picture changed, then Select Seats. On the seat map tap exactly that many seats; the bar at the bottom must show that many.",
             "Search the movie by name and open its page, check the title, then Book tickets. Pick the date at the top; theatres are listed with their show times: find the theatre the user named and tap the time they want.",
             "If the film runs in several languages or formats (Tamil / Hindi / English, 2D / 3D), a sheet asks which: pick what the user said. If they did not say, ask them; never pick one yourself.",

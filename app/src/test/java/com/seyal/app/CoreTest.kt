@@ -13,6 +13,8 @@ import com.seyal.app.agent.Did
 import com.seyal.app.agent.Seats
 import com.seyal.app.agent.Order
 import com.seyal.app.agent.Basics
+import com.seyal.app.agent.SeatScreen
+import com.seyal.app.device.TypeCheck
 import com.seyal.app.agent.Honest
 import com.seyal.app.device.ShotHealth
 import com.seyal.app.device.Perms
@@ -1557,9 +1559,9 @@ fun testTrust() {
 fun testPhoneVideos() {
     val hour = 3600_000L; val now = 1_800_000_000_000L
     println("A phone that refuses screenshots")
-    T.check("one failure is not enough to give up", !ShotHealth.broken(1, now - 1000, now))
-    T.check("two in a row: work from the screen text", ShotHealth.broken(2, now - 1000, now))
-    T.check("a day later: try a picture again", !ShotHealth.broken(5, now - 25 * hour, now))
+    T.check("one or two failures are not enough to stop asking", !ShotHealth.broken(1, now - 1000, now) && !ShotHealth.broken(2, now - 1000, now))
+    T.check("three in a row: work from the screen text for a while", ShotHealth.broken(3, now - 1000, now))
+    T.check("ten minutes later: try a picture again", !ShotHealth.broken(5, now - 11 * 60_000L, now) && !ShotHealth.broken(5, now - 25 * hour, now))
     T.check("the AI is told it is the phone, not the app", ShotHealth.instead("Android error 1", 40).let { it.contains("NOT the app blocking you") && it.contains("screen_tap") && it.contains("your_turn") })
     T.check("an empty screen text says to wait", ShotHealth.instead("Android error 1", 0).contains("screen_wait"))
 
@@ -1595,8 +1597,89 @@ fun testPhoneVideos() {
     T.check("Swiggy: no swiggy.com search links", food.contains("Do NOT open swiggy.com links"))
 }
 
+fun testLongChats() {
+    println("A chat used all morning stays light")
+    fun u(t: String) = Msg("user", listOf(Part.Text(t)))
+    fun call(id: String, name: String) = Msg("assistant", listOf(Part.Call(id, name, JSONObject())))
+    fun res(id: String, name: String) = Msg("tool", listOf(Part.Result(id, name, JSONObject().put("ok", true).put("screen", "x".repeat(2000)), false)))
+    fun say(t: String) = Msg("assistant", listOf(Part.Text(t)))
+    val msgs = mutableListOf<Msg>()
+    msgs += u("book ramayana ticket"); for (k in 1..30) { msgs += call("a$k", "screen_tap"); msgs += res("a$k", "screen_tap") }; msgs += say("Stopped at Pay ₹780 for 6 tickets.")
+    msgs += u("buy me a black shoe that has most softest cushion sole"); for (k in 1..40) { msgs += call("b$k", "screen_tap"); msgs += res("b$k", "screen_tap") }; msgs += say("Campus North Plus, size 11, ₹1,144 is in the cart.")
+    val lastAsk = msgs.size; msgs += u("buy me a chicken briyani"); msgs += call("c1", "open_app"); msgs += res("c1", "open_app")
+    val lines = (1..40).associate { "b$it" to "Tapped $it" } + (1..30).associate { "a$it" to "Tapped $it" }
+    val out = History.collapse(msgs, lastAsk, { it.role == "user" }, lines)
+    T.eq("two finished requests become two lines each", 2 + 2 + 3, out.size)
+    T.check("…keeping what was asked", out[0].text == "book ramayana ticket" && out[2].text.startsWith("buy me a black shoe"))
+    T.check("…and what came of it", out[1].text.contains("Stopped at Pay ₹780") && out[3].text.contains("Campus North Plus"))
+    T.check("…saying how many steps it took", out[3].text.contains("40 steps"))
+    T.check("the request now running is untouched", out.takeLast(3).map { it.role } == listOf("user", "assistant", "tool"))
+    T.check("turns still alternate user, assistant", out.zipWithNext().none { (a, b) -> a.role == b.role && a.role != "tool" })
+    val noAnswer = listOf(u("open youtube"), call("x1", "open_app"), res("x1", "open_app"), u("now play songs"))
+    T.check("a request with no final words keeps its last steps", History.collapse(noAnswer, 3, { it.role == "user" }, mapOf("x1" to "Opened YouTube"))[1].text.contains("Opened YouTube"))
+    T.check("'email it' points back at the last request", History.pointsBack("email it to priya"))
+    T.check("'retry the biryani' does too", History.pointsBack("retry the briyani"))
+    T.check("'now send the ppt to ram on whatsapp' does too", History.pointsBack("now send the ppt to ram on whatsapp please"))
+    T.check("a new request does not", !History.pointsBack("Book a bus ticket from Coimbatore to Bangalore for Friday night"))
+    T.check("'a shoe that has…' is a new request, not a pointer", !History.pointsBack("buy me a black shoe that has most softest cushion sol"))
+    T.eq("a short earlier request stays whole whatever is said next", 10, History.keepFrom(10, 16, "Book a bus ticket from Coimbatore to Bangalore for Friday night"))
+    T.eq("a long one that is not pointed at is collapsed", 90, History.keepFrom(10, 90, "Book a bus ticket from Coimbatore to Bangalore for Friday night"))
+    T.eq("a long one that is pointed at stays whole", 10, History.keepFrom(10, 90, "retry the briyani"))
+    T.eq("the first request in a chat", 0, History.keepFrom(null, 0, "book ramayana ticket"))
+    val ppt = listOf(u("Make a PPT about solar power"), call("d1", "doc_create"),
+        Msg("tool", listOf(Part.Result("d1", "doc_create", JSONObject().put("ok", true).put("uri", "content://seyal/solar.pptx").put("name", "Solar power.pptx").put("slides", 6), false))),
+        say("Made Solar power.pptx with 6 slides."), u("Book a bus ticket from Coimbatore to Bangalore for Friday night"))
+    val kept = History.collapse(ppt, 4, { it.role == "user" }, mapOf("d1" to "Made Solar power.pptx"))[1].text
+    T.check("a collapsed request still carries the file it made", kept.contains("uri=content://seyal/solar.pptx") && kept.contains("name=Solar power.pptx"))
+
+    println("Answers show in full on the step card")
+    T.check("seat-count rule: tap numbers by their text", Lessons.textFor(listOf("BookMyShow")).contains("by its TEXT"))
+}
+
+fun testSecondVideos() {
+    val nowDt = java.time.LocalDateTime.of(2026, 11, 17, 10, 1)   // Tuesday, as in the recording
+
+    println("Typing is checked, not assumed")
+    T.check("the words are in the box", TypeCheck.took("chicken biryani", "chicken biryani", "", "", false))
+    T.check("an empty box after 'typing' is a failure", !TypeCheck.took("", "chicken biryani", "", "", false))
+    T.check("a box still showing its hint is a failure", !TypeCheck.took("Search for restaurant", "chicken biryani", "Search for restaurant", "", true))
+    T.check("a rotating hint written as text is a failure", !TypeCheck.took("Try 'Pizza'", "chicken biryani", "", "Try 'Sweets'", false))
+    T.check("the old text unchanged is a failure", !TypeCheck.took("black shoes", "campus shoes size 11", "", "black shoes", false))
+    T.check("a number the app reformatted is fine", TypeCheck.took("98765 00002", "9876500002", "", "", false))
+    T.check("capital letters added by the app are fine", TypeCheck.took("Chicken Biryani", "chicken biryani", "", "", false))
+    T.check("a long text shown cut short still counts", TypeCheck.took("black shoe size 11 soft cushion sole men and more", "black shoe size 11 soft cushion sole men", "", "", false))
+    T.check("a box that can't be read is not called a failure", TypeCheck.took(null, "chicken biryani", "", "", false))
+    T.check("when nothing works the user is asked to type it", TypeCheck.refused("chicken biryani").let { it.contains("your_turn") && it.contains("chicken biryani") && it.contains("Do not try again") })
+
+    println("The seat screen is checked before the seats are handed over")
+    val order = Order(kind = "MOVIE", item = "Ramayana", date = "2026-11-17", count = 2, maxEach = 150)
+    val wrong = "Ramayana\nWed, 18 Nov\n6 Tickets\n10:35 AM\n06:00 PM\n10:00 PM\nPLATINUM\nRs.130 GOLD\nAvailable\nSelected\nSold\nYES Private Debit Card Offer"
+    val p = SeatScreen.problem(wrong, order, nowDt)
+    T.check("6 tickets when 2 were asked is caught", p?.contains("says 6 tickets, but the user asked for 2") == true)
+    T.check("Wednesday's show when today was asked is caught", p?.contains("This show is on Wed 18 Nov, but the user asked for Tue 17 Nov") == true)
+    T.check("…and it says never to move the day alone", p?.contains("never move to another day by yourself") == true)
+    val right = "Ramayana\nTue, 17 Nov\n2 Tickets\n10:30 AM\n06:00 PM\n10:00 PM\nRs.130 GOLD\nAvailable\nSelected\nSold"
+    T.eq("the right day and count pass", null, SeatScreen.problem(right, order, nowDt))
+    T.eq("a screen that names no day or count passes", null, SeatScreen.problem("GOLD\nSILVER\nAvailable\nSold", order, nowDt))
+    T.eq("'25 Seats Left' on a bus is not a ticket count", null, SeatScreen.problem("NueGo\n25 Seats Left\n9 Single Seats\nLower deck", Order(kind = "TRAVEL", count = 2), nowDt))
+    T.eq("an offer's date lower down is not the show's day", null, SeatScreen.problem("Ramayana\nTue, 17 Nov\n2 Tickets\n" + "seat ".repeat(160) + "\nOffer valid till 30 Nov", order, nowDt))
+    T.eq("no order written down, nothing to check", null, SeatScreen.problem(wrong, null, nowDt))
+
+    println("Notes from the recordings")
+    val bms = Lessons.textFor(listOf("BookMyShow"))
+    T.check("BookMyShow: search is at the bottom, not the profile icon", bms.contains("BOTTOM") && bms.contains("profile"))
+    T.check("BookMyShow: never change the day", bms.contains("never switch to another day"))
+    T.check("BookMyShow: an area is not a theatre name", bms.contains("An area instead of a theatre name"))
+    val amz = Lessons.textFor(listOf("Amazon"))
+    T.check("Amazon: a filtered list under the budget", amz.contains("amazon.in/s?k=") && amz.contains("p_36"))
+    T.check("Amazon: at most three products, size by text, never Alexa", amz.contains("at most three") && amz.contains("by its TEXT") && amz.contains("Alexa"))
+    T.check("Amazon notes are found for the app's full name", Lessons.textFor(listOf("Amazon Shopping")).contains("p_36"))
+    T.check("Flipkart: a filtered list too", Lessons.textFor(listOf("Flipkart")).contains("facets.price_range"))
+    T.check("the first question is not waited on for long", Agent.PREFLIGHT_WAIT_MS <= 15_000)
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -1605,7 +1688,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

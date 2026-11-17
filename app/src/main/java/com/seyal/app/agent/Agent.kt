@@ -312,6 +312,8 @@ object Agent {
         RegexOption.IGNORE_CASE,
     ).containsMatchIn(words)
 
+    internal const val PREFLIGHT_WAIT_MS = 12_000L
+
     /** Tools whose every use is approved by the user, even after "Always allow". */
     internal fun mustAsk(tool: String): Boolean = tool == "send_to_many"
 
@@ -544,8 +546,10 @@ object Agent {
                         val ask = byName["ask_user"]
                         if (kind != null && ask != null) {
                             report("Checking what I need to know…")
+                            // The AI words the question better, but the user must not wait for it: on a real phone this took
+                            // 40 seconds. After 12 the built-in question is asked instead.
                             val pre = try {
-                                Llm.chat(Preflight.system(kind, said), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Order.decl(kind)), 700, forceTool = true, onWait = { report(it) })
+                                withTimeoutOrNull(PREFLIGHT_WAIT_MS) { Llm.chat(Preflight.system(kind, said), lock.withLock { repair(s); forModel(s) }, listOf(ask.decl(), Order.decl(kind)), 700, forceTool = true, onWait = { report(it) }) }
                             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
                             lock.withLock { s.llmCalls++; s.tokens += pre?.tokens ?: 0; touch(s) }
                             var question = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
@@ -574,9 +578,11 @@ object Agent {
                             if (written == null && question != null) {
                                 report("Noting your details…")
                                 written = try {
-                                    Llm.chat(Preflight.system(kind, said) + "\nThe user has answered. Call details_complete now.", lock.withLock { repair(s); forModel(s) }, listOf(Order.decl(kind)), 500, forceTool = true, onWait = { report(it) })
-                                        .also { r -> lock.withLock { s.llmCalls++; s.tokens += r.tokens; touch(s) } }
-                                        .calls.firstOrNull { it.name == "details_complete" }?.args
+                                    withTimeoutOrNull(PREFLIGHT_WAIT_MS) {
+                                        Llm.chat(Preflight.system(kind, said) + "\nThe user has answered. Call details_complete now.", lock.withLock { repair(s); forModel(s) }, listOf(Order.decl(kind)), 500, forceTool = true, onWait = { report(it) })
+                                            .also { r -> lock.withLock { s.llmCalls++; s.tokens += r.tokens; touch(s) } }
+                                            .calls.firstOrNull { it.name == "details_complete" }?.args
+                                    }
                                 } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
                             }
                             val words = lock.withLock { requestWords(s) }
@@ -796,13 +802,22 @@ object Agent {
         // Earlier requests in this chat are finished business: keep what was said and what came of it, not every
         // result in full. (A long chat otherwise makes each step slower and eats the per-minute limit.)
         // The request just before this one stays whole: "email it", "add one more slide" point straight back at it.
-        val asks = msgs.indices.filter { fromUser(msgs[it]) }
-        val keepFrom = asks.getOrNull(asks.size - 2) ?: 0
+        // (Something typed while a task runs is part of that task, not a new request.)
+        val asks = msgs.indices.filter { fromUser(msgs[it]) && !msgs[it].text.startsWith(MIDTASK) }
+        // The request before this one stays whole when it was short, or when the new words point back at it
+        // ("email it", "retry"). A long one that is not pointed at is finished business like the rest.
+        val last = asks.lastOrNull(); val prev = asks.getOrNull(asks.size - 2)
+        val keepFrom = History.keepFrom(prev, last, last?.let { msgs[it].text }.orEmpty()) ?: 0
         for (i in 0 until keepFrom) msgs[i] = History.shrink(msgs[i]) { id -> s.calls[id]?.line }
+        // Requests older than that are collapsed to what was asked and what came of it: a chat used for a whole
+        // morning (tickets, then shoes, then biryani) carried 90 old steps into every new step and hit the AI limit.
+        val collapsed = History.collapse(msgs, keepFrom, { fromUser(it) && !it.text.startsWith(MIDTASK) }, s.calls.mapValues { it.value.line })
+        msgs.clear(); msgs.addAll(collapsed)
         fun size(m: Msg) = m.parts.sumOf { p -> if (p is Part.Result) p.output.toString().length + (p.image?.b64?.length ?: 0) / 8 else if (p is Part.Text) p.text.length else if (p is Part.Call) p.args.toString().length else 0 }
         var total = msgs.sumOf { size(it) }
         if (total < 40_000) return msgs
-        for (i in toolIdx.dropLast(4)) {
+        // Positions in msgs (old requests may have been collapsed above, so s.messages' positions no longer apply).
+        for (i in msgs.indices.filter { msgs[it].role == "tool" }.dropLast(4)) {
             if (total < 26_000) break
             val m = msgs[i]
             val slim = Msg("tool", m.results.map { r ->
@@ -1216,6 +1231,64 @@ object History {
      * A message from an earlier request, cut down: a result keeps its one-line summary and the short
      * values worth pointing back to; a call keeps its name and short arguments.
      */
+    /** The user's words point back at the request just before ("email it", "retry", "same again", "continue"). */
+    fun pointsBack(text: String): Boolean {
+        val t = text.trim().lowercase()
+        if (t.length <= 25) return true
+        return Regex(
+            "\\b(it|them|those|same|again|retry|continue|instead|another one|one more|previous|last one|above|the (file|ppt|pdf|document|doc|link|photo|picture|list|result|answer|summary|plan))\\b" +
+                "|\\b(send|mail|email|share|open|play|book|order|buy|save|forward|delete|print|read|call|message|use|add|change|make) (this|that)\\b|^(and|but|now|then|no|yes|ok|also)\\b",
+        ).containsMatchIn(t)
+    }
+
+    /**
+     * Where the part of the chat that is kept whole begins: at the request before this one ([prev]) when that one
+     * was short (at most [SMALL] messages) or [said] points back at it; otherwise at this request ([last]).
+     */
+    fun keepFrom(prev: Int?, last: Int?, said: String): Int? {
+        if (last == null) return null
+        if (prev == null) return last
+        return if (last - prev <= SMALL || pointsBack(said)) prev else last
+    }
+    const val SMALL = 14
+
+    /**
+     * Requests that start before [keepFrom] become two messages each: what the user said, and one line of what came
+     * of it. Everything from [keepFrom] on is kept as it is. [isAsk]: a message is a new request from the user.
+     */
+    fun collapse(msgs: List<Msg>, keepFrom: Int, isAsk: (Msg) -> Boolean, lines: Map<String, String?>): List<Msg> {
+        val out = ArrayList<Msg>()
+        var i = 0
+        while (i < msgs.size) {
+            if (i < keepFrom && isAsk(msgs[i])) {
+                var end = i + 1
+                while (end < msgs.size && end < keepFrom && !isAsk(msgs[end])) end++
+                out += msgs[i]
+                if (end - i > 1) outcome(msgs.subList(i + 1, end), lines)?.let { out += Msg("assistant", listOf(Part.Text(it)), msgs[i].at) }
+                i = end
+            } else { out += msgs[i]; i++ }
+        }
+        return out
+    }
+
+    /**
+     * One line for a finished earlier request: its final answer if there was one, else the last steps' summaries.
+     * [lines]: each call's one-line summary by call id. Null when nothing happened.
+     */
+    fun outcome(span: List<Msg>, lines: Map<String, String?>): String? {
+        val said = span.lastOrNull { it.role == "assistant" && it.calls.isEmpty() && it.text.isNotBlank() }?.text
+        val steps = span.flatMap { it.calls }.mapNotNull { c -> lines[c.id]?.takeIf { it.isNotBlank() } }
+        val body = said?.take(300) ?: steps.takeLast(3).joinToString("; ").take(300).ifBlank { return null }
+        // What a later request may point back to (the file that was made, the link, the number) is carried along,
+        // so "send the PPT to Ram" still finds it.
+        val kept = LinkedHashMap<String, String>()
+        for (m in span.asReversed()) for (r in m.results) if (!r.isError) r.output.keys().forEach { k ->
+            val v = r.output.opt(k)
+            if (k in keep && k !in kept && kept.size < 10 && (v is Number || (v is String && v.isNotBlank() && v.length <= 200))) kept[k] = v.toString()
+        }
+        return "(Earlier request, finished; ${steps.size} steps.) $body" + (if (kept.isEmpty()) "" else "\nFrom it: " + kept.entries.joinToString("; ") { "${it.key}=${it.value}" })
+    }
+
     fun shrink(m: Msg, line: (String) -> String?): Msg = when (m.role) {
         "tool" -> Msg("tool", m.results.map { r ->
             if (r.output.toString().length <= 300 && r.image == null) r

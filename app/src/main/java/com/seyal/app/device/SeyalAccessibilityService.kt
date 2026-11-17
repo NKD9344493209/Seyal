@@ -18,7 +18,9 @@ class SeyalAccessibilityService : AccessibilityService() {
         serviceInfo = (serviceInfo ?: AccessibilityServiceInfo()).apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            // FLAG_INPUT_METHOD_EDITOR (Android 13+): lets Seyal type through the keyboard's own channel into boxes
+            // that ignore set-text and paste (Swiggy's search). Older Android ignores the flag.
+            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
             notificationTimeout = 100
         }
         ScreenDriver.attach(this)

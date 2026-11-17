@@ -556,6 +556,17 @@ object ScreenDriver {
             walk(s.rootInActiveWindow, 0)
             node = first
         }
+        if (node == null) {
+            // No field in the screen's list, but the keyboard may be up on one the app does not describe:
+            // type through the keyboard's own channel (Android 13+).
+            val typed = imeType(s, text, replace = !append)
+            if (typed == true) {
+                val o = JSONObject().put("ok", true).put("typed", text.take(80))
+                if (enter && !imeEnter(s)) o.put("note", "Typed, but could not press Enter: tap the search/go/send button on screen.")
+                return@withLock withScreen(o, if (enter) 900 else 350)
+            }
+            if (typed == false) return@withLock withScreen(JSONObject().put("ok", false).put("error", TypeCheck.refused(text)), 200)
+        }
         val field = node ?: return@withLock JSONObject().put("ok", false).put("error", "No text field on screen. Tap the search bar or field first.")
         if (isSecret(field)) return@withLock JSONObject().put("ok", false).put("error", "That is a secret field (password, PIN, OTP or card). Seyal never types there: ask the user to type it.")
         field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
@@ -565,14 +576,15 @@ object ScreenDriver {
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }
         var ok = runCatching { field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
         var before = existing
+        // What the field shows now (null when it can't be read), and whether that is only its hint.
+        suspend fun shownNow(waitMs: Long): String? { delay(waitMs); return if (runCatching { field.refresh() }.getOrDefault(false)) field.text?.toString() else null }
+        fun hintNow() = Build.VERSION.SDK_INT >= 26 && runCatching { field.isShowingHintText }.getOrDefault(false)
+        val hint = hintOf(field)
         if (ok) {
             // Some apps (search boxes in shopping and food apps) accept set-text and then throw it away,
             // so their search never sees the words. If the box doesn't show them, paste them instead.
-            delay(200)
-            if (runCatching { field.refresh() }.getOrDefault(false)) {
-                val shown = field.text?.toString()
-                if (shown != null && !shown.contains(value.take(24))) { ok = false; before = if (shown == hintOf(field)) "" else shown }
-            }
+            val shown = shownNow(200)
+            if (!TypeCheck.took(shown, value, hint, if (showingHint) "" else existing, hintNow())) { ok = false; before = if (shown == null || shown == hint || hintNow()) "" else shown }
         }
         if (!ok) {
             // Some fields reject set-text: select what's there, then paste over it.
@@ -581,21 +593,71 @@ object ScreenDriver {
                 runCatching { field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel) }
             }
             val cm = s.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("Seyal", value))
+            runCatching { cm.setPrimaryClip(ClipData.newPlainText("Seyal", value)) }
             ok = runCatching { field.performAction(AccessibilityNodeInfo.ACTION_PASTE) }.getOrDefault(false)
+            // "Pasted" is only true if the words are there (looked at twice: some boxes are slow to show them).
+            if (ok && !TypeCheck.took(shownNow(250), value, hint, before, hintNow()) && !TypeCheck.took(shownNow(450), value, hint, before, hintNow())) ok = false
         }
-        val o = JSONObject().put("ok", ok).put("typed", text.take(80)).also { if (!ok) it.put("error", "Could not type here") }
+        var refused = false
+        if (!ok) {
+            // The third way in: the keyboard's own channel to the field that has the cursor.
+            runCatching { field.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+            delay(250)
+            when (imeType(s, value, replace = true)) {
+                true -> ok = true
+                else -> refused = true
+            }
+        }
+        val o = JSONObject().put("ok", ok).put("typed", text.take(80)).also { if (!ok) it.put("error", if (refused) TypeCheck.refused(text) else "Could not type here") }
         if (ok && note != null) o.put("note", note)
         if (ok && enter) {
             delay(250)
             if (screenLooksLikePayment()) {
                 o.put("note", "Typed, but did not press Enter: this screen asks for payment details, which is the user's step.")
             } else {
-                val entered = Build.VERSION.SDK_INT >= 30 && runCatching { field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) }.getOrDefault(false)
+                val entered = (Build.VERSION.SDK_INT >= 30 && runCatching { field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) }.getOrDefault(false)) || imeEnter(s)
                 if (!entered) o.put("note", "Typed, but could not press Enter: tap the search/go/send button on screen.")
             }
         }
         withScreen(o, if (enter) 900 else 350)
+    }
+
+    /**
+     * Types through the keyboard's own channel into whichever field has the cursor (Android 13+). It reaches boxes
+     * that ignore set-text and paste, and boxes the app does not describe at all.
+     * True = the words are in; false = tried and they are not; null = that channel is not open (older Android, no cursor).
+     */
+    private suspend fun imeType(s: SeyalAccessibilityService, value: String, replace: Boolean): Boolean? {
+        if (Build.VERSION.SDK_INT < 33) return null
+        val im = runCatching { s.inputMethod }.getOrNull() ?: return null
+        if (!runCatching { im.currentInputStarted }.getOrDefault(false)) return null
+        val ic = runCatching { im.currentInputConnection }.getOrNull() ?: return null
+        return runCatching {
+            if (replace) {
+                val st = ic.getSurroundingText(4000, 4000, 0)
+                if (st != null) {
+                    val before = st.selectionStart.coerceAtLeast(0); val after = (st.text.length - st.selectionEnd).coerceAtLeast(0)
+                    if (before > 0 || after > 0) ic.deleteSurroundingText(before, after)
+                } else ic.performContextMenuAction(android.R.id.selectAll)
+                delay(120)
+            }
+            ic.commitText(value, 1, null)
+            delay(350)
+            val now = ic.getSurroundingText(400, 400, 0)?.text?.toString()
+            now == null || TypeCheck.norm(now).contains(TypeCheck.norm(value).take(20))
+        }.getOrDefault(false)
+    }
+
+    /** Presses the keyboard's Search / Go / Send through the same channel. */
+    private fun imeEnter(s: SeyalAccessibilityService): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return false
+        return runCatching {
+            val im = s.inputMethod ?: return false
+            val ic = im.currentInputConnection ?: return false
+            val action = (im.currentInputEditorInfo?.imeOptions ?: 0) and android.view.inputmethod.EditorInfo.IME_MASK_ACTION
+            ic.performEditorAction(if (action == 0 || action == android.view.inputmethod.EditorInfo.IME_ACTION_NONE) android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH else action)
+            true
+        }.getOrDefault(false)
     }
 
     private fun isPager(n: AccessibilityNodeInfo): Boolean {
@@ -717,9 +779,8 @@ object ScreenDriver {
     @Volatile private var lastShotAt = 0L
 
     /**
-     * Screenshots do not work on this phone: Android refused the last two (some phones, many Xiaomi among them,
-     * answer every one with an internal error). Then Seyal stops asking for pictures and works from the screen's
-     * text, and tries a picture again once a day in case an update fixed it.
+     * Screenshots are failing on this phone right now: Android refused the last three. For the next ten minutes
+     * Seyal does not ask for pictures (each ask costs seconds of retries) and works from the screen's text.
      */
     fun shotsBroken(now: Long = System.currentTimeMillis()): Boolean = ShotHealth.broken(Settings.shotFails, Settings.shotFailAt, now)
 
@@ -770,9 +831,13 @@ object ScreenDriver {
         try {
             // Android refuses screenshots taken too close together.
             (1100 - (System.currentTimeMillis() - lastShotAt)).takeIf { it > 0 }?.let { delay(it) }
+            // Android answers "internal error" while an app is still opening (its splash, the slide-in). The failures
+            // on Naveen's phone all came straight after "Open …": let the screen come to rest, and give it time.
+            settle(1200)
             var bmp = shoot(s, false) { err = it }
-            if (bmp == null && !err.contains("secure")) { delay(1200); bmp = shoot(s, false) { err = it } }
-            if (bmp == null && !err.contains("secure") && Build.VERSION.SDK_INT >= 34) { delay(400); bmp = shoot(s, true) { err = it } }
+            if (bmp == null && !err.contains("secure")) { delay(1500); settle(1500); bmp = shoot(s, false) { err = it } }
+            if (bmp == null && !err.contains("secure") && Build.VERSION.SDK_INT >= 34) { delay(500); bmp = shoot(s, true) { err = it } }
+            if (bmp == null && !err.contains("secure")) { delay(2500); bmp = shoot(s, false) { err = it } }
             lastShotAt = System.currentTimeMillis()
             if (bmp == null) {
                 // A secure screen is that app's choice, not the phone's: it says nothing about the next app.

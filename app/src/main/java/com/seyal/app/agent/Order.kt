@@ -180,3 +180,34 @@ class Order(
         return bad
     }
 }
+
+
+/** Checks made on the seat-picking screen, before the user is handed the seats. */
+object SeatScreen {
+    private val written = Regex("\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\b|\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s+\\d{1,2}\\b|\\b(?:today|tomorrow)\\b", RegexOption.IGNORE_CASE)
+    private val tickets = Regex("\\b(\\d{1,2})\\s*(?:tickets?|seats?(?!\\s*(?:left|available|remaining|only)))\\b", RegexOption.IGNORE_CASE)
+
+    /**
+     * What is wrong with the seat screen ([screen]: its text) for this [order], in words for the AI; null when
+     * nothing is. Catches the two mistakes seen on a real phone: the ticket count left at 6 when the user asked
+     * for 2, and Wednesday's show opened when the user said today.
+     */
+    fun problem(screen: String, order: Order?, now: java.time.LocalDateTime): String? {
+        if (order == null) return null
+        val out = ArrayList<String>()
+        if (order.count > 0) tickets.find(screen)?.groupValues?.get(1)?.toIntOrNull()?.let { n ->
+            if (n != order.count) out += "The screen says $n tickets, but the user asked for ${order.count}. Fix the number first (tap the \"$n Tickets\" label or go back to the \"How many seats?\" sheet and tap ${order.count} by its text)."
+        }
+        val want = runCatching { java.time.LocalDate.parse(order.date) }.getOrNull()
+        if (want != null) {
+            // Only the top of the screen names the show's day; offers lower down have their own dates. Only a day
+            // written out counts ("Wed, 18 Nov", "Today"): bare numbers on a seat map ("1/3", "11 12") are not dates.
+            val seen = written.findAll(screen.take(700)).mapNotNull { m -> com.seyal.app.util.Dates.find(m.value, now)?.at?.toLocalDate() }.distinct().toList()
+            if (seen.isNotEmpty() && want !in seen) {
+                val fmt = java.time.format.DateTimeFormatter.ofPattern("EEE d MMM", java.util.Locale.ENGLISH)
+                out += "This show is on ${seen.first().format(fmt)}, but the user asked for ${want.format(fmt)}. Go back and pick ${want.format(fmt)} in the date strip. If that day has no show near the time they asked, tell them its show times and ask; never move to another day by yourself."
+            }
+        }
+        return out.takeIf { it.isNotEmpty() }?.joinToString(" ")
+    }
+}

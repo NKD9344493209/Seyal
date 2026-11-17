@@ -174,7 +174,7 @@ private fun CallRow(n: Int, call: Part.Call, state: CallState?, result: Part.Res
                     if (status != CallStatus.DONE) StatusPill(status)
                 }
                 val sub = if (status == CallStatus.DONE) state?.line else if (status == CallStatus.FAILED || status == CallStatus.DENIED) state?.error else null
-                if (!sub.isNullOrBlank()) Text(sub.lines().first().take(140), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, top = 2.dp))
+                if (!sub.isNullOrBlank()) Text(sub.lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ").take(200), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, top = 2.dp))
             }
         }
 

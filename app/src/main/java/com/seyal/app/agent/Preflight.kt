@@ -17,7 +17,7 @@ object Preflight {
     enum class Kind(val what: String, val details: String, val apps: List<String>, val unit: String) {
         MOVIE(
             "book movie tickets",
-            "1) which movie (and which language, if they didn't say and it could be more than one)  2) which theatre (or 'any nearby')  3) which day  4) show time (or from when they are free)  5) how many tickets  6) seat class or the most to pay per ticket",
+            "1) which movie, and its language and 2D/3D when it runs in several (ask this now, not later)  2) which theatre (or 'any nearby')  3) which day  4) show time (or from when they are free)  5) how many tickets  6) seat class or the most to pay per ticket",
             listOf("BookMyShow", "District", "PVR", "INOX", "Paytm", "TicketNew"), "tickets",
         ),
         FOOD(
@@ -103,7 +103,7 @@ object Preflight {
         onlyCount && kind == Kind.TRAVEL -> "How many people are travelling?"
         onlyCount -> "How many do you want?"
         else -> when (kind) {
-            Kind.MOVIE -> "Before I book, tell me what you haven't said yet:\n1) Movie and language\n2) Theatre (or 'any nearby')\n3) Day and time\n4) How many tickets\n5) Seat class or the most to pay per ticket\nAnswer in one line, or say 'you choose'. (You will pick the seats yourself on the seat map; say 'pick the seats for me' if you'd rather I do.)"
+            Kind.MOVIE -> "Before I book, tell me what you haven't said yet:\n1) Movie, language and 2D or 3D\n2) Theatre (or 'any nearby')\n3) Day and time\n4) How many tickets\n5) Seat class or the most to pay per ticket\nAnswer in one line, or say 'you choose'. (You will pick the seats yourself on the seat map; say 'pick the seats for me' if you'd rather I do.)"
             Kind.FOOD -> "Before I order, tell me what you haven't said yet:\n1) Which dish (veg / chicken / mutton, size)\n2) How many\n3) Which restaurant (or 'best rated nearby')\n4) Budget\nAnswer in one line, or say 'you choose'."
             Kind.TRAVEL -> "Before I book, tell me what you haven't said yet:\n1) From and to\n2) Day and time of day\n3) How many people\n4) Seat type (sleeper / seater, AC / non-AC)\n5) Budget per seat\nAnswer in one line, or say 'you choose'."
             Kind.CAB -> "Before I book, tell me what you haven't said yet:\n1) Pickup (or 'from here')\n2) Drop place\n3) Now, or at what time\n4) Auto / mini / sedan / bike\nAnswer in one line."

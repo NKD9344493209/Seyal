@@ -12,7 +12,7 @@ object Honest {
     fun blames(answer: String): Boolean = blame.containsMatchIn(answer.take(800))
 
     const val NUDGE = "You wrote that apps or websites are blocking automated access. That is not what happened: no app blocks Seyal. " +
-        "Look at your steps: a failed screenshot (\"Android error 1\") only means this phone gives no pictures, and the screen text still works " +
+        "Look at your steps: a failed screenshot (\"Android error 1\") only means no picture could be taken at that moment, and the screen text still works " +
         "(screen_read, screen_tap by text). Carry on with the task from where it stopped. If you really cannot go on, tell the user in plain words " +
         "exactly which step failed and what the screen showed, and what they can do; never blame blocking."
 }

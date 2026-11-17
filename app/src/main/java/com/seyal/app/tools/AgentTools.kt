@@ -15,6 +15,9 @@ import org.json.JSONObject
 
 /** Talking to the user, splitting work, remembering, and saving skills. */
 object AgentTools {
+    /** How many times a chat's seat hand-over was held back for a wrong day or count (twice at most, then it goes through). */
+    private val seatBlocks = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
 
     val all: List<Tool> by lazy {
         listOf(
@@ -25,7 +28,7 @@ object AgentTools {
             ) { a, ctx ->
                 val opts = a.optJSONArray("options")?.let { arr -> (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() } } ?: emptyList()
                 val answer = ctx.askUser(a.optString("question"), opts.take(6))
-                ToolResult.Done(JSONObject().put("answer", answer), "You said: ${answer.take(60)}")
+                ToolResult.Done(JSONObject().put("answer", answer), "You said: ${answer.lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString(", ").take(140)}")
             },
 
             Tool(
@@ -36,6 +39,15 @@ object AgentTools {
                 val what = a.optString("what").ifBlank { "Do this step, then tap Done" }
                 val label = a.optString("button").ifBlank { "Done" }.take(14)
                 val key = "turn-" + ctx.sessionId
+                // Before the user spends time picking seats: is this the right day and the right number of tickets?
+                if (Regex("seat|berth", RegexOption.IGNORE_CASE).containsMatchIn(what) && (seatBlocks[ctx.sessionId] ?: 0) < 2) {
+                    val order = com.seyal.app.agent.Agent.session(ctx.sessionId)?.order
+                    val text = runCatching { com.seyal.app.device.ScreenDriver.read().optString("elements") }.getOrDefault("")
+                    com.seyal.app.agent.SeatScreen.problem(text, order, java.time.LocalDateTime.now())?.let { wrong ->
+                        seatBlocks[ctx.sessionId] = (seatBlocks[ctx.sessionId] ?: 0) + 1
+                        return@Tool ToolResult.Failed("Not yet: $wrong Then call your_turn again.")
+                    }
+                }
                 val done = kotlinx.coroutines.CompletableDeferred<Unit>()
                 val shown = com.seyal.app.device.ScreenDriver.showTurn(key, what, label) { done.complete(Unit) }
                 if (!shown) {
