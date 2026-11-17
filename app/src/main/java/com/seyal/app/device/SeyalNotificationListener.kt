@@ -83,10 +83,12 @@ class SeyalNotificationListener : NotificationListenerService() {
             val f = com.seyal.app.agent.Feeds.take(
                 label, title, text, isGroup(sbn), now,
                 com.seyal.app.agent.Feeds.Allow(Settings.catchMessages, Settings.scamWarnings, Settings.keepHistory && Settings.catchMessages, Settings.scamTrusted),
-                // A message from someone: Android's own label, the chat layout (sender and text), or a known chat app.
-                message = n.category == Notification.CATEGORY_MESSAGE || n.category == Notification.CATEGORY_EMAIL || n.extras?.containsKey(Notification.EXTRA_MESSAGES) == true ||
-                    sbn.packageName == "com.google.android.gm" || chatApps.any { sbn.packageName.contains(it, true) },
+                message = isMessage(sbn),
             )
+            // The Brain: what, if anything, the user should do about this message. Never for a scam, a group or an app's own notice.
+            if (f.scam == null && !lastIsOwn(n)) runCatching {
+                com.seyal.app.agent.BrainLoop.onMessage(this, label, title, mask("$title $text").removePrefix("$title "), isGroup(sbn), message = isMessage(sbn), key = sbn.key, canReply = replyAction(n) != null)
+            }
             f.scam?.let { v ->
                 if (scamWarned.add(title.lowercase() + "|" + java.time.LocalDate.now()) && scamWarned.size < 400) {
                     Notify.scam(this, title, v.why)
@@ -124,6 +126,23 @@ class SeyalNotificationListener : NotificationListenerService() {
 
         /** Apps whose notifications are chats (their titles follow the "Group: Sender" habit). */
         private val chatApps = listOf("whatsapp", "telegram", "messaging", "mms", "instagram", "signal", "messenger", "orca", "snapchat", "discord", "slack", "teams", "imo", "viber", "line.android", "truecaller")
+
+        /**
+         * The newest line in a chat notification is the user's own (they just answered, or Seyal did, and the app
+         * shows "You: …"). Chat notifications carry each line with its sender; the user's own lines have none.
+         */
+        internal fun lastIsOwn(n: Notification): Boolean = runCatching {
+            @Suppress("DEPRECATION")
+            val last = n.extras?.getParcelableArray(Notification.EXTRA_MESSAGES)?.lastOrNull() as? Bundle ?: return false
+            last.getCharSequence("sender").isNullOrBlank() && !last.containsKey("sender_person")
+        }.getOrDefault(false)
+
+        /** A message from someone: Android's own label, the chat layout (sender and text), or a known chat app. */
+        internal fun isMessage(sbn: StatusBarNotification): Boolean {
+            val n = sbn.notification ?: return false
+            return n.category == Notification.CATEGORY_MESSAGE || n.category == Notification.CATEGORY_EMAIL || n.extras?.containsKey(Notification.EXTRA_MESSAGES) == true ||
+                sbn.packageName == "com.google.android.gm" || chatApps.any { sbn.packageName.contains(it, true) }
+        }
 
         /**
          * Whether a notification comes from a group chat. Android's own flag first; then the group's name

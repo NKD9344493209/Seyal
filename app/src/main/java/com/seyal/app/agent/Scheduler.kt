@@ -197,6 +197,12 @@ class EventReceiver : BroadcastReceiver() {
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == "com.seyal.app.STOP_ALL") { Agent.cancelAll(); return }
+        // The Brain's one-tap answers: Yes / No / a ready reply / Undo. The receiver stays alive until it is carried out.
+        intent.getStringExtra("brain")?.let { id ->
+            val pending = runCatching { goAsync() }.getOrNull()
+            BrainLoop.answer(context, id, intent.getStringExtra("answer") ?: "no") { runCatching { pending?.finish() } }
+            return
+        }
         // A plan's reminder: Done / Skip / Later / Make it easier / Pause.
         intent.getStringExtra("plan")?.let { id ->
             val state = intent.getStringExtra("state") ?: "done"

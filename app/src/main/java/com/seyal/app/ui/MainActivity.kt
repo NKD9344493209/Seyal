@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.List
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.Icon
@@ -69,6 +70,8 @@ class MainActivity : ComponentActivity() {
     val sharedImage = mutableStateOf<Part.Image?>(null)
     /** Goes up each time Seyal is opened as the assistant, from the tile or the shortcut: start listening. */
     val listenTick = mutableStateOf(0)
+    /** A tab a notification asked for ("brain"); cleared once shown. */
+    val openTab = mutableStateOf<String?>(null)
     /** The last listen request the Chat screen acted on. */
     var listenSeen = 0
     /** Goes up on every return to the app, so permission states on screen refresh. */
@@ -110,6 +113,12 @@ class MainActivity : ComponentActivity() {
     private fun handle(intent: Intent?) {
         if (intent == null) return
         openSessionId.value = intent.getStringExtra("session")
+        intent.getStringExtra("tab")?.let { openTab.value = it; intent.removeExtra("tab") }
+        // "Call" on a Brain notification: answered here, with the app in front, because only then may the dialer open.
+        intent.getStringExtra("brain")?.takeIf { it.isNotBlank() }?.let { id ->
+            com.seyal.app.agent.BrainLoop.answer(this, id, intent.getStringExtra("answer") ?: "yes")
+            intent.removeExtra("brain")
+        }
         when (intent.action) {
             // A skill's home-screen button: run it and get out of the way.
             ACTION_RUN_SKILL -> {
@@ -144,6 +153,7 @@ class MainActivity : ComponentActivity() {
 
 enum class Tab(val label: String, val icon: ImageVector) {
     HOME("Chat", Icons.Outlined.Home),
+    BRAIN("Brain", Icons.Outlined.Psychology),
     SKILLS("Skills", Icons.Outlined.List),
     HISTORY("Activity", Icons.Outlined.Timeline),
     CONTROL("Control", Icons.Outlined.Shield),
@@ -159,6 +169,9 @@ fun Shell(openSessionId: String?) {
     val listen = activity?.listenTick?.value ?: 0
     val hasShared = activity?.sharedText?.value != null || activity?.sharedImage?.value != null
     LaunchedEffect(listen, hasShared) { if (listen > 0 || hasShared) tab = Tab.HOME }
+    // A tap on one of the Brain's notifications opens its tab.
+    val wantTab = activity?.openTab?.value
+    LaunchedEffect(wantTab) { if (wantTab == "brain") { tab = Tab.BRAIN; activity?.openTab?.value = null } }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         // Bottom bar and composer stay above the navigation bar and the keyboard.
         // Simple mode: one big microphone and nothing else, until "Normal mode" is tapped.
@@ -167,6 +180,7 @@ fun Shell(openSessionId: String?) {
             Column(Modifier.weight(1f)) {
                 when (tab) {
                     Tab.HOME -> ChatScreen(openSessionId) { tab = it }
+                    Tab.BRAIN -> BrainScreen()
                     Tab.SKILLS -> SkillsScreen { tab = it }
                     Tab.HISTORY -> HistoryScreen(openSessionId)
                     Tab.CONTROL -> ControlScreen { simple = true }

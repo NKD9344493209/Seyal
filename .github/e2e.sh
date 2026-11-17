@@ -117,6 +117,41 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
     echo "   -> $state in ${secs}s"
     continue ;;
   esac
+  # "!brain Sender|Text": a message arrives and the Brain (switched on for these) thinks about it. The result column
+  # is what it made of it: "none", "tell", or "suggest:KIND" (reminder | calendar | reply | call).
+  # "!brainsay yes|no|undo": the user's tap on the Brain's newest offer. The result is that thought's state and what it did.
+  case "$cmd" in "!brain "*|"!brainsay "*)
+    brain_now() { adb shell run-as "$PKG" cat files/seyal/brain.json 2>/dev/null | python3 -c '
+import json,sys
+try:
+    t=json.load(sys.stdin).get("thoughts",[])
+except Exception:
+    t=[]
+print(len(t), (t[-1]["level"]+(":"+t[-1]["kind"] if t[-1]["kind"]!="none" else "")+" state="+t[-1]["state"]+" | "+(t[-1].get("result") or t[-1].get("say") or "")).replace("\n"," ")[:200] if t else "-")'; }
+    start=$(date +%s)
+    case "$cmd" in
+      "!brainsay "*)
+        echo "== [$tag] the user answers the Brain: ${cmd#!brainsay }"
+        adb shell "am broadcast -n $RCV --es brain_answer '${cmd#!brainsay }'" >/dev/null; sleep 6
+        state=$(brain_now); state="${state#* }" ;;
+      *)
+        spec="${cmd#!brain }"; ptitle="${spec%%|*}"; ptext="${spec#*|}"; ptext_q=${ptext//\'/}
+        echo "== [$tag] the Brain hears $ptitle: $ptext"
+        adb shell "am broadcast -n $RCV --ez brain true" >/dev/null
+        before=$(brain_now); before="${before%% *}"
+        adb shell "cmd notification post -S messaging --message '$ptitle:$ptext_q' -t '$ptitle' seyalbrain$n '$ptext_q'" >/dev/null 2>&1
+        state="none"
+        # It waits 25 s for more of the message, then thinks (a few seconds with the AI).
+        for i in $(seq 1 16); do
+          sleep 4; got=$(brain_now)
+          if [ "${got%% *}" -gt "${before:-0}" ] 2>/dev/null; then state="${got#* }"; break; fi
+        done ;;
+    esac
+    secs=$(( $(date +%s) - start ))
+    printf "%s\t%s\t%s\n" "$cmd" "$secs" "$state" >> timings.tsv
+    echo "   -> $state in ${secs}s"
+    continue ;;
+  esac
   case "$cmd" in "!post "*|"!gpost "*)
     tries=50
     case "$cmd" in

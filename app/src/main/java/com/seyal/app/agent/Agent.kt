@@ -205,7 +205,7 @@ object Agent {
         Routines.init(context.filesDir)
         Inbox.init(context.filesDir); Watchers.init(context.filesDir)
         Ledger.init(context.filesDir); Parcels.init(context.filesDir); Past.init(context.filesDir)
-        Coach.init(context.filesDir); Usual.init(context.filesDir); Khata.init(context.filesDir); Habits.init(context.filesDir)
+        Coach.init(context.filesDir); Usual.init(context.filesDir); Khata.init(context.filesDir); Habits.init(context.filesDir); BrainStore.init(context.filesDir)
         Coach.onChange = { runCatching { Scheduler.syncBackground(app) } }
         Inbox.onChange = { runCatching { Scheduler.syncBackground(app) } }
         Watchers.onChange = { runCatching { Scheduler.syncBackground(app) } }

@@ -257,6 +257,63 @@ object Notify {
 
     private fun approvalId(sessionId: String, callId: String) = ("ask$sessionId$callId").hashCode()
 
+    fun cancel(ctx: Context, tag: String) { runCatching { NotificationManagerCompat.from(ctx).cancel(tag.hashCode()) } }
+
+    /** Opens Seyal on the Brain tab; with [id], also answers that thought (used where the answer must open something, like a call). */
+    private fun openBrain(ctx: Context, id: String? = null, answer: String? = null): PendingIntent {
+        val intent = Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("tab", "brain")
+        if (id != null) intent.putExtra("brain", id).putExtra("answer", answer)
+        return PendingIntent.getActivity(ctx, ("brain" + id + answer).hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    /**
+     * The Brain speaking first: something it noticed ([t] tells), offers (one-tap answers) or has done (with Undo).
+     * [silent]: no sound (night hours, unless urgent).
+     */
+    fun brain(ctx: Context, t: com.seyal.app.agent.Brain.Thought, silent: Boolean) {
+        if (!allowed(ctx)) return
+        val asks = t.level == "suggest"
+        val body = when {
+            t.level == "did" -> t.result
+            t.why.isNotBlank() -> "${t.say}\n${t.why}"
+            else -> t.say
+        }
+        val b = NotificationCompat.Builder(ctx, if (asks || t.urgent) CH_ASK else CH_RESULTS)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle((if (t.level != "did") t.who else if (t.state == "failed") "Could not do it · ${t.who}" else "Done for you · ${t.who}").take(60))
+            .setContentText((if (t.level == "did") t.result else t.say).take(140))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(openBrain(ctx))
+            .setAutoCancel(true)
+            .setSilent(silent)
+        t.buttons().forEach { (label, code) ->
+            // A call has to open the dialer, which only a tap that opens the app may do; the rest are answered in place.
+            val pi = if (t.kind == "call" && code == "yes") openBrain(ctx, t.id, code)
+            else action(ctx, "BRAIN_${code}_${t.id}") { putExtra("brain", t.id); putExtra("answer", code) }
+            b.addAction(0, label, pi)
+        }
+        NotificationManagerCompat.from(ctx).notify("brain${t.id}".hashCode(), b.build())
+        if (!silent && com.seyal.app.data.Settings.speak && (asks || t.urgent)) runCatching { Speech.say(ctx, t.say) }
+    }
+
+    /** After three yeses in a row: "shall I do these by myself from now on?" */
+    fun brainAuto(ctx: Context, kind: String) {
+        if (!allowed(ctx)) return
+        val what = com.seyal.app.agent.Brain.kindName(kind)
+        val text = "You said yes to three $what in a row. Shall I set them by myself from now on, and just tell you? Each one will have Undo."
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Do $what by myself?")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openBrain(ctx))
+            .setAutoCancel(true)
+            .addAction(0, "Yes, do them", action(ctx, "BRAIN_AUTO_YES_$kind") { putExtra("brain", ""); putExtra("answer", "auto_yes:$kind") })
+            .addAction(0, "Keep asking", action(ctx, "BRAIN_AUTO_NO_$kind") { putExtra("brain", ""); putExtra("answer", "auto_no:$kind") })
+            .build()
+        NotificationManagerCompat.from(ctx).notify("brainauto$kind".hashCode(), n)
+    }
+
     fun reminder(ctx: Context, id: String, text: String) {
         if (!allowed(ctx)) return
         val n = NotificationCompat.Builder(ctx, CH_ALARM)

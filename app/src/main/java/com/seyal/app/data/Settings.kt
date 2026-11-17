@@ -225,6 +225,11 @@ object Settings {
         set(v) = plain.edit().putBoolean("simple_mode", v).apply()
 
     /** Offer to automate what the user does again and again (at most one offer a day). */
+    /** The Brain: thinks about incoming messages and speaks first. Off until the user turns it on. */
+    var brainOn: Boolean
+        get() = plain.getBoolean("brain_on", false)
+        set(v) = plain.edit().putBoolean("brain_on", v).apply()
+
     var suggestHabits: Boolean
         get() = plain.getBoolean("suggest_habits", true)
         set(v) = plain.edit().putBoolean("suggest_habits", v).apply()

@@ -14,6 +14,8 @@ import com.seyal.app.data.Settings
  *   am broadcast -n com.seyal.app/.TestReceiver --es say "text"          (follow-up in the newest conversation)
  *   am broadcast -n com.seyal.app/.TestReceiver --ez approve_all true
  *   am broadcast -n com.seyal.app/.TestReceiver --es answer "text"
+ *   am broadcast -n com.seyal.app/.TestReceiver --ez brain true              (the Brain switch)
+ *   am broadcast -n com.seyal.app/.TestReceiver --es brain_answer yes        (answers the Brain's newest thought: yes | no | undo | reply:0)
  */
 class TestReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -24,6 +26,8 @@ class TestReceiver : BroadcastReceiver() {
         }
         intent.getStringExtra("name")?.let { Settings.userName = it }
         intent.getStringExtra("city")?.let { Settings.homeCity = it }
+        if (intent.hasExtra("brain")) Settings.brainOn = intent.getBooleanExtra("brain", false)
+        intent.getStringExtra("brain_answer")?.let { ans -> com.seyal.app.agent.BrainStore.newest()?.let { t -> com.seyal.app.agent.BrainLoop.answer(context, t.id, ans) } }
         intent.getStringExtra("command")?.let { Agent.start(it) }
         val open = Agent.sessions.value.filter { it.parentId == null }.maxByOrNull { it.createdAt }
         val lastChat = Agent.sessions.value.filter { it.source == "user" }.maxByOrNull { it.createdAt }
