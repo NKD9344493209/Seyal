@@ -63,6 +63,7 @@ object Parsers {
             Regex("uddg=([^&]+)").find(url)?.let { url = URLDecoder.decode(it.groupValues[1], "UTF-8") }
             if (url.startsWith("//")) url = "https:$url"
             if (url.contains("duckduckgo.com/y.js")) return@forEachIndexed // ad
+            if (com.seyal.app.agent.Links.isPirate(url)) return@forEachIndexed // piracy: never shown, never read
             results.put(JSONObject().put("title", strip(m.groupValues[2])).put("url", url).put("snippet", snips.getOrNull(i) ?: ""))
         }
         return results

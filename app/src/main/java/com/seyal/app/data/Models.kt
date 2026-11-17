@@ -147,6 +147,8 @@ class Session(
     @Volatile var replayed: Boolean = false
     /** The AI gave up with only part of the tools in view: from then on this chat sends every tool. */
     @Volatile var allTools: Boolean = false
+    /** Already sent back once for blaming an app for "blocking" it. */
+    @Volatile var blameNudged: Boolean = false
     /** What the user asked to buy or book, written down before any app is opened (see agent/Order). Not saved. */
     @Volatile var order: com.seyal.app.agent.Order? = null
     /** Self-checks already made before saying "done" in this run (each is made once). Not saved. */

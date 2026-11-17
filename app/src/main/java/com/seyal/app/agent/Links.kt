@@ -24,6 +24,19 @@ object Links {
         Regex("(^|\\.)zeptonow\\.com$") to Owner("Zepto", listOf("com.zeptoconsumerapp")),
     )
 
+    /**
+     * Sites that spread pirated films, songs and software (and the malware that comes with them). Seyal never opens,
+     * reads or suggests them: a search for a film's show times once landed on one.
+     */
+    private val pirate = Regex(
+        "tamilmv|tamilblasters|tamilrockers|isaimini|tamilyogi|tamilgun|moviesda|kuttymovies|tamildhool|filmyzilla|filmywap|filmyhit|9xmovies|" +
+            "movierulz|ibomma|1337x|piratebay|thepiratebay|\\byts\\.|yts\\.mx|vegamovies|hdhub4u|bolly4u|katmovie|mkvcinemas|moviesflix|skymovieshd|" +
+            "worldfree4u|khatrimaza|todaypk|cinevood|torrent|magnet:\\?|limetorrents|rarbg|kickass",
+        RegexOption.IGNORE_CASE,
+    )
+    fun isPirate(url: String): Boolean = pirate.containsMatchIn(url)
+    const val PIRATE_NOTE = "That is a piracy site (pirated films and malware). Seyal does not open it. Use the official app or site instead."
+
     /** The host of an http(s) link, lower case, or "" when it is not one. */
     internal fun host(url: String): String =
         Regex("^https?://([^/?#:]+)", RegexOption.IGNORE_CASE).find(url.trim())?.groupValues?.get(1)?.lowercase().orEmpty()

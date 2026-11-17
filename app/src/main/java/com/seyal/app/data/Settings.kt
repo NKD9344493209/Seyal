@@ -232,6 +232,16 @@ object Settings {
     var suggestDeclined: String
         get() = str("suggest_declined", "")
         set(v) = put("suggest_declined", v)
+    /** Screenshots failing in a row on this phone, and when it was last found out. After two, Seyal works from the screen text. */
+    var shotFails: Int
+        get() = plain.getInt("shot_fails", 0)
+        set(v) = plain.edit().putInt("shot_fails", v).apply()
+    var shotFailAt: Long
+        get() = plain.getLong("shot_fail_at", 0L)
+        set(v) = plain.edit().putLong("shot_fail_at", v).apply()
+    var shotWhy: String
+        get() = plain.getString("shot_why", "") ?: ""
+        set(v) = plain.edit().putString("shot_why", v).apply()
     /** Screen control was on the last time Seyal looked. Goes off when the user switches it off; if the phone does it, Seyal says so. */
     var screenWasOn: Boolean
         get() = plain.getBoolean("screen_was_on", false)

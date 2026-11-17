@@ -30,7 +30,14 @@ object ScreenTools {
                 "A picture of the screen, when the element list isn't enough (images, maps, seat layouts, games, charts, or an empty list). You will see the image. Then use screen_tap_at with positions on the 0-1000 scale of the picture.",
                 noArgs, available = screenOn,
             ) { _, _ ->
-                val shot = try { ScreenDriver.screenshot() } catch (e: Exception) { return@Tool ToolResult.Failed(e.message ?: "Screenshot failed", retryable = true) }
+                val shot = try { ScreenDriver.screenshot() } catch (e: Exception) {
+                    // No picture: hand back the screen as text, which is what the next step needs anyway.
+                    val screen = runCatching { ScreenDriver.read() }.getOrNull()
+                    val count = screen?.optString("elements").orEmpty().lines().count { it.isNotBlank() }
+                    val why = (e.message ?: "Screenshot failed").removePrefix("Screenshot failed: ")
+                    if (screen == null) return@Tool ToolResult.Failed(e.message ?: "Screenshot failed", retryable = true)
+                    return@Tool ToolResult.Done(screen.put("ok", true).put("picture", false).put("note", com.seyal.app.device.ShotHealth.instead(why, count)), "Read the screen as text (no picture on this phone)")
+                }
                 ToolResult.Done(
                     JSONObject().put("ok", true).put("app", ScreenDriver.currentAppLine())
                         .put("note", "Positions for screen_tap_at / screen_swipe: x and y on a 0-1000 scale of this picture: (0,0) top-left, (1000,1000) bottom-right. Several taps you are sure of (seats) can go in one reply."),
@@ -64,7 +71,10 @@ object ScreenTools {
                 // What the taps did shows in the picture, not in the element list: hand the picture back with the result.
                 val shot = runCatching { ScreenDriver.screenshot() }.getOrNull()
                 r.remove("note")
-                if (shot == null) return@Tool wrap(r.put("note", "The taps were delivered, but a picture could not be taken. Take a screenshot before tapping the same spot again (a second tap unselects).")) { line }
+                if (shot == null) {
+                    ScreenDriver.snapshotAfter(500)?.let { r.put("screen", it) }
+                    return@Tool wrap(r.put("note", "The taps were delivered, but this phone gives no picture: the screen as text is attached. Check it before tapping the same spot again (a second tap unselects). If you cannot tell what was selected, call your_turn and let the user do it.")) { line }
+                }
                 r.put("note", "The taps were delivered. The picture attached is the screen AFTER them: check it (selected seats change colour; the bar at the bottom shows what is selected) before tapping anything again. A second tap on the same spot unselects.")
                 ToolResult.Done(r, line, Part.Image(shot.mime, shot.b64))
             },

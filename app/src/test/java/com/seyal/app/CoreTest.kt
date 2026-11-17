@@ -13,6 +13,8 @@ import com.seyal.app.agent.Did
 import com.seyal.app.agent.Seats
 import com.seyal.app.agent.Order
 import com.seyal.app.agent.Basics
+import com.seyal.app.agent.Honest
+import com.seyal.app.device.ShotHealth
 import com.seyal.app.device.Perms
 import com.seyal.app.device.ScreenWatch
 import com.seyal.app.agent.Meetings
@@ -1552,8 +1554,49 @@ fun testTrust() {
     T.check("picking seats is a tool every screen task has", "your_turn" in Router.pick(listOf("your_turn", "ask_user"), Router.groupsFor("Book 2 tickets for Leo")))
 }
 
+fun testPhoneVideos() {
+    val hour = 3600_000L; val now = 1_800_000_000_000L
+    println("A phone that refuses screenshots")
+    T.check("one failure is not enough to give up", !ShotHealth.broken(1, now - 1000, now))
+    T.check("two in a row: work from the screen text", ShotHealth.broken(2, now - 1000, now))
+    T.check("a day later: try a picture again", !ShotHealth.broken(5, now - 25 * hour, now))
+    T.check("the AI is told it is the phone, not the app", ShotHealth.instead("Android error 1", 40).let { it.contains("NOT the app blocking you") && it.contains("screen_tap") && it.contains("your_turn") })
+    T.check("an empty screen text says to wait", ShotHealth.instead("Android error 1", 0).contains("screen_wait"))
+
+    println("Made-up excuses are sent back")
+    for (x in listOf(
+        "The ticket booking apps and their websites are currently blocking automated access on your device, preventing me from completing the booking process.",
+        "The food delivery apps and their websites are currently blocking automated access on your device.",
+        "The system is blocking automated browser and app actions for bus bookings.",
+        "Ramayana tickets for today cannot be booked automatically because the booking apps are currently blocked on your device.",
+        "BookMyShow detects automation and refuses to continue.",
+    )) T.check("caught: ${x.take(50)}", Honest.blames(x))
+    for (x in listOf(
+        "Booked: 2 tickets for Ramayana at Sangeetha Somanur, 6:45 PM. Pay on the screen.",
+        "Your cart has 3 chicken biryani (₹747). Tap Proceed to Pay.",
+        "Broadway Cinemas has not opened bookings for tomorrow yet.",
+        "I couldn't find Sangeetha Somanur in the list: it has no Ramayana show today.",
+        "Spam calls are blocked by your phone's settings.",
+    )) T.check("an honest answer passes: ${x.take(50)}", !Honest.blames(x))
+
+    println("Piracy sites are never opened")
+    for (u in listOf("https://www.1tamilmv.io/index.php?/forums/topic/1234", "https://tamilblasters.cafe/x", "https://isaimini.store/ramayana", "magnet:?xt=urn:btih:abc", "https://1337x.to/torrent/1", "https://ww7.movierulz.com/x"))
+        T.check("blocked: $u", Links.isPirate(u))
+    for (u in listOf("https://in.bookmyshow.com/explore/movies-coimbatore", "https://www.district.in/movies", "https://www.redbus.in/bus-tickets/coimbatore-to-bangalore", "https://en.wikipedia.org/wiki/Ramayana_(2026_film)", "https://www.imdb.com/title/tt1"))
+        T.check("allowed: $u", !Links.isPirate(u))
+    val html = """<a class="result__a" href="https://www.1tamilmv.io/index.php?/x">John Doe 2026 Tamil HQ</a><a class="result__snippet" href="#">torrent</a>""" +
+        """<a class="result__a" href="https://in.bookmyshow.com/coimbatore/movies/ramayana">Ramayana - BookMyShow</a><a class="result__snippet" href="#">Book tickets</a>"""
+    val res = com.seyal.app.util.Parsers.searchResults(html, 5)
+    T.check("search results drop the piracy site and keep the real one", res.length() == 1 && res.optJSONObject(0).optString("url").contains("bookmyshow"))
+
+    println("The food apps' own popups")
+    val food = Lessons.textFor(listOf("Zomato", "Swiggy"))
+    T.check("Zomato: pick the saved address, never Enable", food.contains("Device location not enabled") && food.contains("never tap Enable"))
+    T.check("Swiggy: no swiggy.com search links", food.contains("Do NOT open swiggy.com links"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -1562,7 +1605,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

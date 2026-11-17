@@ -158,6 +158,7 @@ object PhoneTools {
                 // Only kinds of links that can't move money or reach private files.
                 val allowed = setOf("http", "https", "geo", "google.navigation", "market", "tel", "mailto", "sms", "smsto", "vnd.youtube", "spotify", "whatsapp")
                 if (scheme !in allowed) return@Tool ToolResult.Failed("Seyal doesn't open \"$scheme:\" links (payment apps and local files are the user's to open).")
+                if (com.seyal.app.agent.Links.isPirate(u)) return@Tool ToolResult.Failed(com.seyal.app.agent.Links.PIRATE_NOTE)
                 // A link to Swiggy, Zomato, BookMyShow, District or redBus goes straight into that app when it is installed
                 // and accepts the link: no "Open with" box and no browser tab with a separate login.
                 var inApp: String? = null

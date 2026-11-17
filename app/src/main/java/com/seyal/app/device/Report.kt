@@ -38,6 +38,7 @@ object Report {
             "exact alarms" to yn(Scheduler.canExact(ctx)),
             "notifications allowed" to yn(runCatching { nm.areNotificationsEnabled() }.getOrDefault(true)),
             "draw over apps" to yn(runCatching { SysSettings.canDrawOverlays(ctx) }.getOrDefault(false)),
+            "screenshots work" to (if (ScreenDriver.shotsBroken()) "no (${Settings.shotWhy.take(40)})" else "yes"),
             "paused" to yn(Settings.paused),
         )
         val head = header(

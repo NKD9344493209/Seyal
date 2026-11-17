@@ -68,6 +68,7 @@ object WebTools {
 
     private suspend fun readPage(url: String): ToolResult = withContext(Dispatchers.IO) {
         if (!url.startsWith("http")) return@withContext ToolResult.Failed("Not a web link")
+        if (com.seyal.app.agent.Links.isPirate(url)) return@withContext ToolResult.Failed(com.seyal.app.agent.Links.PIRATE_NOTE)
         val html = runCatching { http(url) }.getOrElse { return@withContext ToolResult.Failed("Could not open the page (${it.message})", retryable = true) }
         val title = Parsers.pageTitle(html)
         val text = Parsers.strip(html).take(8000)

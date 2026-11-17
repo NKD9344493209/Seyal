@@ -1,5 +1,7 @@
 package com.seyal.app.device
 
+import com.seyal.app.data.Settings
+
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.ClipData
@@ -714,6 +716,13 @@ object ScreenDriver {
 
     @Volatile private var lastShotAt = 0L
 
+    /**
+     * Screenshots do not work on this phone: Android refused the last two (some phones, many Xiaomi among them,
+     * answer every one with an internal error). Then Seyal stops asking for pictures and works from the screen's
+     * text, and tries a picture again once a day in case an update fixed it.
+     */
+    fun shotsBroken(now: Long = System.currentTimeMillis()): Boolean = ShotHealth.broken(Settings.shotFails, Settings.shotFailAt, now)
+
     /** One try at a screenshot: the whole display, or (Android 14+) just the app's window. Null + [why] on failure. */
     private suspend fun shoot(s: SeyalAccessibilityService, windowOnly: Boolean, why: (String) -> Unit): Bitmap? {
         val done = CompletableDeferred<Bitmap?>()
@@ -754,6 +763,8 @@ object ScreenDriver {
         repeatGuard.looked()
         val s = svc()
         if (Build.VERSION.SDK_INT < 30) throw ScreenshotException("Screenshots need Android 11 or newer")
+        // Known not to work here: don't spend four seconds of retries to fail again.
+        if (shotsBroken()) throw ScreenshotException("Screenshot failed: this phone refuses screenshots (${Settings.shotWhy.ifBlank { "Android error" }})")
         var err = "no answer from Android"
         pillHidden(true)
         try {
@@ -763,7 +774,12 @@ object ScreenDriver {
             if (bmp == null && !err.contains("secure")) { delay(1200); bmp = shoot(s, false) { err = it } }
             if (bmp == null && !err.contains("secure") && Build.VERSION.SDK_INT >= 34) { delay(400); bmp = shoot(s, true) { err = it } }
             lastShotAt = System.currentTimeMillis()
-            if (bmp == null) throw ScreenshotException("Screenshot failed: $err")
+            if (bmp == null) {
+                // A secure screen is that app's choice, not the phone's: it says nothing about the next app.
+                if (!err.contains("secure")) { Settings.shotFails = Settings.shotFails + 1; Settings.shotFailAt = lastShotAt; Settings.shotWhy = err }
+                throw ScreenshotException("Screenshot failed: $err")
+            }
+            if (Settings.shotFails != 0) Settings.shotFails = 0
             val scale = minOf(1f, maxWidth.toFloat() / bmp.width)
             val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
             val out = ByteArrayOutputStream()

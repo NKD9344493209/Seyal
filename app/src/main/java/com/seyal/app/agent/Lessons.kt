@@ -83,13 +83,16 @@ object Lessons {
             "District (by Zomato) books movies too: Movies tab → search the film → pick the theatre and time → choose how many → seats → stop at Pay. Check the film's name and language on its page before picking a show.",
         ),
         "swiggy" to listOf(
+            "Do NOT open swiggy.com links (search or restaurant): they open an empty search with \"No results\". Open the Swiggy app with open_app and use its own search bar.",
+            "A \"Location Permission is Off\" banner or a \"Select Delivery Address\" list: tap the user's saved address (Home) in that list; never tap GRANT or Enable. Close notification or offer popups with \"Not now\" or X.",
             "After the location is set the home screen can take a few seconds to draw and its list is long: screen_wait for \"Search\", then go on. If taps seem to do nothing, take a screenshot and use screen_tap_at; if it still does not move, open_app Swiggy again (it keeps the location).",
             "To find a dish: tap the search bar, type the dish, then tap the matching suggestion (Dish or a restaurant) instead of pressing Enter. \"No results\" usually means the delivery location at the top is wrong.",
             "On a restaurant page tap ADD beside the item; if a sheet with choices opens, pick them and tap Add Item. Quantity is changed with + and − on the item. Then View Cart at the bottom. Stop at Proceed to Pay.",
         ),
         "zomato" to listOf(
             "Search from the bar at the top, tap the suggestion for the dish or restaurant. ADD beside the item, choose options in the sheet, then the cart bar at the bottom. Stop before Place Order / payment.",
-            "Zomato asks for the delivery location first: \"Use current location\" (allow location while using the app), then confirm the address shown. Filters under the search results sort by rating and price.",
+            "Zomato opens with a \"Device location not enabled\" sheet over a list of saved addresses: tap the saved address (Home) under it; never tap Enable. A \"Want to stay updated…\" popup: tap Not now. \"Introducing Host Mode\": close it with X.",
+            "Do NOT open zomato.com links: open the Zomato app with open_app and use its search bar. Filters under the search results sort by rating and price.",
         ),
         "bookmyshow" to listOf(
             "Theatre: after opening the film, the show list has many theatres. Find the one the user named by its NAME (scroll the list, or use the search icon on that list); the first one listed is usually a big multiplex and is NOT the one asked for. If the user's theatre is not in the list, it has no show for that film or day on this app: ask the user (say so, and name two nearby theatres that do), never book another one by yourself.",

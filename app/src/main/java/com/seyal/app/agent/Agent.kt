@@ -454,7 +454,8 @@ object Agent {
             while (coroutineContext.isActive) {
                 pauseGate.await()
                 // Tools can appear mid-task (the user turns screen control on), so look each step.
-                val every = Toolbox.available().filter { allowDelegate || it.name != "delegate" }
+                val noShots = runCatching { ScreenDriver.shotsBroken() }.getOrDefault(false)
+                val every = Toolbox.available().filter { (allowDelegate || it.name != "delegate") && !(noShots && it.name == "screenshot") }
                 // Any tool can be run; only the ones this request can need are described to the AI (see Router).
                 val byName = every.associateBy { it.name }
                 val loaded = lock.withLock { loadedGroups(s) }
@@ -623,6 +624,13 @@ object Agent {
                     if (!s.allTools && s.parentId == null && Router.missing(loaded).isNotEmpty() && Router.givesUp(resp.text)) {
                         s.allTools = true
                         lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + "You answered that it can't be done while seeing only part of your tools. Every tool is in your list now. Look through it and do the request if any tool can; say it can't be done only if none can."))); touch(s) }
+                        continue
+                    }
+                    // "The apps are blocking automated access" was never true: a screenshot had failed on this phone.
+                    // A made-up reason is worse than none: send it back once to finish or say what really failed.
+                    if (!s.blameNudged && s.parentId == null && Honest.blames(resp.text)) {
+                        s.blameNudged = true
+                        lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Honest.NUDGE))); touch(s) }
                         continue
                     }
                     // "Done" has to mean done: compare what was asked with what happened, and send the AI back once per gap.
