@@ -47,7 +47,7 @@ import com.seyal.app.device.SeyalNotificationListener
 import com.seyal.app.ui.theme.SeyalTheme
 
 class MainActivity : ComponentActivity() {
-    private val askPerms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { resumeTick.value = resumeTick.value + 1 }
+    private val askPerms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { resumeTick.value = resumeTick.value + 1; com.seyal.app.device.Perms.answered() }
     /** Files the user picked with the + button in the chat, waiting to be sent with the next message. */
     val attachments = androidx.compose.runtime.mutableStateListOf<com.seyal.app.device.Attachment>()
     val attaching = mutableStateOf(false)
@@ -88,9 +88,17 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
+    override fun onPause() {
+        super.onPause()
+        com.seyal.app.device.Perms.asker = null
+    }
+
     override fun onResume() {
         super.onResume()
         resumeTick.value = resumeTick.value + 1
+        // While Seyal is on screen, a request that needs a permission can ask for it there and then.
+        com.seyal.app.device.Perms.asker = { p -> askPerms.launch(p) }
+        runCatching { com.seyal.app.device.ScreenWatch.check(this) }
         com.seyal.app.device.WatchService.sync(this)
         // Notification access is granted but the reader isn't running (some phones stop it after an update or a
         // kill): ask Android to start it again instead of making the user switch it off and on.

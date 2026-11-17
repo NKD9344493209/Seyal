@@ -29,6 +29,30 @@ object AgentTools {
             },
 
             Tool(
+                "your_turn", "agent",
+                "Hand ONE step to the user's own fingers and wait for them: choosing seats on a seat map, a captcha, a login, picking among things only they can judge. A small bar over the app says what to do, with a Done button; the result is the screen as it is after they tap Done. Never for payment: stop there instead.",
+                schema { str("what", "What they should do, in one short line, e.g. \"Pick your 2 seats, side by side\"", required = true); str("button", "The button's word (default: Done)") },
+            ) { a, ctx ->
+                val what = a.optString("what").ifBlank { "Do this step, then tap Done" }
+                val label = a.optString("button").ifBlank { "Done" }.take(14)
+                val key = "turn-" + ctx.sessionId
+                val done = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val shown = com.seyal.app.device.ScreenDriver.showTurn(key, what, label) { done.complete(Unit) }
+                if (!shown) {
+                    // No bar can be drawn (Screen control off, or Seyal itself is in front): ask in the chat instead.
+                    val answer = ctx.askUser("$what\nDo it in the app, then come back here and tap $label.", listOf(label))
+                    return@Tool ToolResult.Done(JSONObject().put("ok", true).put("answer", answer), "You did it yourself")
+                }
+                com.seyal.app.device.ScreenDriver.status(null)
+                runCatching { com.seyal.app.device.Notify.line(com.seyal.app.agent.Agent.app, "Your turn: $what. Tap $label on the bar when finished.", ctx.sessionId) }
+                val finished = try { kotlinx.coroutines.withTimeoutOrNull(15 * 60_000L) { done.await() } != null } finally { com.seyal.app.device.ScreenDriver.hideTurn(key) }
+                if (!finished) return@Tool ToolResult.Failed("The user did not finish within 15 minutes. Stop here and say exactly what is left for them to do.")
+                val out = JSONObject().put("ok", true)
+                com.seyal.app.device.ScreenDriver.snapshotAfter(700)?.let { out.put("screen", it) }
+                ToolResult.Done(out, "You did: ${what.take(50)}")
+            },
+
+            Tool(
                 "delegate", "agent",
                 "Run 2-5 independent sub-goals at the same time, each by its own agent with all tools. Use for big multi-part requests (e.g. 'find shoes' + 'message Ram' + 'check mail'). Output: one result line per goal.",
                 schema { strList("goals", "Each goal as a full sentence with everything it needs", required = true) },

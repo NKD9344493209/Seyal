@@ -472,8 +472,14 @@ class Skill(
     var lastRun: Long = 0L
     var nextRun: Long = 0L
     var runs: Int = 0
+    /** How the last scheduled time went: "" (nothing yet) | ok | failed | missed | skipped | waiting. Shown on the skill, never hidden. */
+    var lastState: String = ""
+    /** One line saying what happened ("Missed at 8:00 AM: the phone had closed Seyal"). */
+    var lastNote: String = ""
+    var lastNoteAt: Long = 0L
 
     fun toJson(): JSONObject = JSONObject().apply {
+        put("last_state", lastState); put("last_note", lastNote); put("last_note_at", lastNoteAt)
         put("id", id); put("name", name); put("description", description); put("goal", goal); put("created_at", createdAt)
         put("steps", JSONArray().apply { steps.forEach { put(it.toJson()) } })
         trigger?.let { put("trigger", it.toJson()) }
@@ -488,7 +494,7 @@ class Skill(
         put("do", JSONArray().apply { steps.forEach { put(JSONObject().put("tool", it.name).put("args", it.args)) } })
     }.toString(2)
 
-    fun snapshot(): Skill = Skill(id, name, description, goal, steps, trigger, createdAt).also { c -> c.enabled = enabled; c.lastRun = lastRun; c.nextRun = nextRun; c.runs = runs }
+    fun snapshot(): Skill = Skill(id, name, description, goal, steps, trigger, createdAt).also { c -> c.enabled = enabled; c.lastRun = lastRun; c.nextRun = nextRun; c.runs = runs; c.lastState = lastState; c.lastNote = lastNote; c.lastNoteAt = lastNoteAt }
 
     companion object {
         fun fromJson(o: JSONObject): Skill {
@@ -504,7 +510,7 @@ class Skill(
                 o.optString("id", newId()), o.optString("name", "Skill"), o.optString("description"),
                 o.optString("goal").ifBlank { o.optString("command") }, steps,
                 o.optJSONObject("trigger")?.let { Trigger.fromJson(it) }, o.optLong("created_at", System.currentTimeMillis()),
-            ).apply { enabled = o.optBoolean("enabled", true); lastRun = o.optLong("last_run"); nextRun = o.optLong("next_run"); runs = o.optInt("runs") }
+            ).apply { enabled = o.optBoolean("enabled", true); lastRun = o.optLong("last_run"); nextRun = o.optLong("next_run"); runs = o.optInt("runs"); lastState = o.optString("last_state"); lastNote = o.optString("last_note"); lastNoteAt = o.optLong("last_note_at") }
         }
     }
 }

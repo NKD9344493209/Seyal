@@ -392,20 +392,35 @@ private fun SetupCard(goTo: (Tab) -> Unit) {
         else granted(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
     val background = remember(resumed) { (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName) }
-    val core = hasKey && contacts && notif && (!full || (screen && listener))
-    val done = core && files && background
+    // Only the AI key is needed to start. Everything else is asked for the first time a request needs it;
+    // the list below is for people who would rather switch things on up front.
+    val core = hasKey
+    val done = core && contacts && notif && (!full || (screen && listener)) && files && background
     if (done || (core && Settings.setupHidden)) return
+    var more by remember { mutableStateOf(false) }
 
     Card {
-        Text("Finish setting up", style = MaterialTheme.typography.titleMedium)
-        Text(if (full) "A minute now, then Seyal can do everything." else "A minute now, then you're ready.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        Text(if (!hasKey) "One thing to start" else "Ready", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (!hasKey) "Add an AI key and you can start. Seyal asks for anything else only when a request needs it."
+            else "You can start now. Seyal asks for each permission the first time a request needs it, and says why.",
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+        )
         Spacer(Modifier.height(8.dp))
         SetupRow("AI key", "Free Gemini key works", hasKey) { goTo(Tab.CONTROL) }
+        if (hasKey && !more) {
+            Row(Modifier.padding(top = 6.dp)) {
+                Text("Switch things on now instead", style = MaterialTheme.typography.labelMedium, color = cs.primary, modifier = Modifier.clickable { more = true })
+                Spacer(Modifier.width(16.dp))
+                Text("Hide this", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.clickable { Settings.setupHidden = true; activity?.resumeTick?.let { it.value = it.value + 1 } })
+            }
+        }
+        if (hasKey && more) {
         SetupRow("Contacts", "So \"message Amma\" finds her", contacts) { activity?.askFor(Manifest.permission.READ_CONTACTS) }
         SetupRow("Notifications", "Results and questions reach you", notif) { activity?.askFor(Manifest.permission.POST_NOTIFICATIONS) }
         if (full) {
-            SetupRow("Screen control", "Accessibility → Seyal → On. Lets it use any app", screen) { open(SysSettings.ACTION_ACCESSIBILITY_SETTINGS) }
-            SetupRow("Notification access", "Read and reply to messages; \"when X messages…\"", listener) { open(SysSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
+            SetupRow("Notification access", "Deadlines, bills, scam warnings, money totals, \"when X messages…\"", listener) { open(SysSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
+            SetupRow("Screen control", "Only for working inside other apps: ordering, booking. Accessibility → Seyal → On", screen) { open(SysSettings.ACTION_ACCESSIBILITY_SETTINGS) }
         }
         SetupRow("Files and media", "Find and play your movies, songs, photos, PDFs", files) {
             if (full && Build.VERSION.SDK_INT >= 30) runCatching { context.startActivity(Intent(SysSettings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
@@ -417,6 +432,7 @@ private fun SetupCard(goTo: (Tab) -> Unit) {
             runCatching { context.startActivity(Intent(SysSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
         if (core) Text("Hide this", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp).clickable { Settings.setupHidden = true; activity?.resumeTick?.let { it.value = it.value + 1 } })
+        }
     }
 }
 

@@ -23,6 +23,9 @@ class SeyalApp : Application() {
         Scheduler.rescheduleAll(this)
         runCatching { com.seyal.app.device.PhoneEvents.sync(this) }
         runCatching { com.seyal.app.device.Signals.start(this) }
+        // A second heartbeat for phones that throw alarms away, and the watch on Screen control being switched off.
+        com.seyal.app.device.Pulse.start(this)
+        runCatching { com.seyal.app.device.ScreenWatch.check(this) }
         // Charger plugged in / unplugged only reach receivers registered while the app runs.
         runCatching {
             val filter = IntentFilter().apply { addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED) }

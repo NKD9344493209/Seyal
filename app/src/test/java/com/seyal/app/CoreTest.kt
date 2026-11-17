@@ -13,6 +13,10 @@ import com.seyal.app.agent.Did
 import com.seyal.app.agent.Seats
 import com.seyal.app.agent.Order
 import com.seyal.app.agent.Basics
+import com.seyal.app.device.Perms
+import com.seyal.app.device.ScreenWatch
+import com.seyal.app.agent.Meetings
+import com.seyal.app.agent.Scheduler
 import com.seyal.app.ai.LlmException
 import com.seyal.app.agent.Prompts
 import com.seyal.app.agent.Router
@@ -1492,8 +1496,64 @@ fun testQuality() {
     T.check("opening or ordering is", Prompts.screenTask("Open Settings and find the Android version") && Prompts.screenTask("Order a biryani from a nearby hotel") && Prompts.screenTask("Play the oldest video from the YouTube channel @Google"))
 }
 
+fun testTrust() {
+    val min = 60_000L; val hour = 60 * min
+    val now = java.time.LocalDateTime.of(2026, 11, 17, 8, 20).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+    val eight = now - 20 * min
+
+    println("A scheduled time is never skipped silently")
+    T.eq("due in the future: nothing to do", "none", Skills.missedAction(now + hour, 0, now))
+    T.eq("due a few seconds ago: the alarm is still on its way", "none", Skills.missedAction(now - 30_000, 0, now))
+    T.eq("it ran at its time", "none", Skills.missedAction(eight, eight + 2_000, now))
+    T.eq("20 minutes late and never ran: run it now", "run", Skills.missedAction(eight, eight - 24 * hour, now))
+    T.eq("3 hours late: tell the user and offer it", "tell", Skills.missedAction(now - 3 * hour, now - 27 * hour, now))
+    T.eq("a skill with no time set", "none", Skills.missedAction(0, 0, now))
+    T.check("the note names the time and the reason", Skills.missedNote(eight).let { it.startsWith("Missed Tue 17 Nov, 8:00 AM") && it.contains("closed Seyal") })
+
+    println("A late reminder or alarm is delivered, not dropped")
+    T.eq("a reminder 5 minutes late fires as normal", "fire", Scheduler.lateAction("remind", 5 * min))
+    T.eq("a reminder 2 hours late is told, with its time", "tell", Scheduler.lateAction("remind", 2 * hour))
+    T.eq("an alarm 2 hours late is told, not rung", "tell", Scheduler.lateAction("alarm", 2 * hour))
+    T.eq("a reminder from two days ago is let go", "drop", Scheduler.lateAction("remind", 50 * hour))
+    T.eq("busy mode always ends, however late", "end", Scheduler.lateAction("busy", 9 * hour))
+    T.check("the late text says what and when", Scheduler.lateText("remind", "Call the bank", "Tue 17 Nov, 8:00 AM").let { it.startsWith("Missed reminder (was for Tue 17 Nov, 8:00 AM): Call the bank") && it.contains("Keep Seyal running") })
+
+    println("A meeting is saved with proof")
+    val start = now + 3 * hour
+    T.eq("Seyal's own reminder is 10 minutes before", start - 10 * min, Meetings.ownReminderAt(start, 10, now))
+    T.eq("a meeting in 5 minutes is reminded in one minute", now + min, Meetings.ownReminderAt(now + 5 * min, 10, now))
+    T.eq("a meeting starting now needs none", null, Meetings.ownReminderAt(now + min, 10, now))
+    T.eq("the reminder says how long is left", "Team meeting starts in 10 minutes (11:20 AM)", Meetings.reminderText("Team meeting", start, start - 10 * min))
+    val both = Meetings.proof("Team meeting", "today 11:20 AM", saved = true, calendarAlert = true, own = true, before = 10, ownAt = "today 11:10 AM")
+    T.check("saved with both alerts says so", both.startsWith("Saved in your calendar: Team meeting, today 11:20 AM") && both.contains("Two alerts"))
+    val noAlert = Meetings.proof("Team meeting", "today 11:20 AM", saved = true, calendarAlert = false, own = false, before = 10, ownAt = null)
+    T.check("saved but with no alert says NO alert", noAlert.contains("NO alert could be set"))
+    val notSaved = Meetings.proof("Team meeting", "today 11:20 AM", saved = false, calendarAlert = false, own = true, before = 10, ownAt = "today 11:10 AM")
+    T.check("not in the calendar is said first, and that Seyal will still remind", notSaved.startsWith("NOT saved in your calendar") && notSaved.contains("Seyal will still remind you"))
+    val nothing = Meetings.proof("Team meeting", "today 11:20 AM", saved = false, calendarAlert = false, own = false, before = 10, ownAt = null)
+    T.check("nothing in place is never called scheduled", nothing.startsWith("NOT saved") && nothing.contains("add it yourself"))
+    for (p in listOf(both, noAlert, notSaved, nothing)) T.check("the word 'scheduled' is never used loosely", !p.contains("scheduled", true))
+
+    println("Screen control switched off by the phone")
+    val me = "com.seyal.app/com.seyal.app.device.SeyalAccessibilityService"; val short = "com.seyal.app/.device.SeyalAccessibilityService"
+    T.check("on and still listed: fine", !ScreenWatch.dropped(true, "com.google.android.marvin.talkback/.TalkBackService:$me", me, short))
+    T.check("…also in the short form", !ScreenWatch.dropped(true, short, me, short))
+    T.check("on before, gone from the list now: the phone did it", ScreenWatch.dropped(true, "com.google.android.marvin.talkback/.TalkBackService", me, short))
+    T.check("…also when the list is empty", ScreenWatch.dropped(true, null, me, short))
+    T.check("never switched on: nothing to say", !ScreenWatch.dropped(false, "", me, short))
+    T.check("the Settings app in front means the user did it", ScreenWatch.userAtSettings("com.android.settings") && ScreenWatch.userAtSettings("com.miui.securitycenter"))
+    T.check("another app in front means the phone did it", !ScreenWatch.userAtSettings("com.whatsapp") && !ScreenWatch.userAtSettings(""))
+
+    println("Permissions are asked when needed")
+    T.check("a refusal says what and why", Perms.refused("Contacts", "to find people by name").let { it.startsWith("Contacts is not allowed") && it.contains("to find people by name") && it.contains("Control → Phone permissions") })
+    val bms = Lessons.textFor(listOf("BookMyShow"))
+    T.check("every built-in booking note reaches the AI, first to last", bms.contains("by its NAME") && bms.contains("date strip") && bms.contains("your_turn") && bms.contains("seats_check") && bms.contains("stop at Pay"))
+    T.check("the bus notes hand the seats to the user too", Lessons.textFor(listOf("redBus")).let { it.contains("your_turn") && it.contains("boarding point") })
+    T.check("picking seats is a tool every screen task has", "your_turn" in Router.pick(listOf("your_turn", "ask_user"), Router.groupsFor("Book 2 tickets for Leo")))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -1502,7 +1562,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

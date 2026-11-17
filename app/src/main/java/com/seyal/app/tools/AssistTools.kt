@@ -61,6 +61,8 @@ object AssistTools {
         val (y0, y1) = com.seyal.app.agent.Ledger.range("yesterday", now)
         if (com.seyal.app.agent.Ledger.between(y0, y1).isNotEmpty()) lines += com.seyal.app.agent.Ledger.summary("yesterday", "both", now).lines().filter { it.startsWith("Received") || it.startsWith("Spent") }.filterNot { it.endsWith("nothing seen.") }
         com.seyal.app.agent.Coach.today(now).forEach { lines += "• Plan: $it" }
+        // Anything scheduled that failed or was missed since yesterday is said here, so it can't pass unnoticed.
+        com.seyal.app.agent.Skills.troubles(now).takeIf { it.isNotEmpty() }?.let { t -> lines += "Did not go well:"; t.take(4).forEach { lines += "• $it" } }
         val hits = Watchers.all().filter { it.hitAt > now - 24 * 3600_000L }
         hits.forEach { lines += "• Watched: ${it.what} happened" }
         val watching = Watchers.active().size

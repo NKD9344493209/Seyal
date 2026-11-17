@@ -54,6 +54,8 @@ object ScreenDriver {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var lastChange = 0L
     @Volatile private var foreground = ""
+    /** The app in front, as far as Seyal last saw. */
+    fun front(): String = foreground
 
     val available: Boolean get() = service != null
 
@@ -949,6 +951,62 @@ object ScreenDriver {
     }
 
     fun hideCard(key: String) { main.post { if (cardKey == key) hideCardNow() } }
+
+    /**
+     * "Your turn": a small bar near the top of the app Seyal is working in, for a step that is better done by the
+     * user's own fingers (choosing seats on a seat map). It says what to do and has one button; the rest of the
+     * screen stays free to use. Returns false when it can't be shown.
+     */
+    @Volatile private var turn: View? = null
+    private var turnKey: String? = null
+
+    fun showTurn(key: String, text: String, button: String, onDone: () -> Unit): Boolean {
+        val s = service ?: return false
+        if (frontPackage().let { it.isBlank() || it == s.packageName }) return false
+        main.post {
+            hideTurnNow()
+            runCatching {
+                val d = s.resources.displayMetrics.density
+                fun dp(v: Int) = (v * d).toInt()
+                val label = TextView(s).apply {
+                    this.text = text; setTextColor(Color.WHITE); textSize = 14f; maxLines = 3; ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val done = TextView(s).apply {
+                    this.text = button; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                    setTextColor(Color.parseColor("#1F1E1D")); setPadding(dp(16), dp(9), dp(16), dp(9))
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#7BD3A8")); cornerRadius = dp(12).toFloat() }
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(10) }
+                    setOnClickListener { hideTurn(key); onDone() }
+                }
+                val box = LinearLayout(s).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(10), dp(10), dp(10))
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#F81F1E1D")); cornerRadius = dp(16).toFloat() }
+                    elevation = dp(10).toFloat()
+                    addView(label); addView(done)
+                }
+                val lp = WindowManager.LayoutParams(
+                    (s.resources.displayMetrics.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT,
+                ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = statusBarHeight(s) + dp(4) }
+                (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).addView(box, lp)
+                turn = box; turnKey = key
+            }
+        }
+        return true
+    }
+
+    fun hideTurn(key: String) { main.post { if (turnKey == key) hideTurnNow() } }
+
+    private fun hideTurnNow() {
+        val c = turn ?: return
+        val s = service
+        if (s != null) runCatching { (s.getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(c) }
+        turn = null; turnKey = null
+    }
 
     private fun hideCardNow() {
         val c = card ?: return

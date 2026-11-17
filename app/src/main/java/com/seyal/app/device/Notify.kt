@@ -40,6 +40,36 @@ object Notify {
         return PendingIntent.getActivity(ctx, sessionId?.hashCode() ?: 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
+    /** Something only the user can put right: tapping it opens the settings page where they do. */
+    fun fix(ctx: Context, title: String, body: String, open: Intent) {
+        if (!allowed(ctx)) return
+        val pi = PendingIntent.getActivity(ctx, title.hashCode(), open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(60))
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(pi)
+            .addAction(0, "Fix now", pi)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(title.hashCode(), n)
+    }
+
+    /** A result with a title and the whole answer: pull it down to read it all, tap to open the chat. */
+    fun result(ctx: Context, title: String, body: String, sessionId: String? = null) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, CH_RESULTS)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(60))
+            .setContentText(body.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(120))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(openApp(ctx, sessionId))
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify((sessionId ?: title).hashCode(), n)
+    }
+
     fun line(ctx: Context, text: String, sessionId: String? = null) {
         if (!allowed(ctx)) return
         val n = NotificationCompat.Builder(ctx, CH_RESULTS)

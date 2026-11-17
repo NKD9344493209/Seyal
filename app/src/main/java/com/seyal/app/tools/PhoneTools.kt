@@ -85,10 +85,11 @@ object PhoneTools {
             ) { a, ctx -> sendWhatsApp(a.optString("phone"), a.optString("text"), a.optString("name"), ctx.sessionId) },
 
             Tool(
-                "calendar_add", "phone", "Add a calendar event.",
+                "calendar_add", "phone", "Add a meeting or event: into the phone's calendar with an alert, plus Seyal's own reminder. The result's \"say\" line is the truth about what was saved: tell the user that line, never just \"scheduled\".",
                 schema {
                     str("title", "Event title", required = true); str("start", "Local ISO start, e.g. 2026-11-08T16:00", required = true)
                     int("duration_min", "Length in minutes (default 30)"); str("location", "Place"); str("description", "Notes or a meeting link")
+                    int("remind_min", "Minutes before to alert (default 10)")
                 },
                 sideEffect = true,
                 preview = { "Add \"${it.optString("title")}\" at ${Times.parse(it.optString("start"))?.let { d -> Times.format(Times.toEpoch(d)) } ?: it.optString("start")}" },
@@ -232,7 +233,7 @@ object PhoneTools {
 
     private suspend fun findContacts(name: String): ToolResult = withContext(Dispatchers.IO) {
         if (name.isBlank()) return@withContext ToolResult.Failed("No name given")
-        if (!has(Manifest.permission.READ_CONTACTS)) return@withContext ToolResult.Failed("Contacts permission not granted. The user can allow it in Control → Phone permissions.")
+        if (!com.seyal.app.device.Perms.ensure(ctx, listOf(Manifest.permission.READ_CONTACTS))) return@withContext ToolResult.Failed(com.seyal.app.device.Perms.refused("Contacts", "to find people by name"))
         val cr = ctx.contentResolver
         val found = linkedMapOf<String, JSONObject>()
         val names = searchNames(name)
@@ -352,42 +353,83 @@ object PhoneTools {
     private val whatsAppLock = kotlinx.coroutines.sync.Mutex()
 
     // ---------------- calendar ----------------
-    private fun createEvent(a: JSONObject): ToolResult {
+    /**
+     * A meeting the user will rely on. Three things make it safe to rely on:
+     * it goes into the phone's own calendar WITH a reminder (the calendar app alerts even if Seyal is closed);
+     * it is read back, so "saved" is only said when it is really there;
+     * and Seyal sets its own reminder as well, so one failing still leaves the other.
+     */
+    private suspend fun createEvent(a: JSONObject): ToolResult {
         val title = a.optString("title").ifBlank { "Event" }
         val start = Times.parse(a.optString("start")) ?: return ToolResult.Failed("Could not understand the start time \"${a.optString("start")}\"")
         val dur = a.optInt("duration_min", 30).coerceIn(5, 600)
         val startMs = Times.toEpoch(start)
         val endMs = startMs + dur * 60_000L
         val text = Times.format(startMs)
-        if (has(Manifest.permission.WRITE_CALENDAR) && has(Manifest.permission.READ_CALENDAR)) {
-            val calId = ctx.contentResolver.query(
-                CalendarContract.Calendars.CONTENT_URI, arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.IS_PRIMARY),
-                "${CalendarContract.Calendars.VISIBLE} = 1", null, null,
-            )?.use { c ->
-                var first: Long? = null
-                while (c.moveToNext()) { val id = c.getLong(0); if (first == null) first = id; if (c.getInt(1) == 1) return@use id }
-                first
-            }
+        val before = a.optInt("remind_min", 10).coerceIn(0, 24 * 60)
+        if (startMs < System.currentTimeMillis() - 60_000) return ToolResult.Failed("That time ($text) is already past. Ask the user which day they mean.")
+        // Seyal's own reminder: set first, so it exists whatever happens with the calendar.
+        val now = System.currentTimeMillis()
+        val ownAt = com.seyal.app.agent.Meetings.ownReminderAt(startMs, before, now)
+        val own = ownAt != null && canNotify() && runCatching { Scheduler.setReminder(ctx, ownAt, com.seyal.app.agent.Meetings.reminderText(title, startMs, ownAt)) }.isSuccess
+
+        var saved = false; var calendarAlert = false; var eventId: String? = null
+        if (com.seyal.app.device.Perms.ensure(ctx, listOf(Manifest.permission.WRITE_CALENDAR, Manifest.permission.READ_CALENDAR))) {
+            val calId = runCatching {
+                ctx.contentResolver.query(
+                    CalendarContract.Calendars.CONTENT_URI, arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.IS_PRIMARY),
+                    "${CalendarContract.Calendars.VISIBLE} = 1", null, null,
+                )?.use { c ->
+                    var first: Long? = null
+                    while (c.moveToNext()) { val id = c.getLong(0); if (first == null) first = id; if (c.getInt(1) == 1) return@use id }
+                    first
+                }
+            }.getOrNull()
             if (calId != null) {
                 val values = ContentValues().apply {
                     put(CalendarContract.Events.CALENDAR_ID, calId); put(CalendarContract.Events.TITLE, title)
                     put(CalendarContract.Events.DTSTART, startMs); put(CalendarContract.Events.DTEND, endMs)
                     put(CalendarContract.Events.DESCRIPTION, a.optString("description")); put(CalendarContract.Events.EVENT_LOCATION, a.optString("location"))
                     put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
+                    put(CalendarContract.Events.HAS_ALARM, 1)
                 }
                 val uri = runCatching { ctx.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values) }.getOrNull()
-                if (uri != null) return ToolResult.ok("Event added: $title · $text", "event_id" to uri.lastPathSegment, "start_text" to text)
+                val id = uri?.lastPathSegment?.toLongOrNull()
+                if (id != null) {
+                    // The calendar's own alert: without this row the event sits there silently.
+                    calendarAlert = runCatching {
+                        ctx.contentResolver.insert(CalendarContract.Reminders.CONTENT_URI, ContentValues().apply {
+                            put(CalendarContract.Reminders.EVENT_ID, id); put(CalendarContract.Reminders.MINUTES, before)
+                            put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                        }) != null
+                    }.getOrDefault(false)
+                    // Read it back: only what is really in the calendar counts as saved.
+                    saved = runCatching {
+                        ctx.contentResolver.query(CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events.DTSTART), "${CalendarContract.Events._ID} = ?", arrayOf(id.toString()), null)
+                            ?.use { c -> c.moveToFirst() && c.getLong(0) == startMs } ?: false
+                    }.getOrDefault(false)
+                    if (saved) eventId = id.toString()
+                }
             }
         }
+        val proof = com.seyal.app.agent.Meetings.proof(title, text, saved, calendarAlert, own, before, ownAt?.let { Times.format(it) })
+        val out = JSONObject().put("ok", saved || own).put("saved_in_calendar", saved).put("calendar_alert", calendarAlert).put("seyal_reminder", own)
+            .put("start_text", text).put("say", proof)
+        eventId?.let { out.put("event_id", it) }
+        if (saved) return ToolResult.Done(out, "Saved: $title · $text")
+        // Not in the calendar. Never call this "scheduled": say what is and is not in place.
         val intent = Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI)
             .putExtra(CalendarContract.Events.TITLE, title)
             .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMs).putExtra(CalendarContract.EXTRA_EVENT_END_TIME, endMs)
             .putExtra(CalendarContract.Events.DESCRIPTION, a.optString("description")).putExtra(CalendarContract.Events.EVENT_LOCATION, a.optString("location"))
-        return if (launch(intent)) ToolResult.ok("Calendar opened for $title · tap Save", "start_text" to text, "saved" to false) else ToolResult.Failed("No calendar app found")
+        val opened = launch(intent)
+        out.put("calendar_opened", opened)
+        return if (own || opened) ToolResult.Done(out, if (own) "NOT in the calendar · Seyal will remind" else "NOT saved · calendar opened, tap Save")
+        else ToolResult.Failed("The meeting could NOT be saved and no reminder could be set. Tell the user plainly to add it themselves.")
     }
 
-    private fun listEvents(fromRaw: String, toRaw: String): ToolResult {
-        if (!has(Manifest.permission.READ_CALENDAR)) return ToolResult.Failed("Calendar permission not granted (Control → Phone permissions).")
+    private suspend fun listEvents(fromRaw: String, toRaw: String): ToolResult {
+        if (!com.seyal.app.device.Perms.ensure(ctx, listOf(Manifest.permission.READ_CALENDAR))) return ToolResult.Failed(com.seyal.app.device.Perms.refused("Calendar", "to read your events"))
         val from = Times.parse(fromRaw)?.let { Times.toEpoch(it) } ?: System.currentTimeMillis()
         val to = Times.parse(toRaw)?.let { Times.toEpoch(it) } ?: (from + 7 * 24 * 3600_000L)
         val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().appendPath(from.toString()).appendPath(to.toString()).build()
@@ -400,12 +442,26 @@ object PhoneTools {
         return ToolResult.Done(JSONObject().put("events", events).put("count", events.length()), "${events.length()} events")
     }
 
-    private fun timer(kind: String, at: String, text: String): ToolResult {
+    /** Seyal may show notifications: asked for the first time something needs to reach the user later. */
+    private suspend fun canNotify(): Boolean {
+        if (Build.VERSION.SDK_INT >= 33) com.seyal.app.device.Perms.ensure(ctx, listOf(Manifest.permission.POST_NOTIFICATIONS))
+        return runCatching { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager).areNotificationsEnabled() }.getOrDefault(true)
+    }
+
+    private suspend fun timer(kind: String, at: String, text: String): ToolResult {
         val dt = Times.parse(at) ?: return ToolResult.Failed("Could not understand the time \"$at\"")
         val ms = Times.toEpoch(dt)
+        if (ms < System.currentTimeMillis() - 60_000) return ToolResult.Failed("That time (${Times.format(ms)}) is already past. Ask the user which day they mean.")
+        val shows = canNotify()
         if (kind == "alarm") Scheduler.setAlarm(ctx, ms, text) else Scheduler.setReminder(ctx, ms, text)
         val t = Times.format(ms)
-        return ToolResult.ok(if (kind == "alarm") "Alarm set for $t" else "Reminder set for $t", "at_text" to t, "text" to text)
+        val what = if (kind == "alarm") "Alarm" else "Reminder"
+        // Set, but it could never be seen: that is said in the same breath, not left to be found out at the time.
+        if (!shows) return ToolResult.Done(
+            JSONObject().put("ok", true).put("at_text", t).put("text", text).put("warning", "Notifications are switched off for Seyal, so this cannot be shown. Tell the user to allow notifications for Seyal (Control → Phone permissions → Notifications), or it will be missed."),
+            "$what set for $t, BUT notifications are off for Seyal: allow them or it cannot show",
+        )
+        return ToolResult.ok("$what set for $t", "at_text" to t, "text" to text)
     }
 
     // ---------------- apps and settings ----------------
@@ -590,7 +646,7 @@ object PhoneTools {
     }
 
     private suspend fun location(): ToolResult {
-        if (!has(Manifest.permission.ACCESS_COARSE_LOCATION) && !has(Manifest.permission.ACCESS_FINE_LOCATION)) return ToolResult.Failed("Location permission not granted (Control → Phone permissions). Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")
+        if (!com.seyal.app.device.Perms.ensure(ctx, listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION), any = true)) return ToolResult.Failed("Location is not allowed for Seyal (the user can allow it in Control → Phone permissions). Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val loc = freshLocation(lm)
             ?: return ToolResult.Failed("No location fix (is Location on?). Home city from settings: ${Settings.homeCity.ifBlank { "unknown" }}")

@@ -724,7 +724,12 @@ object Agent {
         }
         idleCheck(if (s.parentId == null) (if (status == SessionStatus.DONE) "Done · " else "Stopped · ") + (s.result ?: "") else null)
         if (s.parentId == null) {
-            if (!Settings.quiet || status != SessionStatus.DONE) Notify.line(app, "${s.title}: ${s.result}", s.id)
+            val skillId = s.source.takeIf { it.startsWith("skill:") }?.removePrefix("skill:")
+            if (skillId != null) runCatching { Skills.noteResult(skillId, status == SessionStatus.DONE, s.result ?: "") }
+            // What a scheduled skill has to tell (the mail, the news, the total) IS its result: it arrives in full,
+            // whatever the Quiet setting says. A failure is always told.
+            if (skillId != null && status == SessionStatus.DONE && wantsAnswer(s.firstCommand)) Notify.result(app, s.title, plain(text).trim().take(1500), s.id)
+            else if (!Settings.quiet || status != SessionStatus.DONE) Notify.line(app, "${s.title}: ${s.result}", s.id)
             if ((Settings.speak || (Settings.simpleMode && s.source == "user")) && status == SessionStatus.DONE) Speech.say(app, text)
         }
     }

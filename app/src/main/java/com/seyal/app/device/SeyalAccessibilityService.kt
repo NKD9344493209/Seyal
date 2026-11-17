@@ -14,6 +14,7 @@ class SeyalAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        com.seyal.app.data.Settings.screenWasOn = true
         serviceInfo = (serviceInfo ?: AccessibilityServiceInfo()).apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -24,6 +25,9 @@ class SeyalAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
+        // The user switches this off in the Settings app. Anything else in front (or nothing) means the phone did it:
+        // the flag then stays on and ScreenWatch tells the user.
+        if (ScreenWatch.userAtSettings(ScreenDriver.front())) com.seyal.app.data.Settings.screenWasOn = false
         ScreenDriver.detach(this)
         return super.onUnbind(intent)
     }

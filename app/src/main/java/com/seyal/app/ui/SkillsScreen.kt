@@ -24,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import com.seyal.app.ui.theme.Ink
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -236,6 +237,12 @@ private fun SkillList(skills: List<Skill>, onEdit: (Skill) -> Unit, goTo: (Tab) 
                         if (s.lastRun > 0) "last ${Times.format(s.lastRun)}" else null,
                     ).joinToString(" · ")
                     Text(meta, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                    // How the last run really went: worked, failed, missed or skipped. Never left blank after a scheduled time.
+                    if (s.lastNote.isNotBlank()) Text(
+                        s.lastNote, style = MaterialTheme.typography.bodySmall,
+                        color = when (s.lastState) { "ok" -> Ink.green; "failed", "missed" -> Ink.red; else -> Ink.amber },
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                     Spacer(Modifier.height(10.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         // The run shows in Activity (chats stay for conversations).

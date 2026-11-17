@@ -96,13 +96,15 @@ object Lessons {
             "Day: the date strip at the top of the show list starts on today. Tap the user's day BEFORE picking a show time, and read the day back from the review screen.",
             "How many: the \"How many seats?\" sheet opens with a number already chosen, often left from last time. Tap the user's number (the row of 1 to 10) and check the picture changed, then Select Seats. On the seat map tap exactly that many seats; the bar at the bottom must show that many.",
             "Search the movie by name and open its page, check the title, then Book tickets. Pick the date at the top; theatres are listed with their show times: find the theatre the user named and tap the time they want.",
-            "A \"How many seats?\" sheet opens before the seat map: tap the number the user asked for (it defaults to 2, never leave a wrong number), then Select Seats.",
             "If the film runs in several languages or formats (Tamil / Hindi / English, 2D / 3D), a sheet asks which: pick what the user said. If they did not say, ask them; never pick one yourself.",
-            "The seat map is a picture: take ONE screenshot. Free seats are white or outlined, sold ones are grey; rows have a letter on the left, numbers run along the row; the price classes are labelled above each block. Seats for people going together must be side by side in ONE row: find a row in the user's class with enough free seats in a run, away from the first two rows, as near the middle as you can, and tap those neighbours.",
-            "After tapping, the bar at the bottom shows the selected seats and the price (e.g. \"A5, A6 · Pay ₹380\"): read it, call seats_check with those labels, and fix the selection if they are not together or the count is wrong. No row has enough seats together in budget → ask the user (say what is free) before taking separate seats. Then stop at Pay.",
+            "Named theatre: if the app's search shows the THEATRE itself (under Cinemas or Venues) when you type its name, open it that way: its page lists only that theatre's shows, so the wrong theatre cannot be picked. Then the day, then the film's show time. If the search does not show it, go by the film as below.",
+            "Choosing the seats: when the seat map opens, call your_turn (\"Pick your N seats, side by side, then tap Done\") so the user picks the seats they like with their own fingers; it is quicker and never wrong. Pick them yourself ONLY if the user said so (\"you choose the seats\", \"any seats\").",
+            "If you pick: the seat map is a picture, take ONE screenshot. Free seats are white or outlined, sold ones are grey; rows have a letter on the left, numbers run along the row; the price classes are labelled above each block. Seats for people going together must be side by side in ONE row: find a row in the user's class with enough free seats in a run, away from the first two rows, as near the middle as you can, and tap those neighbours.",
+            "After the seats are chosen (by the user or by you), the bar at the bottom shows them and the price (e.g. \"A5, A6 · Pay ₹380\"): read it, call seats_check with those labels, and fix the selection if they are not together or the count is wrong (if the user chose them, tell them what is wrong and hand it back with your_turn). No row has enough seats together in budget → ask the user (say what is free) before taking separate seats. Then stop at Pay.",
         ),
         "redbus" to listOf(
-            "Seats: the seat page is a drawing (Lower and Upper deck for sleepers). Take ONE screenshot: free seats are white or outlined, sold are grey, pink is for women. Tap free seats that touch each other for people travelling together (a double berth, or two in the same row), with screen_tap_at. The bar at the bottom then shows the seat numbers and the fare: read it, and tap again if the count is wrong.",
+            "Choosing the seats: when the seat page opens, call your_turn (\"Pick your N seats, then tap Done\") so the user picks with their own fingers. Pick them yourself ONLY if the user said so (\"you choose\", \"any seat\").",
+            "If you pick: the seat page is a drawing (Lower and Upper deck for sleepers). Take ONE screenshot: free seats are white or outlined, sold are grey, pink is for women. Tap free seats that touch each other for people travelling together (a double berth, or two in the same row), with screen_tap_at. The bar at the bottom then shows the seat numbers and the fare: read it, and tap again if the count is wrong.",
             "After seats: choose the boarding point and the dropping point (the one the user named; if they named none and there are several, ask), then passenger details. Name, age and gender come from the user: saved passengers can be ticked, otherwise ask_user once for all of them. Call order_check on the review page, and stop at Proceed to Pay.",
             "Filters at the top of the bus list (AC, Sleeper, departure time, price) are faster than scrolling: set what the user asked for first.",
             "Search link: https://www.redbus.in/bus-tickets/FROM-to-TO?fromCityName=From&toCityName=To&onward=DD-Mon-YYYY (e.g. coimbatore-to-bangalore, onward=14-Nov-2026). There is no link for one bus: share the search link with the bus name, time and price.",
@@ -122,12 +124,14 @@ object Lessons {
         if (keys.isEmpty()) return ""
         return buildString {
             for (k in keys) {
-                val notes = (builtIn[k] ?: emptyList()) + list.filter { it.app == k }.sortedBy { it.at }.map { it.text }
+                // The built-in notes are the tested way through the app: all of them, always. What was learnt on this
+                // phone comes after, newest six.
+                val notes = (builtIn[k] ?: emptyList()) + list.filter { it.app == k }.sortedBy { it.at }.map { it.text }.takeLast(6)
                 if (notes.isEmpty()) continue
                 appendLine("${k.replaceFirstChar { it.uppercase() }}:")
-                notes.takeLast(9).forEach { appendLine("- $it") }
+                notes.forEach { appendLine("- $it") }
             }
-        }.trim().take(2600)
+        }.trim().take(6000)
     }
 
     /** Apps a request names, among the ones there are notes for ("order dosa on swiggy" → swiggy). */

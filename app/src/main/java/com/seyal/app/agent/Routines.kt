@@ -55,7 +55,7 @@ object Routines {
         "web_search", "read_page", "news", "weather", "wikipedia", "read_mail", "notifications_read", "location", "phone_state", "storage_info",
         "files_find", "calendar_read", "calendar_list", "screen_read", "screenshot", "apps_list", "skill_list", "inbox_list", "watch_list", "daily_brief",
     )
-    private val neverKept = setOf("more_tools", "ask_user", "delegate", "memory_save", "memory_forget", "skill_save", "skill_save_this", "skill_delete", "lesson_save", "order_check", "seats_check", "watch_add", "watch_remove")
+    private val neverKept = setOf("more_tools", "your_turn", "ask_user", "delegate", "memory_save", "memory_forget", "skill_save", "skill_save_this", "skill_delete", "lesson_save", "order_check", "seats_check", "watch_add", "watch_remove")
 
     /**
      * Whether the steps can be repeated blindly for the same words: every step is a plain action with

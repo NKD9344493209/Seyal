@@ -49,3 +49,5 @@ Split 1200 among me, Ram and Priya => done; noai; tool:split_bill; no:send_sms; 
 Make me a home workout plan. I am a beginner, 20 minutes a day, Monday to Friday at 6 pm, no equipment, my goal is to lose fat, no injuries => tool:plan_create
 My plans => done; noai; tool:plan_list
 Workout done => done; noai; tool:plan_mark
+Add a team meeting to my calendar on Friday at 4 pm => done; tool:calendar_add; says:Saved in your calendar|NOT saved
+What is on my calendar this week? => done; tool:calendar_list; says:meeting

@@ -32,7 +32,7 @@ object Router {
         // The screen tools are the hands: always there when screen control is on.
         Group("screen", "see and operate any app", setOf(
             "screen_read", "screenshot", "screen_tap", "screen_tap_at", "screen_long_press", "screen_type", "screen_scroll", "screen_swipe",
-            "screen_wait", "screen_back", "screen_home", "screen_recents", "screen_notifications", "lesson_save",
+            "screen_wait", "screen_back", "screen_home", "screen_recents", "screen_notifications", "lesson_save", "your_turn",
         ), null),
         Group("automation", "skills: things that run later, on a schedule or on a trigger; list, run or delete skills", setOf("skill_save", "skill_save_this", "skill_list", "skill_run", "skill_delete"),
             rx("\\b(every|each|whenever|when (i|my|the|a|an|it|he|she|they|someone|anyone|somebody|\\w+ (calls?|messages?|texts?|sends?|reach|arrives?))|if (i|my|the|a|an|it|someone|anyone)|daily|weekly|monthly|weekdays?|weekends?|schedule[ds]?|later|tomorrow|tonight|day after|next (week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at \\d|by \\d|after \\d|in \\d+ ?(min|mins|minutes|hours?|hrs?|days?)|automat\\w*|skills?|routine|triggers?|by itself|on its own|from now on|always|until i|keep (checking|doing|sending))\\b|dhinamum|thinamum|ovvoru|naalaiku|naalai|kaalaila|nightla|தினமும்|நாளை|ஒவ்வொரு"),

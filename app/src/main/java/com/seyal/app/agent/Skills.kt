@@ -92,10 +92,66 @@ object Skills {
         _skills.value = emptyList()
     }
 
-    /** Puts every time trigger back (after boot or an app update). */
+    /**
+     * What to do about a scheduled time ([due]) that has passed: "none" (it ran, or it is only just due and the alarm
+     * is still on its way), "run" (a little late: do it now) or "tell" (too late to do unasked: say so and offer it).
+     */
+    internal fun missedAction(due: Long, lastRun: Long, now: Long): String = when {
+        due <= 0 || due > now - LATE_GRACE_MS -> "none"
+        lastRun >= due - 60_000 -> "none"
+        now - due <= CATCH_UP_MS -> "run"
+        else -> "tell"
+    }
+    internal const val LATE_GRACE_MS = 90_000L
+    internal const val CATCH_UP_MS = 30 * 60_000L
+
+    /** "Missed at 8:00 AM today: the phone had closed Seyal." */
+    internal fun missedNote(due: Long): String = "Missed ${stamp(due)}: the phone had closed Seyal"
+
+    /** "Tue 17 Nov, 8:00 AM": a time that still reads right tomorrow. */
+    internal fun stamp(ms: Long): String =
+        java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(ms), java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM, h:mm a", java.util.Locale.ENGLISH))
+
+    private fun note(skill: Skill, state: String, text: String) { skill.lastState = state; skill.lastNote = text.take(160); skill.lastNoteAt = System.currentTimeMillis() }
+
+    /** Called when a run of a skill ends, so the skill shows whether its last run worked. */
+    fun noteResult(id: String, ok: Boolean, result: String) {
+        val skill = get(id) ?: return
+        note(skill, if (ok) "ok" else "failed", (if (ok) "Worked " else "Failed ") + stamp(System.currentTimeMillis()) + ": " + result.lineSequence().firstOrNull().orEmpty())
+        publish()
+    }
+
+    /** Skills whose last scheduled time did not go well in the last [hours]: for the morning summary. */
+    fun troubles(now: Long, hours: Int = 24): List<String> =
+        list.filter { it.enabled || it.trigger?.repeat == "once" }.filter { it.lastState in setOf("failed", "missed") && now - it.lastNoteAt < hours * 3600_000L }.map { "${it.name}: ${it.lastNote}" }
+
+    /**
+     * Puts every time trigger back (after boot, an app update, or the app starting again), and deals with any
+     * scheduled time that passed while Seyal was not running. A missed time is never skipped silently: a little
+     * late, it runs now; later than that, the user is told and can run it with one tap.
+     */
     fun rescheduleAll() {
         val now = System.currentTimeMillis()
         list.filter { it.enabled && it.trigger?.isTime == true }.forEach { s ->
+            when (missedAction(s.nextRun, s.lastRun, now)) {
+                "run" -> {
+                    log("\"${s.name}\" was due ${stamp(s.nextRun)} and had not run: running it now")
+                    runCatching { run(s.id, fromTrigger = true) }   // sets the next time itself
+                    if (s.nextRun <= now && s.enabled) { s.nextRun = Times.nextFire(s.trigger!!); Scheduler.schedule(Agent.app, s) }
+                    return@forEach
+                }
+                "tell" -> {
+                    val due = s.nextRun
+                    log("\"${s.name}\" was due ${stamp(due)} and did not run (Seyal was not running)")
+                    note(s, "missed", missedNote(due))
+                    runCatching { Settings.killedCount = Settings.killedCount + 1; Settings.killedAt = now }
+                    runCatching {
+                        com.seyal.app.device.Notify.runSkill(Agent.app, s.id, "Did not run: ${s.name}",
+                            "It was due ${Times.format(due)}, but your phone had closed Seyal. Tap to run it now. To stop this happening: Control → Keep Seyal running.")
+                    }
+                    if (s.trigger?.repeat == "once") { s.enabled = false; s.nextRun = 0; return@forEach }
+                }
+            }
             if (s.nextRun <= now) s.nextRun = Times.nextFire(s.trigger!!)
             Scheduler.schedule(Agent.app, s)
         }
@@ -218,7 +274,7 @@ object Skills {
      * position), the skill keeps only the goal and an agent works it out each time.
      */
     fun fromSession(session: Session): Skill? {
-        val skip = setOf("more_tools", "screen_read", "screenshot", "screen_wait", "ask_user", "memory_save", "memory_forget", "skill_save", "skill_save_this", "skill_list", "skill_run", "skill_delete", "delegate", "wait", "notifications_read", "contacts_search", "web_search", "read_page", "news", "weather", "wikipedia", "read_mail", "search_mail", "calendar_list", "phone_state", "app_usage", "apps_list", "location", "clipboard")
+        val skip = setOf("more_tools", "your_turn", "screen_read", "screenshot", "screen_wait", "ask_user", "memory_save", "memory_forget", "skill_save", "skill_save_this", "skill_list", "skill_run", "skill_delete", "delegate", "wait", "notifications_read", "contacts_search", "web_search", "read_page", "news", "weather", "wikipedia", "read_mail", "search_mail", "calendar_list", "phone_state", "app_usage", "apps_list", "location", "clipboard")
         val unsafeToReplay = setOf("alarm_set", "reminder_set", "calendar_add", "timer_set", "screen_tap_at", "screen_swipe")
         val results = session.messages.filter { it.role == "tool" }.flatMap { it.results }.associateBy { it.callId }
         // Split the conversation into requests: each user message and the calls that answered it.
@@ -301,19 +357,20 @@ object Skills {
             if (tr?.isTime == true) {
                 if (tr.repeat == "once") { skill.enabled = false; skill.nextRun = 0 } else { skill.nextRun = Times.nextFire(tr); Scheduler.schedule(Agent.app, skill) }
             }
-            if (Settings.paused) { publish(); return null }
+            if (Settings.paused) { note(skill, "skipped", "Skipped ${stamp(System.currentTimeMillis())}: Seyal is paused"); publish(); return null }
             // "Only when…": the trigger happened, but its conditions don't hold right now.
             tr?.only?.let { only ->
                 val now = java.time.LocalDateTime.now()
                 val (level, charging) = com.seyal.app.device.PhoneEvents.battery(Agent.app)
                 val why = only.fails(now.dayOfWeek.value, now.hour * 60 + now.minute, level, charging, com.seyal.app.device.PhoneEvents.wifiName(Agent.app))
-                if (why != null) { log("\"${skill.name}\" skipped: $why"); publish(); return null }
+                if (why != null) { log("\"${skill.name}\" skipped: $why"); note(skill, "skipped", "Skipped ${stamp(System.currentTimeMillis())}: $why"); publish(); return null }
             }
         }
         // A scheduled skill that has to use the screen (WhatsApp, an app) can't while the phone is locked:
         // don't fail silently, ask to be run with one tap as soon as the user picks the phone up.
         if (fromTrigger && !unattended && needsScreen(skill.goal, skill.steps.map { it.name }) && phoneLocked()) {
             log("\"${skill.name}\" is waiting: the phone was locked at its time")
+            note(skill, "waiting", "Waiting since ${stamp(System.currentTimeMillis())}: the phone was locked. Tap the notification to run it")
             runCatching { com.seyal.app.device.Notify.runSkill(Agent.app, skill.id, "Ready: ${skill.name}", "The phone was locked at the set time, so this has not run yet. Tap to run it now.") }
             publish(); return null
         }

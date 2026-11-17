@@ -232,6 +232,10 @@ object Settings {
     var suggestDeclined: String
         get() = str("suggest_declined", "")
         set(v) = put("suggest_declined", v)
+    /** Screen control was on the last time Seyal looked. Goes off when the user switches it off; if the phone does it, Seyal says so. */
+    var screenWasOn: Boolean
+        get() = plain.getBoolean("screen_was_on", false)
+        set(v) = plain.edit().putBoolean("screen_was_on", v).apply()
     /** How many times the phone closed Seyal in the middle of a task (shown with the fix in Control). */
     var killedCount: Int
         get() = plain.getInt("killed_count", 0)

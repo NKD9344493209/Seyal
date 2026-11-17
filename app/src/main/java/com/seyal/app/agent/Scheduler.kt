@@ -110,13 +110,39 @@ object Scheduler {
         val now = System.currentTimeMillis()
         Store.loadTimers().forEach { t ->
             if (t.kind == "tick") return@forEach
-            if (t.at > now) set(ctx, t.kind, t.id, t.at, t.text)
-            else if (t.at > now - 30 * 60_000) fire(ctx, t.kind, t.id, t.at, t.text) // missed by a little: fire now
+            if (t.at > now) { set(ctx, t.kind, t.id, t.at, t.text); return@forEach }
+            // Its time passed while Seyal was not running. A reminder or an alarm the user is counting on is never
+            // dropped silently: it is delivered now, saying when it was meant for.
+            when (lateAction(t.kind, now - t.at)) {
+                "fire" -> fire(ctx, t.kind, t.id, t.at, t.text)
+                "tell" -> {
+                    forget(t.kind, t.id)
+                    runCatching { Settings.killedCount = Settings.killedCount + 1; Settings.killedAt = now }
+                    runCatching { Notify.reminder(ctx, t.id, lateText(t.kind, t.text, Skills.stamp(t.at))) }
+                }
+                "end" -> fire(ctx, t.kind, t.id, t.at, t.text)
+            }
         }
         Store.saveTimers(Store.loadTimers().filter { it.at > now })
         Skills.rescheduleAll()
         syncBackground(ctx)
     }
+
+    /**
+     * What to do with a timer found [lateMs] after its time: "fire" (a little late: as normal), "tell" (a reminder or
+     * alarm that is hours late: say so, don't ring), "end" (busy mode's end: always end it), "drop" (older than a day).
+     */
+    internal fun lateAction(kind: String, lateMs: Long): String = when {
+        kind == "busy" -> "end"
+        kind == "skill" -> "drop"                       // skills have their own catch-up (Skills.rescheduleAll)
+        lateMs <= 30 * 60_000L -> "fire"
+        (kind == "remind" || kind == "alarm") && lateMs <= 24 * 3600_000L -> "tell"
+        else -> "drop"
+    }
+
+    /** "Missed reminder (was for Tue 17 Nov, 8:00 AM): Call the bank. Your phone had closed Seyal." */
+    internal fun lateText(kind: String, text: String, wasFor: String): String =
+        "Missed ${if (kind == "alarm") "alarm" else "reminder"} (was for $wasFor): $text. Your phone had closed Seyal; see Control → Keep Seyal running."
 
     fun fire(ctx: Context, kind: String, id: String, at: Long, text: String) {
         when (kind) {
