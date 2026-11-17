@@ -25,6 +25,8 @@ import com.seyal.app.ai.LlmException
 import com.seyal.app.agent.Prompts
 import com.seyal.app.agent.Router
 import com.seyal.app.agent.Links
+import com.seyal.app.agent.Opener
+import com.seyal.app.agent.Detour
 import com.seyal.app.device.KeepAlive
 import com.seyal.app.device.Report
 import com.seyal.app.agent.Scam
@@ -1678,8 +1680,140 @@ fun testSecondVideos() {
     T.check("the first question is not waited on for long", Agent.PREFLIGHT_WAIT_MS <= 15_000)
 }
 
+fun testThirdVideos() {
+    // BookMyShow's search results for "Ramayana", as on the phone in the recording of 17 Nov, 11:40.
+    val rowsA = """
+1 [button] Navigate up @60,45
+2 [field] Ramayana (focused) @400,45
+3 [tap] All (selected) @55,80
+4 [tap] Movies @170,80
+5 [text] Showing 8 results @110,103
+6 [tap] Ramayana · In cinemas now | Hindi, Kannada & 3 more @500,150
+7 [tap] Valmiki Ramayana · In upcoming movies | Hindi @500,205
+8 [tap] Nippon Ramayana Film · As an Artist @500,260
+9 [tap] Ramayan Tiwari · As an Actor @500,315
+10 [tap] Sillekyatha Ramayana (An Overnight Pe… · In puppetry | 20th Nov · Shreeram Lagoo Rang Avakash: Pune @500,375
+11 [tap] S. Ramaanandh · As an Artist @500,430
+12 [tap] Rameshwaram - Your Emotions in the … · In storytelling | 6th Dec @500,480
+13 [button] View All Results @500,510
+14 [tap] Home @190,930
+15 [tap] Search (selected) @920,930
+    """.trimIndent()
+
+    println("The screen list is read as items")
+    val a = Opener.items(rowsA)
+    T.eq("every line is an item", 15, a.size)
+    T.check("the box that was typed into is a field", a[1].isField && a[1].label == "Ramayana" && a[1].extra == "focused")
+    T.check("a bracket in a name stays in the name", a[9].label.startsWith("Sillekyatha Ramayana (An Overnight") && a[9].y == 375)
+    T.eq("an empty field with a hint", "hint: Search for movies, focused", Opener.items("3 [field]  (hint: Search for movies, focused) @500,60").single().extra)
+    T.eq("lines that are not elements are skipped", 1, Opener.items("… (more not shown: scroll)\n4 [tap] Movies @170,80\n").size)
+
+    println("The film in cinemas is opened, never the upcoming one with a similar name")
+    val ra = Opener.movieResults(a, "Ramayana")
+    T.eq("what each result is", "Ramayana=NOW, Valmiki Ramayana=UPCOMING, Nippon Ramayana Film=OTHER, Ramayan Tiwari=OTHER, Sillekyatha Ramayana (An Overnight Pe…=OTHER", ra.joinToString { "${it.title}=${it.showing}" })
+    T.eq("the one in cinemas is the one to open", 6, (Opener.chooseMovie(ra, "Ramayana") as? Opener.Choice.Tap)?.result?.item?.id)
+    T.eq("…also with the user's spelling slip", 6, (Opener.chooseMovie(Opener.movieResults(a, "ramyana"), "ramyana") as? Opener.Choice.Tap)?.result?.item?.id)
+    T.eq("…and with 'movie' said after the name", 6, (Opener.chooseMovie(Opener.movieResults(a, "Ramayana movie"), "Ramayana movie") as? Opener.Choice.Tap)?.result?.item?.id)
+    val onlyUpcoming = Opener.movieResults(a.filter { it.id != 6 }, "Ramayana")
+    val tell = Opener.chooseMovie(onlyUpcoming, "Ramayana") as? Opener.Choice.Tell
+    T.check("nothing in cinemas: nothing is opened, the user is asked", tell != null && tell.note.contains("Valmiki Ramayana (upcoming, cannot be booked)") && tell.note.contains("ask_user") && tell.note.contains("Do NOT open"))
+    val two = Opener.items("6 [tap] Ramayana · In cinemas now | Hindi @500,150\n7 [tap] Ramayana · In cinemas now | Tamil @500,205")
+    T.check("two in cinemas with the same name: the AI or the user decides", (Opener.chooseMovie(Opener.movieResults(two, "Ramayana"), "Ramayana") as? Opener.Choice.Tell)?.note?.contains("Several films in cinemas") == true)
+    val part = Opener.items("6 [tap] Ramayana: The Legend of Prince Rama · In cinemas now | Hindi @500,150\n7 [tap] Valmiki Ramayana · In upcoming movies | Hindi @500,205")
+    T.eq("the only one in cinemas, with a longer name, is opened", 6, (Opener.chooseMovie(Opener.movieResults(part, "Ramayana"), "Ramayana") as? Opener.Choice.Tap)?.result?.item?.id)
+    T.check("no result about the film: left to the AI", Opener.chooseMovie(Opener.movieResults(Opener.items("6 [tap] Open Mic · In music shows @500,150"), "Ramayana"), "Ramayana") === Opener.Choice.Leave)
+    val plain = Opener.items("6 [tap] Ramayana @500,150\n7 [tap] Valmiki Ramayana @500,300")
+    T.eq("an app that does not say what a row is: the exact name", 6, (Opener.chooseMovie(Opener.movieResults(plain, "Ramayana"), "Ramayana") as? Opener.Choice.Tap)?.result?.item?.id)
+    // The same list when the app joins a row's texts itself, and when each text is an element of its own.
+    val rowsB = "2 [field] Ramayana (focused) @400,45\n6 [tap] Ramayana, In cinemas now | Hindi, Kannada & 3 more @500,150\n7 [tap] Valmiki Ramayana, In upcoming movies | Hindi @500,205"
+    T.eq("rows joined by the app with a comma", 6, (Opener.chooseMovie(Opener.movieResults(Opener.items(rowsB), "Ramayana"), "Ramayana") as? Opener.Choice.Tap)?.result?.item?.id)
+    val rowsC = "2 [field] Ramayana (focused) @400,45\n6 [text] Ramayana @400,150\n7 [text] In cinemas now | Hindi, Kannada & 3 more @420,170\n8 [text] Valmiki Ramayana @400,243\n9 [text] In upcoming movies | Hindi @420,263"
+    val rc = Opener.movieResults(Opener.items(rowsC), "Ramayana")
+    T.eq("title and label as separate lines", "6=NOW, 8=UPCOMING", rc.joinToString { "${it.item.id}=${it.showing}" })
+    T.eq("…the right one is opened", 6, (Opener.chooseMovie(rc, "Ramayana") as? Opener.Choice.Tap)?.result?.item?.id)
+    T.check("'Book tickets' is found on the film's page", Opener.bookButton(Opener.items("4 [text] Ramayana @300,90\n9 [button] Book tickets @500,940"))?.id == 9)
+    T.check("…and 'Book a table at Barbeque' is not it", Opener.bookButton(Opener.items("9 [button] Book a table at Barbeque Nation @500,940")) == null)
+
+    println("A tap by text means the thing with that name")
+    fun c(text: String, clickable: Boolean = true, editable: Boolean = false, top: Int = 0, desc: String = "") = com.seyal.app.device.TextPick.Cand(text, desc, clickable, editable, top)
+    val merged = listOf(c("Ramayana", editable = true, top = 40), c("Ramayana, In cinemas now | Hindi, Kannada & 3 more", top = 300), c("Valmiki Ramayana, In upcoming movies | Hindi", top = 440))
+    T.check("(the wrong row is the shorter one: the old rule took it)", merged[2].text.length < merged[1].text.length)
+    T.eq("'Ramayana' is the row that begins with it, not 'Valmiki Ramayana'", 1, com.seyal.app.device.TextPick.best("Ramayana", merged))
+    val split = listOf(c("Ramayana", editable = true, top = 40), c("Ramayana", top = 300), c("Valmiki ", top = 440), c("Ramayana", top = 440))
+    T.eq("…and never the search box the word was typed into", 1, com.seyal.app.device.TextPick.best("Ramayana", split))
+    T.eq("an exact label wins over a longer one", 1, com.seyal.app.device.TextPick.best("2", listOf(c("2D", top = 10), c("2", top = 50), c("20", top = 90))))
+    T.eq("'Book' is 'Book tickets', not 'Facebook'", 1, com.seyal.app.device.TextPick.best("Book", listOf(c("Facebook", top = 10), c("Book tickets", top = 900))))
+    T.eq("among exact ones, the tappable", 1, com.seyal.app.device.TextPick.best("Search", listOf(c("Search", clickable = false, top = 10), c("Search", top = 900))))
+    T.eq("a Search tab rather than the box that says 'Search for movies'", 1, com.seyal.app.device.TextPick.best("Search", listOf(c("Search for movies", editable = true, top = 40), c("Search", top = 900))))
+    T.eq("only a box matches: the box", 0, com.seyal.app.device.TextPick.best("Search", listOf(c("Search for movies", editable = true, top = 40))))
+    T.eq("a label that only contains the words still works when it is all there is", 0, com.seyal.app.device.TextPick.best("Ramayana", listOf(c("Valmiki Ramayana", top = 440))))
+    T.eq("'exact only' takes nothing else", null, com.seyal.app.device.TextPick.best("Ramayana", listOf(c("Valmiki Ramayana", top = 440)), exactOnly = true))
+    T.eq("a button named only in its description", 0, com.seyal.app.device.TextPick.best("Close", listOf(c("", desc = "Close", top = 10), c("Closed on Sundays", top = 300))))
+    T.eq("nothing with those words", null, com.seyal.app.device.TextPick.best("Ramayana", listOf(c("Open Mic"), c("Home"))))
+
+    println("Wrong turns are caught as they happen")
+    val upcoming = "1 [button] Navigate up @40,45\n2 [text] Valmiki Ramayana @300,45\n3 [text] Releasing in 2026 @500,330\n4 [text] 14.2K+ are interested @300,375\n5 [text] Mark interested to know when bookings open @330,395\n6 [button] I'm interested @840,385\n7 [text] Top offers for you @200,545\n8 [tap] Not cashback, it's a gold-back card @500,930"
+    T.check("the page of a film that is not out yet", Detour.upcoming(upcoming))
+    T.check("…with a curly apostrophe too", Detour.upcoming("3 [button] I’m interested @840,385"))
+    T.check("a film's page with Book tickets is fine", !Detour.upcoming("2 [text] Ramayana @300,45\n3 [text] 9.2/10 398K votes @300,300\n9 [button] Book tickets @500,940"))
+    T.check("a list of shows is fine", !Detour.upcoming("2 [text] Ramayana @300,45\n3 [tap] TUE 17 NOV (selected) @100,120\n5 [text] Broadway Cinemas: Coimbatore @300,300\n6 [tap] 03:05 PM @120,350"))
+    T.check("the note sends it back, and forbids the web", Detour.UPCOMING.contains("Press Back") && Detour.UPCOMING.contains("In cinemas now") && Detour.UPCOMING.contains("Do not look it up on the web"))
+    T.check("a tap in BookMyShow that opened Chrome was an advert", Detour.strayed("screen_tap", "com.bt.bms", "com.android.chrome"))
+    T.check("…or the Play Store, from Swiggy", Detour.strayed("screen_tap_at", "in.swiggy.android", "com.android.vending"))
+    T.check("a tap that stays in the app is fine", !Detour.strayed("screen_tap", "com.bt.bms", "com.bt.bms"))
+    T.check("a payment app opening is not an advert (Seyal stops there anyway)", !Detour.strayed("screen_tap", "com.bt.bms", "com.google.android.apps.nbu.paisa.user"))
+    T.check("a link tapped in another kind of app is the user's business", !Detour.strayed("screen_tap", "com.instagram.android", "com.android.chrome"))
+    T.check("opening a link on purpose is not a stray tap", !Detour.strayed("open_url", "com.bt.bms", "com.android.chrome"))
+    T.check("working inside the browser is fine", !Detour.strayed("screen_tap", "com.android.chrome", "com.android.chrome"))
+    T.check("the note names both apps and warns about adverts", Detour.strayNote("BookMyShow", "Chrome").let { it.contains("opened Chrome") && it.contains("back to BookMyShow") && it.contains("credit card") })
+
+    println("Food apps: the search bar and the address sheet")
+    val swiggyHome = "1 [tap] Home 2 · 7/120, Ezhil Nagar, Ezhil Nagar, Vellanoipat… @150,60\n2 [tap] Food @220,150\n3 [tap] Dineout @790,150\n4 [tap] Search for 'Biryani' @400,245\n5 [check:off] VEG @945,245\n6 [tap] OFFERS @300,305\n7 [text] What's on your mind? @200,870"
+    T.eq("Swiggy's search bar, whatever dish it is suggesting", 4, Opener.searchEntry(Opener.items(swiggyHome))?.id)
+    T.eq("BookMyShow's Search tab", 15, Opener.searchEntry(a.filter { !it.isField })?.id)
+    T.eq("an icon with no label but a 'search' id", 3, Opener.searchEntry(Opener.items("2 [text] Movies @100,60\n3 [button] (unlabeled) (id: search icon) @930,60"))?.id)
+    T.eq("no search on the screen", null, Opener.searchEntry(Opener.items("2 [text] Select Delivery Address @300,690\n3 [tap] Home 2 @200,770")))
+    val sheet = swiggyHome + "\n8 [text] Location Permission is Off @300,580\n9 [button] GRANT @870,578\n10 [text] Granting location permission will ensure accurate address and hassle free delivery @400,610\n11 [text] Select Delivery Address @300,690\n12 [tap] VIEW ALL @860,692\n13 [tap] Broadway · 1, Broadway Megaaplex Mall, Kalapatti Ma… @500,770\n14 [tap] Home 2 · 7/120, Ezhil Nagar, Ezhil Nagar, Vellanoipat… @500,850\n15 [tap] Enter Location Manually @400,950"
+    T.eq("the address already in use is the one tapped, never GRANT", 14, Opener.addressRow(Opener.items(sheet))?.id)
+    val sheetOnly = "8 [text] Location Permission is Off @300,580\n9 [button] GRANT @870,578\n11 [text] Select Delivery Address @300,690\n12 [tap] VIEW ALL @860,692\n13 [tap] Home 2 · 7/120, Ezhil Nagar @500,770\n14 [tap] Broadway · 1, Broadway Megaaplex Mall @500,850\n15 [tap] Enter Location Manually @400,950"
+    T.eq("with nothing to go by, the first saved address", 13, Opener.addressRow(Opener.items(sheetOnly))?.id)
+    T.eq("no address sheet, nothing to tap", null, Opener.addressRow(Opener.items(swiggyHome)))
+
+    println("What is done by code for which request")
+    val film = Opener.plan(Preflight.Kind.MOVIE, "BookMyShow", Order(kind = "MOVIE", item = "Ramayana Hindi 3D", count = 2)) as? Opener.Plan.Movie
+    T.eq("a film in BookMyShow: its name, without language or 3D", "Ramayana", film?.title)
+    T.eq("a film whose name is a language word keeps it", "English Vinglish", Opener.movieQuery("English Vinglish movie"))
+    T.eq("…and one word is never stripped to nothing", "Tamil", Opener.movieQuery("Tamil"))
+    T.check("another ticket app is left to the AI", Opener.plan(Preflight.Kind.MOVIE, "District", Order(kind = "MOVIE", item = "Ramayana")) == null)
+    T.eq("a dish in Swiggy, without the count", "mutton biryani", (Opener.plan(Preflight.Kind.FOOD, "Swiggy", Order(kind = "FOOD", item = "2 plates of mutton biryani")) as? Opener.Plan.Food)?.query)
+    T.eq("a named restaurant is what is searched", "SS Hyderabad Biryani", (Opener.plan(Preflight.Kind.FOOD, "Zomato", Order(kind = "FOOD", item = "mutton biryani", place = "SS Hyderabad Biryani")) as? Opener.Plan.Food)?.query)
+    val bus = Opener.plan(Preflight.Kind.TRAVEL, "redBus", Order(kind = "TRAVEL", item = "bus", from = "Coimbatore", to = "Bangalore", date = "2026-11-18")) as? Opener.Plan.Link
+    T.check("a bus: the list for that route and day opens directly", bus?.url?.contains("coimbatore-to-bangalore") == true && bus.url.contains("onward=18-Nov-2026"))
+    T.check("a bus with no day yet: nothing by code", Opener.plan(Preflight.Kind.TRAVEL, "redBus", Order(kind = "TRAVEL", item = "bus", from = "Coimbatore", to = "Bangalore")) == null)
+    T.check("shopping is left to the AI", Opener.plan(Preflight.Kind.SHOP, "Amazon", Order(kind = "SHOP", item = "black shoes")) == null)
+    T.check("nothing to search for, nothing by code", Opener.plan(Preflight.Kind.MOVIE, "BookMyShow", Order(kind = "MOVIE", count = 2)) == null)
+
+    println("Small things from the recording")
+    val chat = Session("v3", 1L)
+    chat.messages += Msg("user", listOf(Part.Text("book 2 tickets for Ramayana")))
+    repeat(29) { i -> chat.messages += Msg("assistant", listOf(Part.Call("o$i", "screen_tap", JSONObject()))); chat.messages += Msg("tool", listOf(Part.Result("o$i", "screen_tap", JSONObject().put("ok", true)))) }
+    chat.messages += Msg("assistant", listOf(Part.Text("Ready at the payment page.")))
+    chat.messages += Msg("user", listOf(Part.Text("buy me mutton briyani from nearby restaurant")))
+    T.eq("a new request in a long chat starts at step 0, not 29", 0, Agent.stepsOfRequest(chat))
+    chat.messages += Msg("assistant", listOf(Part.Call("n1", "open_app", JSONObject()))); chat.messages += Msg("tool", listOf(Part.Result("n1", "open_app", JSONObject().put("ok", true))))
+    chat.messages += Msg("user", listOf(Part.Text(Agent.CHECK + "The app asked for a delivery address…")))
+    T.eq("…and Seyal's own notes do not reset the count", 1, Agent.stepsOfRequest(chat))
+    T.check("a five-part question gets no tap-buttons for its first part", Agent.manyParts("Please provide the missing details:\n1. Theatre (Any nearby, Kgam Cinemas, Cinepolis)\n2. Day (Today, Tomorrow)\n3. Show time"))
+    T.check("…also written as 1) 2)", Agent.manyParts("Two things before I book:\n1) How many tickets?\n2) Which seat class?"))
+    T.check("a single question keeps its buttons", !Agent.manyParts("How many tickets? (They will be seats next to each other.)"))
+    T.check("…and a price like 2.5 is not a second part", !Agent.manyParts("Is ₹2.50 extra per ticket fine?"))
+    val bms = Lessons.textFor(listOf("BookMyShow"))
+    T.check("BookMyShow: only 'In cinemas now' can be booked", bms.contains("In cinemas now") && bms.contains("never open them"))
+    T.check("the order's item is written with the spelling put right", Order.decl(Preflight.Kind.MOVIE).params.toString().contains("ramyana"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -1688,7 +1822,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

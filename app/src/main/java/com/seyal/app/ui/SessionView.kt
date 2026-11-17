@@ -88,7 +88,9 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Ink.green)
                 Spacer(Modifier.width(8.dp))
-                Text(if (s.steps == 0) "Thinking…" else "Working · step ${s.steps}", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                // Steps of THIS request: a new request in a long chat used to open with "step 30".
+                val step = com.seyal.app.agent.Agent.stepsOfRequest(s)
+                Text(if (step == 0) "Thinking…" else "Working · step $step", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
                 SmallButton("Stop", filled = false) { Agent.cancel(s.id) }
             }

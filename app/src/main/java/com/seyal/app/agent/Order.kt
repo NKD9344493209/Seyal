@@ -66,7 +66,7 @@ class Order(
         fun decl(kind: Preflight.Kind): ToolDecl {
             fun p(type: String, d: String) = JSONObject().put("type", type).put("description", d)
             val props = JSONObject()
-                .put("item", p("string", "Exactly what: the movie, dish, product, or 'bus' / 'train' / 'flight' / 'cab'. In the user's words."))
+                .put("item", p("string", "Exactly what: the movie, dish, product, or 'bus' / 'train' / 'flight' / 'cab'. The user's words, with an obvious slip of spelling put right ('ramyana' → 'Ramayana', 'briyani' → 'biryani'). Only the name: no language, count, day or price here."))
                 .put("place", p("string", "The theatre, restaurant, shop or operator the user named, exactly as they said it. Empty if they left it open ('any nearby')."))
                 .put("date", p("string", "The day as YYYY-MM-DD, worked out from NOW. Empty if not said."))
                 .put("time", p("string", "The time or part of the day as the user said it ('after 1 pm', 'evening', '18:30'). Empty if not said."))

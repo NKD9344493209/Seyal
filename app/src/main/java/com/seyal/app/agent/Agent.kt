@@ -79,6 +79,15 @@ object Agent {
     /** Whether a message is something the user really said (not Seyal's own check). */
     internal fun fromUser(m: Msg): Boolean = m.role == "user" && !m.text.startsWith(CHECK)
 
+    /** A question that lists several things to answer ("1. Theatre … 2. Day …"). */
+    internal fun manyParts(question: String): Boolean = Regex("(^|\\n)\\s*2\\s*[.)]").containsMatchIn(question)
+
+    /** How many steps the request being worked on has taken so far (the chat's earlier requests are not counted). */
+    fun stepsOfRequest(s: Session): Int {
+        val from = s.messages.indexOfLast { fromUser(it) }
+        return s.messages.drop(from + 1).count { it.role == "assistant" && it.calls.isNotEmpty() }
+    }
+
     /** The user's latest words in [s]. */
     internal fun lastSaid(s: Session): String = s.messages.lastOrNull { fromUser(it) }?.text?.removePrefix(MIDTASK).orEmpty()
 
@@ -553,6 +562,9 @@ object Agent {
                             } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
                             lock.withLock { s.llmCalls++; s.tokens += pre?.tokens ?: 0; touch(s) }
                             var question = pre?.calls?.firstOrNull { it.name == "ask_user" && it.args.optString("question").isNotBlank() }
+                            // A question with several numbered parts is answered in one typed line. Tap-buttons for its first
+                            // part only (seen on a real phone: "Any nearby · Kgam Cinemas · Cinepolis") answer a fifth of it.
+                            question?.let { q -> if (manyParts(q.args.optString("question"))) q.args.remove("options") }
                             if (question == null) {
                                 // The AI did not ask. That is only right when the user really gave the details: check the one
                                 // that costs most when guessed (how many), and ask it ourselves if nobody said it.
@@ -595,6 +607,11 @@ object Agent {
                             })
                             // "Same as last time": what they left out comes from the last order of this kind that went through.
                             s.order = if (words.any { Usual.asksForSame(it) }) Usual.fill(noted ?: Order(kind.name)).takeIf { !it.isEmpty } else noted
+                            // 4. The first moves are the same every time (open the app, search, open the right result):
+                            // done by code, at once, instead of one AI question per tap.
+                            if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
+                            stepsThisRun += runCatching { runOpener(s, kind, byName) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
+                            if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                         }
                     }
                 }
@@ -703,6 +720,107 @@ object Agent {
         val r = runCall(s, call, tool)
         lock.withLock { s.messages += Msg("tool", listOf(r)); touch(s) }
         return r
+    }
+
+    /**
+     * The first moves of a booking or food order, run by code (see [Opener]): open the app, get to its search, type
+     * what the user asked for, open the right result. Every move is an ordinary step in the chat. It stops at the
+     * first screen that is not what it expects, and the AI carries on from there. Returns how many steps it took.
+     */
+    private suspend fun runOpener(s: Session, kind: Preflight.Kind, byName: Map<String, Tool>): Int {
+        val order = s.order ?: return 0
+        if (!ScreenDriver.available || s.parentId != null) return 0
+        val words = lock.withLock { requestWords(s) }.joinToString(" ")
+        val appName = Preflight.appsFor(kind, order.app.ifBlank { words }).firstOrNull() ?: return 0
+        val plan = Opener.plan(kind, appName, order) ?: return 0
+        var n = 0
+        // One step, recorded like any other. Null = it did not work, or the user pressed Stop.
+        suspend fun step(name: String, args: JSONObject): JSONObject? {
+            val tool = byName[name] ?: return null
+            ScreenDriver.freezeIds(s.id)
+            val r = runSynthetic(s, Part.Call(newId(), name, args), tool); s.steps++; n++
+            if (lock.withLock { s.status == SessionStatus.CANCELLED }) return null
+            return r.output.takeIf { !r.isError && it.optBoolean("ok", true) }
+        }
+        fun els(screen: JSONObject?) = Opener.items(screen?.optString("elements").orEmpty())
+        suspend fun look(waitMs: Long): JSONObject? { delay(waitMs); return runCatching { ScreenDriver.read() }.getOrNull() }
+        suspend fun tell(text: String) = lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + text))); touch(s) }
+        fun tap(it: Item) = JSONObject().put("id", it.id).put("text", it.label.take(60))
+
+        when (plan) {
+            is Opener.Plan.Link -> { step("open_url", JSONObject().put("url", plan.url)) }
+            is Opener.Plan.Movie -> {
+                var o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
+                val pkg = o.optString("package")
+                var screen = o.optJSONObject("screen")
+                // To the search box: close what lies over the app, tap the Search tab, or Back out of a page left open last time.
+                var tapped = false
+                var rounds = 0
+                while (rounds < 4 && els(screen).none { it.isField }) {
+                    rounds++
+                    val entry = if (screen?.optBoolean("popup") == true) null else Opener.searchEntry(els(screen))
+                    if (entry != null && tapped) break
+                    o = (if (entry != null) step("screen_tap", tap(entry)).also { tapped = true } else step("screen_back", JSONObject())) ?: return n
+                    if (ScreenDriver.frontPackage() != pkg) return n
+                    screen = o.optJSONObject("screen")
+                    if (els(screen).none { it.isField }) screen = look(500)
+                }
+                if (els(screen).none { it.isField } && !tapped) return n
+                o = step("screen_type", JSONObject().put("text", plan.title)) ?: return n
+                var results = Opener.movieResults(els(o.optJSONObject("screen")), plan.title)
+                // The list comes from the network: give it a moment before deciding nothing is in cinemas.
+                var waits = 0
+                while (results.none { it.showing == Opener.Showing.NOW } && waits < 3) { waits++; results = Opener.movieResults(els(look(700)), plan.title) }
+                when (val c = Opener.chooseMovie(results, plan.title)) {
+                    is Opener.Choice.Tap -> {
+                        o = step("screen_tap", tap(c.result.item)) ?: return n
+                        if (Detour.upcoming(o.optJSONObject("screen")?.optString("elements").orEmpty())) { step("screen_back", JSONObject()); tell(Detour.UPCOMING); return n }
+                        val book = Opener.bookButton(els(o.optJSONObject("screen"))) ?: Opener.bookButton(els(look(900)))
+                        if (book != null) step("screen_tap", tap(book))
+                    }
+                    is Opener.Choice.Tell -> tell(c.note)
+                    Opener.Choice.Leave -> {}
+                }
+            }
+            is Opener.Plan.Food -> {
+                var o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
+                val pkg = o.optString("package")
+                var screen = o.optJSONObject("screen")
+                var address: String? = null
+                var closed = 0
+                var rounds = 0
+                // Clear the way to the search bar: the "choose your address" sheet, then any offer lying over the home screen.
+                while (rounds < 5) {
+                    rounds++
+                    val items = els(screen)
+                    val row = if (address == null) Opener.addressRow(items) else null
+                    if (row != null) {
+                        address = row.label.substringBefore(" · ").take(40)
+                        step("screen_tap", tap(row)) ?: return n
+                        screen = look(1200)
+                        continue
+                    }
+                    if (screen?.optBoolean("popup") == true && closed < 2) {
+                        closed++
+                        o = step("screen_back", JSONObject()) ?: return n
+                        if (ScreenDriver.frontPackage() != pkg) return n
+                        screen = o.optJSONObject("screen")
+                        continue
+                    }
+                    if (items.any { it.isField }) break
+                    val entry = Opener.searchEntry(items) ?: return n
+                    step("screen_tap", tap(entry)) ?: return n
+                    break
+                }
+                // Typing goes in whichever way the box accepts; if it accepts none, the user types this one line.
+                if (step("screen_type", JSONObject().put("text", plan.query)) == null) {
+                    if (lock.withLock { s.status == SessionStatus.CANCELLED }) return n
+                    step("your_turn", JSONObject().put("what", "Type \"${plan.query}\" in the search box, then tap Done"))
+                }
+                if (address != null) tell("The app asked for a delivery address and \"$address\" was chosen (the one already in use, or the first saved one). Name this address in your final message so the user can check it.")
+            }
+        }
+        return n
     }
 
     private suspend fun finish(s: Session, status: SessionStatus, text: String) {
@@ -975,6 +1093,7 @@ object Agent {
         }
         // The user opened Seyal meanwhile (to approve, answer or type): go back to the app first.
         if (tool.group == "screen") backToWork(s)
+        val frontBefore = if (tool.group == "screen" && ScreenDriver.available) ScreenDriver.frontPackage() else null
         report(Prompts.friendly(call))
         val ctx = ToolContext(
             sessionId = s.id,
@@ -994,6 +1113,22 @@ object Agent {
             delay(1200)
         }
 
+        // Wrong turns, caught the moment they happen (both were seen on a real phone, and cost two minutes):
+        if (tool.group == "screen") (result as? ToolResult.Done)?.let { r ->
+            val now = ScreenDriver.frontPackage()
+            if (Detour.strayed(tool.name, frontBefore, now)) {
+                // 1. a tap in an ordering app that opened a browser or a store was an advert: come straight back.
+                report("That was an advert · going back")
+                var screen = runCatching { ScreenDriver.global("back").optJSONObject("screen") }.getOrNull()
+                if (ScreenDriver.frontPackage() != frontBefore) { runCatching { ScreenDriver.bringToFront(frontBefore!!) }; screen = ScreenDriver.snapshotAfter(700) }
+                r.output.remove("note"); r.output.remove("pressed")
+                r.output.put("ok", false).put("error", Detour.strayNote(ScreenDriver.appLabel(app, frontBefore!!), ScreenDriver.appLabel(app, now)))
+                screen?.let { r.output.put("screen", it) }
+            } else if (s.order?.kind == Preflight.Kind.MOVIE.name && Detour.upcoming(r.output.optJSONObject("screen")?.optString("elements").orEmpty())) {
+                // 2. the page of a film that is not out yet: nothing to book there, however far it is scrolled.
+                r.output.put("wrong_turn", Detour.UPCOMING)
+            }
+        }
         if (usesScreen(tool.name)) ScreenDriver.workAppNow()?.let { s.workApp = it }
         if (tool.name == "ask_user") (result as? ToolResult.Done)?.let { r ->
             backToWork(s)?.let { screen -> r.output.put("note", "You are back in the app you were working in. This is its screen now.").put("screen", screen) }

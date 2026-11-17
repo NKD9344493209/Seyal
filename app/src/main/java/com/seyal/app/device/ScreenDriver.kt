@@ -323,6 +323,8 @@ object ScreenDriver {
         lastPkg = pkg
         return JSONObject().put("app", appLabel(s, pkg)).put("package", pkg)
             .put("scrollable", scrollable).put("elements", sb.toString().trimEnd())
+            // A dialog, sheet or offer of the same app lies over its main window: usually the thing to deal with first.
+            .also { if (roots.size > 1) it.put("popup", true) }
             .also { if (els.size > kept.size) it.put("note", "${els.size - kept.size} more items not listed: scroll, or tap by text.") }
             .also { if (kept.isEmpty()) it.put("note", "Nothing readable here (a game, video, map or canvas?). Use screenshot to look, and screen_tap_at to tap.") }
     }
@@ -407,12 +409,12 @@ object ScreenDriver {
             for (i in 0 until n.childCount) walk(n.getChild(i), d + 1)
         }
         walk(root, 0)
-        fun isExact(n: AccessibilityNodeInfo) = n.text?.toString()?.trim().equals(t, true) || n.contentDescription?.toString()?.trim().equals(t, true)
-        val exact = all.filter { isExact(it) }
-        exact.firstOrNull { it.isClickable || it.parent?.isClickable == true }?.let { return it }
-        exact.firstOrNull()?.let { return it }
-        if (exactOnly) return null
-        return all.minByOrNull { (it.text?.length ?: 0) + (it.contentDescription?.length ?: 0) }
+        // Which one is meant is decided in TextPick (testable without a phone): exact, then "begins with", then the rest.
+        val cands = all.map { n ->
+            val r = Rect(); n.getBoundsInScreen(r)
+            TextPick.Cand(n.text?.toString().orEmpty(), n.contentDescription?.toString().orEmpty(), n.isClickable || n.parent?.isClickable == true, n.isEditable, r.top)
+        }
+        return TextPick.best(t, cands, exactOnly)?.let { all[it] }
     }
 
     /** The deepest visible node under a point. */

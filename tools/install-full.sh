@@ -23,11 +23,10 @@ if [ ! -f "$ADB" ]; then
   chmod +x "$ADB" 2>/dev/null
 fi
 
-echo "Finding the newest Seyal Full build ..."
-url=$(curl -sSL https://api.github.com/repos/NKD9344493209/Seyal/releases | grep -o '"browser_download_url": *"[^"]*Seyal-Full-[0-9]*\.apk"' | head -1 | cut -d'"' -f4)
-[ -z "$url" ] && fail "No Full build found on GitHub."
-echo "Downloading $(basename "$url") ..."
-curl -sSL -o "$APK" "$url" || fail "Download failed."
+# The version this folder holds (what your last "git am" + "git push" asked GitHub to build).
+WANT=$(grep -o 'versionName = "[^"]*"' "$DIR/../app/build.gradle.kts" 2>/dev/null | head -1 | cut -d'"' -f2)
+newest() { curl -sSL https://api.github.com/repos/NKD9344493209/Seyal/releases | grep -o '"browser_download_url": *"[^"]*Seyal-Full-[0-9]*\.apk"' | head -1 | cut -d'"' -f4; }
+installed() { "$ADB" shell dumpsys package $PKG 2>/dev/null | tr -d '\r' | grep -m1 -o 'versionName=[^ ]*' | cut -d= -f2; }
 
 echo; echo "Connect the phone by USB. If the phone asks \"Allow USB debugging?\", tap Allow."
 "$ADB" start-server >/dev/null 2>&1
@@ -41,21 +40,46 @@ for i in $(seq 1 60); do
 done
 echo "Phone connected."
 
-echo "Installing Seyal ..."
-out=$("$ADB" install -r -d -g "$APK" 2>&1)
-if ! echo "$out" | grep -q Success; then
-  if echo "$out" | grep -q INSTALL_FAILED_UPDATE_INCOMPATIBLE; then
-    echo "An older Seyal with a different signature is on the phone. Removing it and installing fresh ..."
-    "$ADB" uninstall $PKG >/dev/null 2>&1
-    out=$("$ADB" install -g "$APK" 2>&1)
+install_apk() {
+  out=$("$ADB" install -r -d -g "$APK" 2>&1)
+  if ! echo "$out" | grep -q Success; then
+    if echo "$out" | grep -q INSTALL_FAILED_UPDATE_INCOMPATIBLE; then
+      echo "An older Seyal with a different signature is on the phone. Removing it and installing fresh ..."
+      "$ADB" uninstall $PKG >/dev/null 2>&1
+      out=$("$ADB" install -g "$APK" 2>&1)
+    fi
   fi
-fi
-if ! echo "$out" | grep -q Success; then
-  echo "$out"
-  echo "$out" | grep -q INSTALL_FAILED_USER_RESTRICTED && echo "On Xiaomi/Redmi/POCO: Developer options > turn on \"Install via USB\". On Oppo/Realme/Vivo: turn on \"Disable permission monitoring\"."
-  fail "Install failed."
-fi
-echo "Installed."
+  if ! echo "$out" | grep -q Success; then
+    echo "$out"
+    echo "$out" | grep -q INSTALL_FAILED_USER_RESTRICTED && echo "On Xiaomi/Redmi/POCO: Developer options > turn on \"Install via USB\". On Oppo/Realme/Vivo: turn on \"Disable permission monitoring\"."
+    fail "Install failed."
+  fi
+}
+
+# GitHub needs a few minutes to build after a push. Installing before it has finished puts the OLD version on the
+# phone (the 3.13 build was ready at 11:38 and the test recordings began at 11:39). So: install the newest build, and if it is not the
+# version of this folder yet, wait for the right one and install that.
+last=""; got=""
+for try in $(seq 1 30); do
+  url=$(newest)
+  if [ -z "$url" ]; then [ -n "$last" ] && { sleep 60; continue; }; fail "No Full build found on GitHub."; fi
+  if [ "$url" != "$last" ]; then
+    echo "Downloading $(basename "$url") ..."
+    curl -sSL -o "$APK" "$url" || fail "Download failed."
+    echo "Installing ..."
+    install_apk
+    last="$url"
+    got=$(installed)
+  fi
+  if [ -z "$WANT" ] || [ -z "$got" ] || [ "${got#$WANT}" != "$got" ]; then break; fi
+  if [ $try = 1 ]; then echo; echo "GitHub is still building version $WANT (your latest push). The newest finished build is $got."; fi
+  if [ $try = 30 ]; then echo "The $WANT build has not appeared after 30 minutes. See github.com/NKD9344493209/Seyal/actions. The phone has $got for now."; break; fi
+  echo "  Waiting for $WANT ... checking again in 1 minute ($try of 30). Leave this window open."
+  sleep 60
+done
+echo; echo "  INSTALLED ON THE PHONE: Seyal ${got:-(version unknown)}"
+[ -n "$WANT" ] && [ -n "$got" ] && [ "${got#$WANT}" != "$got" ] && echo "  This is the newest version ($WANT). The chat screen shows \"v$WANT\" under the title."
+echo
 
 echo "Switching on screen control, notification access and special access ..."
 "$ADB" shell 'S=com.seyal.app/com.seyal.app.device.SeyalAccessibilityService; C=$(settings get secure enabled_accessibility_services); case x$C in *com.seyal.app*) ;; xnull|x) settings put secure enabled_accessibility_services $S ;; *) settings put secure enabled_accessibility_services $C:$S ;; esac; settings put secure accessibility_enabled 1' >/dev/null 2>&1

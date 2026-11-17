@@ -181,7 +181,9 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
             }
             Column(Modifier.weight(1f).clickable(enabled = current != null) { current?.let { renaming = it.id to it.title } }.padding(horizontal = 6.dp)) {
                 Text(current?.title?.ifBlank { null } ?: "Seyal", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (current != null) Text("Tap to rename", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                // The version is always on screen, so a screen recording shows which build it was made on.
+                val version = "v" + com.seyal.app.BuildConfig.VERSION_NAME.substringBefore('-')
+                Text(if (current != null) "Tap to rename · $version" else version, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
             }
             if (paused) { SmallButton("Resume", danger = true) { Agent.setPaused(false) }; Spacer(Modifier.width(6.dp)) }
             else if (all.any { it.status.isOpen }) { SmallButton("Pause all", filled = false) { Agent.setPaused(true) }; Spacer(Modifier.width(6.dp)) }
