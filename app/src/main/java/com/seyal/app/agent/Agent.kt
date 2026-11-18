@@ -442,7 +442,7 @@ object Agent {
                 }
                 // A new job typed into an old chat: a fresh chat, because every AI step carries the whole chat along.
                 // On a real phone one chat was used all day and a booking started at "step 73", slow and confused.
-                newTask(s, msg) -> {
+                newTask(s, msg, deep) -> {
                     // (The lock is held here; start() takes it in its own coroutine, so the note lands before anything reads the chat.)
                     start(msg, image, files = files, deep = deep).note = NEW_CHAT_NOTE
                     return@launch
@@ -466,13 +466,16 @@ object Agent {
      * order, or any longer request in a chat that has already served two or more. Short answers, "and…", "same
      * again", "it", "that" and the like stay in the chat they refer to.
      */
-    internal fun newTask(s: Session, msg: String): Boolean {
+    internal fun newTask(s: Session, msg: String, deep: Boolean = false): Boolean {
         if (s.status.isOpen || s.parentId != null) return false
         val m = msg.trim()
         if (m.length < 12 || followUp.containsMatchIn(m)) return false
         // "Go to that link" means a link of this chat's last answer; "pause screen control" is no job at all.
         if (LinkPick.pointsAtLink(m) || PayPause.asks(m) != null) return false
         if (Preflight.kind(m) != null) return true
+        // A Dirghadarshi conversation is one line of thought: "do gold prices fall?" after "buy gold now or wait?"
+        // belongs to it. (On a real phone that follow-up was moved to a new chat and lost what came before.)
+        if (deep || s.deep) return false
         val served = s.messages.count { fromUser(it) }
         return served >= 2 && m.split(Regex("\\s+")).size >= 4
     }
@@ -940,6 +943,16 @@ object Agent {
                 // The list comes from the network: give it a moment before deciding nothing is in cinemas.
                 var waits = 0
                 while (results.none { it.showing == Opener.Showing.NOW } && waits < 3) { waits++; results = Opener.movieResults(els(look(700)), plan.title) }
+                // Two letters find nothing in some search boxes (seen: "OM" left the page on its "Trending" list).
+                // The same title with its dots ("O.M") is tried once.
+                if (results.isEmpty()) Opener.dotted(plan.title)?.let { alt ->
+                    step("screen_type", JSONObject().put("text", alt))?.let { typed ->
+                        trace += "nothing for \"${plan.title}\", typed \"$alt\""
+                        results = Opener.movieResults(els(typed.optJSONObject("screen")), plan.title)
+                        waits = 0
+                        while (results.none { it.showing == Opener.Showing.NOW } && waits < 3) { waits++; results = Opener.movieResults(els(look(700)), plan.title) }
+                    }
+                }
                 when (val c = Opener.chooseMovie(results, plan.title)) {
                     is Opener.Choice.Tap -> {
                         trace += "opened \"${c.result.title}\" (${if (c.result.showing == Opener.Showing.NOW) "in cinemas now" else "the only match"})"

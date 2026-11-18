@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -150,22 +151,37 @@ fun boldSpans(s: String): AnnotatedString {
     }
 }
 
-/** The agent's answers: paragraphs, "- " bullets, "1." lists, "#" headings and **bold**. */
+/** One line with **bold** and links: a link shows as its name, in the link colour (a tap on the line opens it, see [Rich]). */
+fun richSpans(s: String, link: Color): AnnotatedString = buildAnnotatedString {
+    for (p in com.seyal.app.util.RichText.pieces(s)) when (p.kind) {
+        com.seyal.app.util.RichText.Kind.BOLD -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(p.text) }
+        com.seyal.app.util.RichText.Kind.LINK -> withStyle(SpanStyle(color = link, fontWeight = FontWeight.Medium)) { append(p.text) }
+        else -> append(p.text)
+    }
+}
+
+/** The agent's answers: paragraphs, "- " bullets, "1." lists, "#" headings, **bold** and links (tap a line with a link to open it). */
 @Composable
 fun Rich(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, color: Color = MaterialTheme.colorScheme.onBackground) {
     val lines = text.trim().lines().map { it.trim() }.filter { it.isNotEmpty() }
+    val ctx = LocalContext.current
+    val linkColor = MaterialTheme.colorScheme.primary
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         for (line in lines) {
             val bullet = line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ")
             val heading = line.startsWith("#")
             val body = if (bullet) line.substring(2).trim() else if (heading) line.trimStart('#', ' ') else line
+            val url = com.seyal.app.util.RichText.firstLink(body)
+            val tap = if (url == null) Modifier else Modifier.clickable {
+                runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
             if (bullet) {
-                Row {
+                Row(tap) {
                     Text("•", style = style, color = color, modifier = Modifier.padding(end = 8.dp))
-                    Text(boldSpans(body), style = style, color = color)
+                    Text(richSpans(body, linkColor), style = style, color = color)
                 }
             } else {
-                Text(boldSpans(body), style = if (heading) MaterialTheme.typography.titleMedium else style, color = color)
+                Text(richSpans(body, linkColor), style = if (heading) MaterialTheme.typography.titleMedium else style, color = color, modifier = tap)
             }
         }
     }

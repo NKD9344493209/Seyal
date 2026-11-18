@@ -2427,7 +2427,7 @@ fun testSixthVideos() {
     val shaped = "**Answer**: Wait two weeks.\n\n**Look ahead**: Prices drop in the sale.\n**Watch out**:\n- Fake sellers → buy from the brand store.\n**You may not know**: Exchange bonus.\n**Do now**: Set a price alert.\n**How sure**: Medium.\n**Sources**: https://example.com"
     T.eq("a shaped answer has its seven parts", listOf("Answer", "Look ahead", "Watch out", "You may not know", "Do now", "How sure", "Sources"), Deep.parts(shaped))
     T.eq("a plain answer has none", emptyList<String>(), Deep.parts("Wait two weeks: the answer to your question is that prices drop."))
-    T.check("the mode's rules reach the AI", Deep.SYSTEM.let { it.contains("DIRGHADARSHI MODE IS ON") && it.contains("Never answer such things from memory") && it.contains("**Watch out**") && it.contains("No buy or sell advice") && it.contains("Check before you pay") })
+    T.check("the mode's rules reach the AI", Deep.SYSTEM.let { it.contains("DIRGHADARSHI MODE IS ON") && it.contains("Never answer such things from memory") && it.contains("**Watch out**") && it.contains("Never name a share") && it.contains("Check before you pay") })
     T.check("the review asks for a critic's reading and only the final answer", Deep.REVIEW_NUDGE.let { it.contains("careful critic") && it.contains("not verified") && it.contains("do not mention the draft") })
     T.check("the look-up reminder forbids guessing", Deep.LOOKUP_NUDGE.contains("instead of guessing"))
     T.eq("the status says what it is doing", "Thinking far ahead…", Deep.status(0, reviewing = false))
@@ -2446,8 +2446,59 @@ fun testSixthVideos() {
     T.check("…and no second model is asked for the first 75 seconds", Llm.hedgeAfterMs(true, 6000) == 75_000L && Llm.hedgeAfterMs(false, 2048) == Llm.HEDGE_AFTER_MS && Llm.hedgeAfterMs(false, 4000) == 18_000L)
 }
 
+fun testSeventhVideos() {
+    println("Recording of 18 Nov, 20:34 (v3.19.0): \"OM\" typed, \"O.M Operation Mole\" on the page, eight steps of nothing")
+    T.eq("letters standing alone are one word", listOf("om", "operation", "mole"), Opener.toks("O.M Operation Mole"))
+    T.eq("…with spaces after the dots too", listOf("kgf", "chapter", "2"), Opener.toks("K. G. F Chapter 2"))
+    T.eq("a one-letter word in a title stays a word", listOf("a", "quiet", "place"), Opener.toks("A Quiet Place"))
+    T.eq("an ordinary title is unchanged", listOf("mookuthi", "amman", "2"), Opener.toks("Mookuthi Amman 2"))
+    T.check("\"OM\" is about \"O.M Operation Mole\"", Opener.about("O.M Operation Mole", "OM") && Opener.about("O.M Operation Mole", "o. m"))
+    T.check("…and not about other films", !Opener.about("Ramayana", "OM") && !Opener.about("Mookuthi Amman 2", "OM") && !Opener.about("John Doe", "OM"))
+    T.eq("the letters a title begins with", "om", Opener.lettersAhead("O.M Operation Mole"))
+    T.eq("…none for a title that begins with a word", null, Opener.lettersAhead("A Quiet Place"))
+    T.eq("…or with a one-letter word and a name", null, Opener.lettersAhead("I am Kathalan"))
+    // The search page as BookMyShow showed it: "OM" typed, no result list, the film under Recent Searches and Trending Now.
+    val page = Opener.items(listOf(
+        "1 [button] Back @60,60", "2 [field] OM @500,60", "3 [heading] Recent Searches @200,150", "4 [tap] Sikandar @80,190", "5 [tap] Valmiki Ramayana @120,230",
+        "6 [tap] O.M Operation Mole @130,270", "7 [tap] Gondhal @80,310", "8 [heading] Trending Now @150,420", "9 [tap] Avengers: Doomsday @150,470", "10 [text] Movies @120,500",
+        "11 [tap] O.M Operation Mole @740,470", "12 [text] Movies @690,500", "13 [tap] Ramayana @150,560", "14 [tap] Scene @740,560",
+    ).joinToString("\n"))
+    val found = Opener.movieResults(page, "OM")
+    T.eq("both rows of the film are found, and nothing else", listOf(6, 11), found.map { it.item.id })
+    T.check("the film is opened: every matching row is the same film", (Opener.chooseMovie(found, "OM") as? Opener.Choice.Tap)?.result?.item?.id == 6)
+    T.check("on a list page the film is tapped by its letters", Opener.onScreen(page, "OM")?.id == 6)
+    T.eq("…a film that is not there is not", null, Opener.onScreen(page, "RRR"))
+    val two = Opener.items("1 [tap] O.M Operation Mole @100,100\n2 [tap] OM Shanti Oshana @100,200")
+    T.check("two different films with those letters: not guessed", Opener.chooseMovie(Opener.movieResults(two, "OM"), "OM") is Opener.Choice.Leave && Opener.onScreen(Opener.items("1 [tap] O.M Operation Mole @1,1\n2 [tap] O.M Returns @1,2"), "OM") == null)
+    T.check("an exact name still wins over a longer one", (Opener.chooseMovie(Opener.movieResults(Opener.items("1 [tap] Ramayana @1,1\n2 [tap] Valmiki Ramayana @1,2"), "Ramayana"), "Ramayana") as? Opener.Choice.Tap)?.result?.item?.id == 1)
+    T.eq("two letters are typed again with their dots when the search finds nothing", "O.M", Opener.dotted("OM"))
+    T.eq("…in whatever case they were said", "O.M", Opener.dotted("om"))
+    T.eq("…three capitals too", "R.R.R", Opener.dotted("RRR"))
+    T.eq("…never a real word", null, Opener.dotted("Ramayana"))
+    T.eq("…nor a short name", null, Opener.dotted("Leo"))
+
+    println("Recording of 18 Nov, 20:19 (v3.19.0): Dirghadarshi answers")
+    fun deepChat(n: Int) = Session("dc$n", 1L).apply { deep = true; repeat(n) { messages += Msg("user", listOf(Part.Text("is it good time buy the gold or wait"))); messages += Msg("assistant", listOf(Part.Text("**Answer**: …"))) }; status = SessionStatus.DONE }
+    T.check("a follow-up in a Dirghadarshi chat stays in it", !Agent.newTask(deepChat(2), "do gold price reduce") && !Agent.newTask(deepChat(3), "when it will decrease which month"))
+    T.check("…also when the switch was turned on just now", !Agent.newTask(Session("pl", 1L).apply { repeat(2) { messages += Msg("user", listOf(Part.Text("q$it"))); messages += Msg("assistant", listOf(Part.Text("a$it"))) }; status = SessionStatus.DONE }, "is it a good time to buy gold", deep = true))
+    T.check("…a booking still gets its own chat", Agent.newTask(deepChat(2), "book 2 tickets for OM tomorrow evening"))
+    T.check("the mode is told to choose", Deep.SYSTEM.let { it.contains("CHOOSE") && it.contains("the first word is Yes or No") && it.contains("are not answers") })
+    T.check("…to give a lean on money questions without naming shares", Deep.SYSTEM.let { it.contains("Never name a share") && it.contains("do give your lean") && it.contains("general information") })
+    T.check("…and to keep the world scan for technology questions", Deep.SYSTEM.contains("never for other subjects such as gold"))
+    val src = com.seyal.app.util.RichText.pieces("[Gold Price Forecast 2026 - GoldPriceData.com](https://www.goldpricedata.com/en/gold-price-forecast/)")
+    T.check("a source shows as its name and opens its link", src.size == 1 && src[0].kind == com.seyal.app.util.RichText.Kind.LINK && src[0].text == "Gold Price Forecast 2026 - GoldPriceData.com" && src[0].url == "https://www.goldpricedata.com/en/gold-price-forecast/")
+    val mixed = com.seyal.app.util.RichText.pieces("**Price Volatility**: see https://www.gold.org/goldhub/research/gold-mid-year-outlook-2026. Then decide.")
+    T.eq("bold, text and a bare link in one line", listOf("BOLD:Price Volatility", "PLAIN:: see ", "LINK:gold.org/goldhub/research/gold-mid-year-…", "PLAIN:.", "PLAIN: Then decide."), mixed.map { "${it.kind}:${it.text}" })
+    T.eq("…the bare link keeps its whole address", "https://www.gold.org/goldhub/research/gold-mid-year-outlook-2026", mixed[2].url)
+    T.eq("a line without links is as before", listOf("PLAIN:Buy in small parts, ", "BOLD:not all at once", "PLAIN:."), com.seyal.app.util.RichText.pieces("Buy in small parts, **not all at once**.").map { "${it.kind}:${it.text}" })
+    T.eq("a stray ** is not shown", listOf("PLAIN:Wait for the sale"), com.seyal.app.util.RichText.pieces("**Wait for the sale").map { "${it.kind}:${it.text}" })
+    T.eq("a tap on the line goes to its first link", "https://a.example.com/x", com.seyal.app.util.RichText.firstLink("See [A](https://a.example.com/x) and [B](https://b.example.com)"))
+    T.eq("…nowhere when it has none", null, com.seyal.app.util.RichText.firstLink("No link here [just brackets] (and these)."))
+    T.eq("a short address is shown whole", "irctc.co.in", com.seyal.app.util.RichText.short("https://www.irctc.co.in/"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -2456,7 +2507,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

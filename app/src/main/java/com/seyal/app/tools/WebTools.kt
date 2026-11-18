@@ -89,7 +89,8 @@ object WebTools {
         95 to "thunderstorm", 96 to "thunderstorm with hail", 99 to "thunderstorm with hail")
 
     /** Tries once more when the first attempt is slow or fails: a short wait twice beats one long one. */
-    private fun quick(url: String): String = runCatching { http(url, "application/json", 7_000) }.getOrElse { http(url, "application/json", 9_000) }
+    // Five seconds, then one more try of six. (It used to be 7 + 9, twice over: a weather service that was down cost 33 s before the web was asked.)
+    private fun quick(url: String): String = runCatching { http(url, "application/json", 5_000) }.getOrElse { http(url, "application/json", 6_000) }
 
     private suspend fun weather(place: String): ToolResult = withContext(Dispatchers.IO) {
         if (place.isBlank()) return@withContext ToolResult.Failed("Which place? (No home city set in Control → You.)")
@@ -108,7 +109,7 @@ object WebTools {
         val lat = g.optDouble("latitude"); val lon = g.optDouble("longitude")
         val name = listOf(g.optString("name"), g.optString("admin1"), g.optString("country")).filter { it.isNotBlank() }.distinct().joinToString(", ")
         val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto&forecast_days=3"
-        val w = runCatching { JSONObject(quick(url)) }.getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message})", retryable = true) }
+        val w = runCatching { JSONObject(quick(url)) }.getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message}). Do not call weather again now: web_search \"weather $place today\" instead.", retryable = false) }
         val c = w.optJSONObject("current") ?: JSONObject()
         val current = JSONObject().put("temp_c", c.optDouble("temperature_2m")).put("feels_like_c", c.optDouble("apparent_temperature")).put("humidity", c.optInt("relative_humidity_2m"))
             .put("rain_mm", c.optDouble("precipitation")).put("wind_kmh", c.optDouble("wind_speed_10m")).put("sky", codes[c.optInt("weather_code")] ?: "unknown")

@@ -109,7 +109,23 @@ object Opener {
     private val splitRx = Regex("^(.*?)(?:\\s*[·•|]\\s*|,\\s+(?=(?:in|as an?)\\b))(.*)$", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
     private val filler = setOf("the", "a", "an", "movie", "film", "padam")
 
-    private fun toks(s: String): List<String> = s.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), " ").split(Regex("\\s+")).filter { it.isNotBlank() }
+    /**
+     * The words of a title. Letters standing alone, as in "O.M Operation Mole" or "K. G. F", are one word ("om", "kgf"):
+     * that is how people say and type them ("book om ticket", "o. m"). Seen on a real phone: Seyal typed "OM", the app's
+     * own list showed "O.M Operation Mole", and the two were not recognised as the same film.
+     */
+    internal fun toks(s: String): List<String> {
+        val raw = s.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), " ").split(Regex("\\s+")).filter { it.isNotBlank() }
+        val out = ArrayList<String>()
+        var run = StringBuilder()
+        for (w in raw) {
+            if (w.length == 1 && w[0].isLetter()) { run.append(w); continue }
+            if (run.isNotEmpty()) { out += run.toString(); run = StringBuilder() }
+            out += w
+        }
+        if (run.isNotEmpty()) out += run.toString()
+        return out
+    }
     private fun core(s: String): List<String> = toks(s).filter { it !in filler }.ifEmpty { toks(s) }
     /** The same word, allowing one slip of the finger in a longer word ("ramyana" / "ramayana"). */
     private fun alike(a: String, b: String): Boolean = a == b || (minOf(a.length, b.length) >= 5 && Order.distance(a, b) <= (if (minOf(a.length, b.length) >= 9) 2 else 1))
@@ -166,7 +182,11 @@ object Opener {
         if (now.size > 1) return Choice.Tell("Several films in cinemas match \"$wanted\": ${now.take(5).joinToString("; ") { it.title }}. Open the one the user meant (their exact name or language). If you cannot tell which, ask_user with these names.")
         if (results.all { it.showing == Showing.UNKNOWN }) {
             val exact = results.filter { same(it.title, wanted) }
-            return if (exact.size == 1) Choice.Tap(exact[0]) else Choice.Leave
+            if (exact.size == 1) return Choice.Tap(exact[0])
+            // Every row that matches is the same film (the app lists it under "Recent" and again under "Trending"),
+            // or its name begins with what the user said ("OM" → "O.M Operation Mole"): that is the one.
+            if (exact.isEmpty() && results.map { core(it.title) }.distinct().size == 1) return Choice.Tap(results[0])
+            return Choice.Leave
         }
         return Choice.Tell(
             "No film called \"$wanted\" is in cinemas now in this app. The search shows: ${results.take(5).joinToString("; ") { "${it.title} (${word(it.showing)})" }}. " +
@@ -182,8 +202,22 @@ object Opener {
      * The film itself, already on the screen (BookMyShow opens on "Now Showing" lists where the poster's name is a
      * label): one tap beats a search. Only a label that is the film's name, word for word.
      */
-    fun onScreen(items: List<Item>, wanted: String): Item? =
-        items.firstOrNull { !it.isField && it.role != "heading" && it.label.length <= 60 && it.label != "(unlabeled)" && same(it.label, wanted) }
+    fun onScreen(items: List<Item>, wanted: String): Item? {
+        val rows = items.filter { !it.isField && it.role != "heading" && it.label.length <= 60 && it.label != "(unlabeled)" }
+        rows.firstOrNull { same(it.label, wanted) }?.let { return it }
+        // Said as letters ("OM", "o. m") and the page has one film whose name begins with those letters ("O.M Operation Mole").
+        val w = core(wanted)
+        if (w.size != 1 || w[0].length !in 2..5) return null
+        val begins = rows.filter { r -> lettersAhead(r.label) == w[0] }
+        return begins.takeIf { b -> b.map { core(it.label) }.distinct().size == 1 }?.first()
+    }
+
+    /** The letters a title begins with when it begins with letters standing alone: "O.M Operation Mole" → "om"; "A Quiet Place" → null. */
+    internal fun lettersAhead(label: String): String? =
+        Regex("^\\s*((?:\\p{L}[.]\\s?|\\p{L}\\s)+\\p{L})[.]?(?![\\p{L}])").find(label)?.groupValues?.get(1)?.filter { it.isLetter() }?.lowercase()
+
+    /** How a title said as letters is typed into a search box that finds nothing for two letters: "OM" → "O.M". Null for any other title. */
+    fun dotted(title: String): String? = title.trim().takeIf { Regex("^\\p{L}{2}$|^\\p{Lu}{2,4}$").matches(it) }?.uppercase()?.toCharArray()?.joinToString(".")
 
     /**
      * The unlabeled icon in the top right corner: on BookMyShow's list pages that is the search magnifier. A last
