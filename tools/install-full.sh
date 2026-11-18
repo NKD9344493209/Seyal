@@ -25,7 +25,29 @@ fi
 
 # The version this folder holds (what your last "git am" + "git push" asked GitHub to build).
 WANT=$(grep -o 'versionName = "[^"]*"' "$DIR/../app/build.gradle.kts" 2>/dev/null | head -1 | cut -d'"' -f2)
-newest() { curl -sSL https://api.github.com/repos/NKD9344493209/Seyal/releases | grep -o '"browser_download_url": *"[^"]*Seyal-Full-[0-9]*\.apk"' | head -1 | cut -d'"' -f4; }
+REL=""
+releases() { REL=$(curl -sSL https://api.github.com/repos/NKD9344493209/Seyal/releases 2>/dev/null); }
+newest() { echo "$REL" | grep -o '"browser_download_url": *"[^"]*Seyal-Full-[0-9]*\.apk"' | head -1 | cut -d'"' -f4; }
+# When GitHub could not build a push it publishes "failed-N" with the reasons. If the newest thing on GitHub is such a
+# failure, and it is the failure of what this folder holds, waiting is pointless: say so, loudly, with the reason.
+# (This happened with 3.17: the build failed, the phone kept 3.16, and a day of testing was done on the old version.)
+HEAD_SHA=$(git -C "$DIR/.." rev-parse HEAD 2>/dev/null)
+build_failed() {
+  tag=$(echo "$REL" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+  case "$tag" in failed-*) ;; *) return 1 ;; esac
+  why=$(curl -sSL "https://github.com/NKD9344493209/Seyal/releases/download/$tag/build-errors.txt" 2>/dev/null)
+  [ -n "$HEAD_SHA" ] && ! echo "$why" | head -1 | grep -q "$HEAD_SHA" && return 1
+  echo
+  echo "  ============================================================"
+  echo "  GITHUB COULD NOT BUILD YOUR LATEST PUSH ($tag)."
+  echo "  Version $WANT was NOT made. The phone still has ${got:-the old version}."
+  echo "  Do not test now. Send Claude this line:   build $tag"
+  echo "  ============================================================"
+  echo "  The reason GitHub gave:"
+  echo "$why" | grep -E "FAILED|^ +FAIL |^e: |error:|AssertionError|What went wrong" | grep -v "daemon" | head -8 | sed 's/^/    /'
+  echo
+  return 0
+}
 installed() { "$ADB" shell dumpsys package $PKG 2>/dev/null | tr -d '\r' | grep -m1 -o 'versionName=[^ ]*' | cut -d= -f2; }
 
 echo; echo "Connect the phone by USB. If the phone asks \"Allow USB debugging?\", tap Allow."
@@ -60,7 +82,9 @@ install_apk() {
 # phone (the 3.13 build was ready at 11:38 and the test recordings began at 11:39). So: install the newest build, and if it is not the
 # version of this folder yet, wait for the right one and install that.
 last=""; got=""
+FAILED=0
 for try in $(seq 1 30); do
+  releases
   url=$(newest)
   if [ -z "$url" ]; then [ -n "$last" ] && { sleep 60; continue; }; fail "No Full build found on GitHub."; fi
   if [ "$url" != "$last" ]; then
@@ -72,12 +96,14 @@ for try in $(seq 1 30); do
     got=$(installed)
   fi
   if [ -z "$WANT" ] || [ -z "$got" ] || [ "${got#$WANT}" != "$got" ]; then break; fi
+  if build_failed; then FAILED=1; break; fi
   if [ $try = 1 ]; then echo; echo "GitHub is still building version $WANT (your latest push). The newest finished build is $got."; fi
   if [ $try = 30 ]; then echo "The $WANT build has not appeared after 30 minutes. See github.com/NKD9344493209/Seyal/actions. The phone has $got for now."; break; fi
   echo "  Waiting for $WANT ... checking again in 1 minute ($try of 30). Leave this window open."
   sleep 60
 done
 echo; echo "  INSTALLED ON THE PHONE: Seyal ${got:-(version unknown)}"
+[ $FAILED = 1 ] && echo "  (This is the OLD version: the new one could not be built. See the box above.)"
 [ -n "$WANT" ] && [ -n "$got" ] && [ "${got#$WANT}" != "$got" ] && echo "  This is the newest version ($WANT). The chat screen shows \"v$WANT\" under the title."
 echo
 

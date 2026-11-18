@@ -148,6 +148,15 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true" />
 
+        <!-- A tap on a reminder passes through here to the mail, app or link it is about. Never shown. -->
+        <activity
+            android:name=".device.OpenActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
+
         <receiver
             android:name=".agent.SchedulerReceiver"
             android:exported="false" />

@@ -79,6 +79,19 @@ object Agent {
     /** Whether a message is something the user really said (not Seyal's own check). */
     internal fun fromUser(m: Msg): Boolean = m.role == "user" && !m.text.startsWith(CHECK)
 
+    /**
+     * What a finished task was about, as something a tap can open (a Target): the mail app when it read or wrote mail,
+     * else the app it worked in. "" when it was about nothing outside Seyal.
+     */
+    internal fun aboutWhat(s: Session): String {
+        val used = s.messages.flatMap { it.calls }.map { it.name }
+        return when {
+            used.any { Router.groupOf(it) == "mail" } -> "mail:"
+            s.workApp != null -> "pkg:${s.workApp}"
+            else -> ""
+        }
+    }
+
     /** A question that lists several things to answer ("1. Theatre … 2. Day …"). */
     internal fun manyParts(question: String): Boolean = Regex("(^|\\n)\\s*2\\s*[.)]").containsMatchIn(question)
 
@@ -205,7 +218,7 @@ object Agent {
         Routines.init(context.filesDir)
         Inbox.init(context.filesDir); Watchers.init(context.filesDir)
         Ledger.init(context.filesDir); Parcels.init(context.filesDir); Past.init(context.filesDir)
-        Coach.init(context.filesDir); Usual.init(context.filesDir); Khata.init(context.filesDir); Habits.init(context.filesDir); BrainStore.init(context.filesDir)
+        Coach.init(context.filesDir); Usual.init(context.filesDir); Khata.init(context.filesDir); Habits.init(context.filesDir); BrainStore.init(context.filesDir); ForesightStore.init(context.filesDir)
         Coach.onChange = { runCatching { Scheduler.syncBackground(app) } }
         Inbox.onChange = { runCatching { Scheduler.syncBackground(app) } }
         Watchers.onChange = { runCatching { Scheduler.syncBackground(app) } }
@@ -699,7 +712,15 @@ object Agent {
                         lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + gap.text))); touch(s) }
                         continue
                     }
-                    finish(s, SessionStatus.DONE, resp.text.ifBlank { "Done." })
+                    // A meeting that is not in the calendar is never reported as "scheduled": if the answer leaves that out, it is added.
+                    val meetings = lock.withLock { didSince(s).filter { it.name == "calendar_add" }.mapNotNull { it.output } }
+                    val answer = Meetings.withProof(resp.text, meetings)
+                    if (answer != resp.text) lock.withLock {
+                        val i = s.messages.indexOfLast { it.role == "assistant" && it.calls.isEmpty() }
+                        if (i >= 0) s.messages[i] = Msg("assistant", listOf(Part.Text(answer))) else s.messages += Msg("assistant", listOf(Part.Text(answer)))
+                        touch(s)
+                    }
+                    finish(s, SessionStatus.DONE, answer.ifBlank { "Done." })
                     return
                 }
                 s.steps++; stepsThisRun++
@@ -939,7 +960,7 @@ object Agent {
             if (skillId != null) runCatching { Skills.noteResult(skillId, status == SessionStatus.DONE, s.result ?: "") }
             // What a scheduled skill has to tell (the mail, the news, the total) IS its result: it arrives in full,
             // whatever the Quiet setting says. A failure is always told.
-            if (skillId != null && status == SessionStatus.DONE && wantsAnswer(s.firstCommand)) Notify.result(app, s.title, plain(text).trim().take(1500), s.id)
+            if (skillId != null && status == SessionStatus.DONE && wantsAnswer(s.firstCommand)) Notify.result(app, s.title, plain(text).trim().take(1500), s.id, aboutWhat(s))
             else if (!Settings.quiet || status != SessionStatus.DONE) Notify.line(app, "${s.title}: ${s.result}", s.id)
             if ((Settings.speak || (Settings.simpleMode && s.source == "user")) && status == SessionStatus.DONE) Speech.say(app, text)
         }

@@ -22,6 +22,9 @@ object Times {
 
     fun toEpoch(dt: LocalDateTime): Long = dt.atZone(zone).toInstant().toEpochMilli()
 
+    /** Just the time of day: "11:20 AM". */
+    fun clock(epoch: Long): String = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(epoch), zone).format(DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH))
+
     fun format(epoch: Long): String {
         val dt = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(epoch), zone)
         val today = LocalDate.now()

@@ -57,6 +57,8 @@ jobs:
             grep -E '^e: |error:|What went wrong|Could not|FAILURE|Execution failed|AAPT|Manifest merger' -A 3 build.log 2>/dev/null | head -300
             echo; echo "=== Unit tests ==="
             grep -E "FAIL|AssertionError|expected|failed|Exception" test.log 2>/dev/null | head -80
+            echo; echo "=== Which checks failed ==="
+            grep -rhE "^ +FAIL " app/build/test-results 2>/dev/null | head -40
             echo; echo "=== Last lines of the build log ==="; tail -60 build.log 2>/dev/null
           } > build-errors.txt
 

@@ -42,9 +42,9 @@ object Scheduler {
         }.onFailure { mgr.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi) }
     }
 
-    private fun remember(kind: String, id: String, at: Long, text: String) {
+    private fun remember(kind: String, id: String, at: Long, text: String, open: String = "") {
         val timers = Store.loadTimers().filterNot { it.kind == kind && it.id == id }.toMutableList()
-        timers += Timer(kind, id, at, text)
+        timers += Timer(kind, id, at, text, open)
         Store.saveTimers(timers.filter { it.at > System.currentTimeMillis() - 60_000 })
     }
 
@@ -59,9 +59,10 @@ object Scheduler {
         return id
     }
 
-    fun setReminder(ctx: Context, at: Long, text: String): String {
+    /** [open]: what a tap on the reminder opens (a Target: "app:WhatsApp", "mail:", "url:…"); "" = Seyal. */
+    fun setReminder(ctx: Context, at: Long, text: String, open: String = ""): String {
         val id = newId()
-        remember("remind", id, at, text)
+        remember("remind", id, at, text, open)
         set(ctx, "remind", id, at, text)
         return id
     }
@@ -75,7 +76,8 @@ object Scheduler {
      */
     fun syncBackground(ctx: Context) {
         val now = System.currentTimeMillis()
-        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now)).minOrNull()
+        val foresight = if (ForesightStore.enabled) Foresight.nextRun(now, ForesightStore.lastOkAt, ForesightStore.lastTryAt) else null
+        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now), foresight).minOrNull()
         if (next == null) { am(ctx).cancel(pending(ctx, "tick", "bg", 0, "")); forget("tick", "bg"); return }
         val at = maxOf(next, now + 5_000)
         remember("tick", "bg", at, "")
@@ -118,7 +120,7 @@ object Scheduler {
                 "tell" -> {
                     forget(t.kind, t.id)
                     runCatching { Settings.killedCount = Settings.killedCount + 1; Settings.killedAt = now }
-                    runCatching { Notify.reminder(ctx, t.id, lateText(t.kind, t.text, Skills.stamp(t.at))) }
+                    runCatching { Notify.reminder(ctx, t.id, lateText(t.kind, t.text, Skills.stamp(t.at)), t.open) }
                 }
                 "end" -> fire(ctx, t.kind, t.id, t.at, t.text)
             }
@@ -147,7 +149,11 @@ object Scheduler {
     fun fire(ctx: Context, kind: String, id: String, at: Long, text: String) {
         when (kind) {
             "alarm" -> { forget("alarm", id); AlarmActivity.ring(ctx, id, text) }
-            "remind" -> { forget("remind", id); Notify.reminder(ctx, id, text) }
+            "remind" -> {
+                // What the reminder is about (the mail, the app, the link) was noted when it was set: a tap goes there.
+                val open = runCatching { Store.loadTimers().firstOrNull { it.kind == "remind" && it.id == id }?.open }.getOrNull().orEmpty()
+                forget("remind", id); Notify.reminder(ctx, id, text, open)
+            }
             // The alarm-clock broadcast lets the app start its "working" service, which keeps it alive while the skill runs.
             "skill" -> Skills.run(id, fromTrigger = true)
             "busy" -> { forget("busy", id); com.seyal.app.device.Busy.stop(ctx) }
@@ -310,6 +316,8 @@ object Background {
                 // 1c. The family check-in, and an offer to automate a habit (one a day at most).
                 runCatching { com.seyal.app.device.Guardian.check(ctx, now) }
                 runCatching { offerHabit(ctx, now) }
+                // 1d. Dirghadarshi's weekly report, when it is switched on and due (it runs on by itself; nothing here waits for it).
+                runCatching { ForesightRun.weekly(ctx) }
                 // 2. Watched pages whose turn it is.
                 // A few per wake-up, so it always finishes in time; the rest follow a minute later.
                 if (!Settings.paused) Watchers.dueNow(now).take(3).forEach { w ->

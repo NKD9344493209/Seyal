@@ -521,10 +521,11 @@ class Skill(
 }
 
 /** A pending alarm or reminder, kept so it can be put back after a reboot. */
-class Timer(val kind: String, val id: String, val at: Long, val text: String) {
-    fun toJson(): JSONObject = JSONObject().put("kind", kind).put("id", id).put("at", at).put("text", text)
+/** [open]: what a tap on the reminder opens (see agent/Target.kt); "" = Seyal. */
+class Timer(val kind: String, val id: String, val at: Long, val text: String, val open: String = "") {
+    fun toJson(): JSONObject = JSONObject().put("kind", kind).put("id", id).put("at", at).put("text", text).apply { if (open.isNotBlank()) put("open", open) }
 
     companion object {
-        fun fromJson(o: JSONObject) = Timer(o.optString("kind"), o.optString("id"), o.optLong("at"), o.optString("text"))
+        fun fromJson(o: JSONObject) = Timer(o.optString("kind"), o.optString("id"), o.optLong("at"), o.optString("text"), o.optString("open"))
     }
 }

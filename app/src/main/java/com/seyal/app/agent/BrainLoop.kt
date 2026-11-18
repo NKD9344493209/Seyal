@@ -44,7 +44,7 @@ object BrainLoop {
      * A message came in. [who]: the notification's title (the person). [key]: the notification, so a reply can go
      * back through it. Several messages from one chat within [waitMs] are thought about together.
      */
-    fun onMessage(ctx: Context, app: String, title: String, text: String, group: Boolean, message: Boolean, key: String, canReply: Boolean, waitMs: Long = Brain.WAIT_MS) {
+    fun onMessage(ctx: Context, app: String, title: String, text: String, group: Boolean, message: Boolean, key: String, canReply: Boolean, waitMs: Long = Brain.waitFor(text)) {
         if (!Settings.brainOn || Settings.paused || !message || group || text.isBlank()) return
         val who = Brain.name(title)
         val app0 = ctx.applicationContext
@@ -94,15 +94,22 @@ object BrainLoop {
         val trust = BrainStore.trust
         // The user turned this person's offers down three times running: left alone for a month.
         if (trust.muted(Brain.fromKey(e.who), now)) { fate(log, "dropped: you asked me to leave ${e.who}'s messages alone"); return }
-        val quick = Brain.quick(e)
-        var t = quick ?: think(ctx, e, log) ?: return
-        if (quick != null) fate(log, "a plain rule, no AI needed")
+        // In order: a plain rule (no AI); a direct question while the user's own task holds the AI (answered by rule at
+        // once, not minutes later); the AI; and when the AI gives nothing for a direct question, the rule again.
+        var via = ""
+        var t = Brain.quick(e)?.also { via = " (plain rule, no AI needed)" }
+            ?: (if (busyNow()) Brain.fallback(e, now)?.also { via = " (by rule: your own task is using the AI)" } else null)
+            ?: think(ctx, e, log)
+            // The AI failed or is at its limit: any direct question is still offered. The AI looked and said "nothing":
+            // that stands for an open question ("how are you?"), but a yes/no question ("tomorrow free ah?") is always offered.
+            ?: (if (!log.fate.startsWith("AI said") || Brain.isYesNo(e.text)) Brain.fallback(e, System.currentTimeMillis())?.also { via = " (by rule: ${log.fate})" } else null)
+            ?: return
         if (t.kind != "none" && trust.muted(t.kind, now)) {
             // This kind of offer is switched off for now; only something urgent is still told.
             if (!t.urgent) { fate(log, "not offered: ${Brain.kindName(t.kind)} are switched off until ${Times.format(trust.mutedUntil(t.kind))}"); return }
             t = Brain.Thought(t.id, t.at, t.who, t.app, t.heard, "tell", "none", t.say, t.why, JSONObject(), true, t.key)
         }
-        deliver(ctx, t, log)
+        deliver(ctx, t, log, via)
     }
 
     private fun busyNow() = Agent.sessions.value.any { it.status == SessionStatus.RUNNING }
@@ -156,7 +163,7 @@ object BrainLoop {
         }
     }
 
-    private suspend fun deliver(ctx: Context, t: Brain.Thought, log: Heard) {
+    private suspend fun deliver(ctx: Context, t: Brain.Thought, log: Heard, via: String = "") {
         val now = System.currentTimeMillis()
         val silent = Brain.quiet(now) && !t.urgent
         val canShow = Notify.allowed(ctx)
@@ -179,7 +186,7 @@ object BrainLoop {
             !show -> " (in the Brain tab only: ${Brain.OFFERS_A_DAY} offers already today)"
             silent -> " (silently: night hours)"
             else -> ""
-        })
+        } + via)
     }
 
     private fun iso(ms: Long): String = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDateTime().toString().take(16)
@@ -190,13 +197,14 @@ object BrainLoop {
         when {
             answer == "later" -> {
                 val at = System.currentTimeMillis() + 30 * 60_000L
-                t.args.put("timer", Scheduler.setReminder(ctx, at, "Call ${t.who}"))
+                t.args.put("timer", Scheduler.setReminder(ctx, at, "Call ${t.who}", Target.viaNotice(t.key, Target.fromSource(t.app))))
                 true to "I'll remind you at ${Times.format(at)} to call ${t.who}."
             }
             t.kind == "reminder" -> {
                 val at = t.args.optLong("at")
                 if (at < System.currentTimeMillis()) false to "That time has already passed, so no reminder was set."
-                else { t.args.put("timer", Scheduler.setReminder(ctx, at, t.args.optString("title"))); true to "Reminder set for ${Times.format(at)}: ${t.args.optString("title")}" }
+                // The reminder opens the chat or mail it was made from.
+                else { t.args.put("timer", Scheduler.setReminder(ctx, at, t.args.optString("title"), Target.viaNotice(t.key, Target.fromSource(t.app)))); true to "Reminder set for ${Times.format(at)}: ${t.args.optString("title")}" }
             }
             t.kind == "calendar" -> {
                 val tool = Toolbox.get("calendar_add") ?: return@runCatching false to "The calendar cannot be reached on this phone."

@@ -96,7 +96,8 @@ object WebTools {
         // A place looked up before is remembered, so the next answer needs one request instead of two.
         val key = place.trim().lowercase()
         val cache = runCatching { JSONObject(Settings.placeCache) }.getOrElse { JSONObject() }
-        var g = cache.optJSONObject(key)
+        // The common cities need no lookup at all.
+        var g = cache.optJSONObject(key) ?: com.seyal.app.util.Places.find(place)
         if (g == null) {
             val geo = runCatching { JSONObject(quick("https://geocoding-api.open-meteo.com/v1/search?name=${URLEncoder.encode(place, "UTF-8")}&count=1&language=en&format=json")) }
                 .getOrElse { return@withContext ToolResult.Failed("Weather service unreachable (${it.message})", retryable = true) }

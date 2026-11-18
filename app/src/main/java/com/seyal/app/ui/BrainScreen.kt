@@ -67,11 +67,24 @@ fun BrainScreen() {
     val trust = BrainStore.trust
     var sure by remember { mutableStateOf(false) }
 
+    // Two pages: what the Brain makes of your messages, and Dirghadarshi (what is rising in the world).
+    val activity = ctx as? MainActivity
+    var page by remember { mutableStateOf(0) }
+    val wantPage = activity?.brainPage?.value
+    androidx.compose.runtime.LaunchedEffect(wantPage) { if (wantPage != null) { page = wantPage; activity.brainPage.value = null } }
+
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) {
             Text("Brain", style = MaterialTheme.typography.headlineMedium)
-            Text("Seyal thinks about what arrives and speaks first. You decide how much it may do.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Text(if (page == 0) "Seyal thinks about what arrives and speaks first. You decide how much it may do." else "What is starting to rise in the world, told early, with proof.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            Row {
+                Chip("Messages", selected = page == 0) { page = 0 }
+                Spacer(Modifier.width(8.dp))
+                Chip("Dirghadarshi", selected = page == 1) { page = 1 }
+            }
         }
+        if (page == 1) { ForesightSection(); Spacer(Modifier.height(16.dp)) } else {
         Card {
             SwitchRow(if (on) "The Brain is on" else "Turn the Brain on", "When a message needs you, Seyal offers a reminder, a calendar entry, a ready reply or a call. One tap to accept.", on) { Settings.brainOn = it; on = it }
             Spacer(Modifier.height(6.dp))
@@ -170,6 +183,7 @@ fun BrainScreen() {
             else SmallButton("Forget what the Brain noted and learnt", filled = false) { sure = true }
         }
         Spacer(Modifier.height(16.dp))
+        }
     }
 }
 

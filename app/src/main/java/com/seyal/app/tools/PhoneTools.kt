@@ -24,7 +24,9 @@ import android.os.StatFs
 import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.telephony.SmsManager
+import com.seyal.app.agent.Preflight
 import com.seyal.app.agent.Scheduler
+import com.seyal.app.agent.Target
 import com.seyal.app.agent.Tool
 import com.seyal.app.agent.ToolResult
 import com.seyal.app.agent.noArgs
@@ -107,10 +109,13 @@ object PhoneTools {
             ) { a, _ -> timer("alarm", a.optString("at"), a.optString("label").ifBlank { "Alarm" }) },
 
             Tool(
-                "reminder_set", "phone", "Show a reminder notification at a time.",
-                schema { str("at", "Local ISO date-time", required = true); str("text", "What to remind", required = true) },
+                "reminder_set", "phone", "Show a reminder notification at a time. A tap on it opens what it is about.",
+                schema {
+                    str("at", "Local ISO date-time", required = true); str("text", "What to remind", required = true)
+                    str("open", "What a tap on the reminder should open: the link (https://…), 'mail', or the name of the app it is about (WhatsApp, BookMyShow, GPay). Give it whenever the reminder is about a mail, a message, a bill, a form or anything inside an app. Leave it out only for a plain note to self.")
+                },
                 sideEffect = true,
-            ) { a, _ -> timer("remind", a.optString("at"), a.optString("text")) },
+            ) { a, _ -> timer("remind", a.optString("at"), a.optString("text"), a.optString("open")) },
 
             Tool(
                 "timer_set", "phone", "A countdown: reminds after N minutes.",
@@ -449,12 +454,14 @@ object PhoneTools {
         return runCatching { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager).areNotificationsEnabled() }.getOrDefault(true)
     }
 
-    private suspend fun timer(kind: String, at: String, text: String): ToolResult {
+    private suspend fun timer(kind: String, at: String, text: String, open: String = ""): ToolResult {
         val dt = Times.parse(at) ?: return ToolResult.Failed("Could not understand the time \"$at\"")
         val ms = Times.toEpoch(dt)
         if (ms < System.currentTimeMillis() - 60_000) return ToolResult.Failed("That time (${Times.format(ms)}) is already past. Ask the user which day they mean.")
         val shows = canNotify()
-        if (kind == "alarm") Scheduler.setAlarm(ctx, ms, text) else Scheduler.setReminder(ctx, ms, text)
+        // Where a tap on the reminder goes: what the AI named, else what the words are about (a link, a mail, an app on this phone).
+        val target = if (kind == "alarm") "" else Target.of(open, text, runCatching { Preflight.appLabels() }.getOrDefault(emptyList()))
+        if (kind == "alarm") Scheduler.setAlarm(ctx, ms, text) else Scheduler.setReminder(ctx, ms, text, target)
         val t = Times.format(ms)
         val what = if (kind == "alarm") "Alarm" else "Reminder"
         // Set, but it could never be seen: that is said in the same breath, not left to be found out at the time.
@@ -462,7 +469,9 @@ object PhoneTools {
             JSONObject().put("ok", true).put("at_text", t).put("text", text).put("warning", "Notifications are switched off for Seyal, so this cannot be shown. Tell the user to allow notifications for Seyal (Control → Phone permissions → Notifications), or it will be missed."),
             "$what set for $t, BUT notifications are off for Seyal: allow them or it cannot show",
         )
-        return ToolResult.ok("$what set for $t", "at_text" to t, "text" to text)
+        val opens = com.seyal.app.device.Open.label(ctx, target)
+        return if (opens.isBlank()) ToolResult.ok("$what set for $t", "at_text" to t, "text" to text)
+        else ToolResult.ok("$what set for $t · a tap opens $opens", "at_text" to t, "text" to text, "tap_opens" to opens)
     }
 
     // ---------------- apps and settings ----------------

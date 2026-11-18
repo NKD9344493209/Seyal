@@ -1,5 +1,6 @@
 package com.seyal.app.agent
 
+import org.json.JSONObject
 import com.seyal.app.util.Times
 
 /** The parts of saving a meeting that are plain rules: when Seyal's own reminder goes off, and what is said afterwards. */
@@ -19,7 +20,29 @@ object Meetings {
 
     fun reminderText(title: String, startMs: Long, at: Long): String {
         val mins = ((startMs - at) / 60_000L).toInt()
-        return if (mins <= 1) "$title starts now" else "$title starts in $mins minutes (${Times.format(startMs).substringAfter(' ')})"
+        return if (mins <= 1) "$title starts now" else "$title starts in $mins minutes (${Times.clock(startMs)})"
+    }
+
+    private val saysNotSaved = Regex("\\bnot\\b[^.\\n]{0,40}\\bcalendar\\b|\\bcalendar\\b[^.\\n]{0,40}\\b(not|could ?not|couldn.?t|failed)\\b|\\b(could ?not|couldn.?t|unable to)\\b[^.\\n]{0,40}\\bcalendar\\b", RegexOption.IGNORE_CASE)
+    private val saysNoAlert = Regex("\\bno (alert|alarm|reminder)\\b|\\bwithout (an? |any )?(alert|alarm|reminder)\\b|\\b(alert|alarm|reminder)s?\\b[^.\\n]{0,30}\\b(not|could ?not|couldn.?t)\\b", RegexOption.IGNORE_CASE)
+
+    /**
+     * The AI's final answer with the truth about each meeting made certain. Seen in a test run: the calendar tool
+     * reported "NOT saved in your calendar", and the AI told the user "Team meeting scheduled". When a meeting was not
+     * put in the calendar, or has no alert at all, and [answer] does not say so, the tool's own sentence is added.
+     * [outputs]: what calendar_add returned for this request.
+     */
+    fun withProof(answer: String, outputs: List<JSONObject>): String {
+        val add = ArrayList<String>()
+        for (o in outputs) {
+            val say = o.optString("say")
+            if (say.isBlank()) continue
+            val saved = o.optBoolean("saved_in_calendar")
+            val anyAlert = o.optBoolean("calendar_alert") || o.optBoolean("seyal_reminder")
+            if (!saved && !saysNotSaved.containsMatchIn(answer)) add += say
+            else if (saved && !anyAlert && !saysNoAlert.containsMatchIn(answer)) add += say
+        }
+        return if (add.isEmpty()) answer else (answer.trim() + "\n\n" + add.distinct().joinToString("\n")).trim()
     }
 
     /**

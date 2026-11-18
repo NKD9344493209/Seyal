@@ -23,6 +23,7 @@ class Pulse(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
         runCatching { Scheduler.rescheduleAll(applicationContext) }
         runCatching { ScreenWatch.check(applicationContext) }
+        runCatching { com.seyal.app.agent.ForesightRun.weekly(applicationContext) }
         return Result.success()
     }
 

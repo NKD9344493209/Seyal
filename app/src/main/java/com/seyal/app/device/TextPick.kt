@@ -1,6 +1,42 @@
 package com.seyal.app.device
 
 /**
+ * Which row of the listed screen the AI meant when it gave a row's whole line as the text to tap.
+ *
+ * Seen in a test run, three times in a row: asked to tap `Ss Hyderabad Biryani Ss Hyderabad Biryani 4.6 (85K+) •
+ * 25-30 MINS Gandhipuram · Ss Hyderabad Biryani @741,919`, Seyal answered "nothing called that on screen". A row's
+ * line in the list is put together from several texts and its position; no single thing on the screen carries it.
+ * So when the screen has nothing with the text, the rows the AI was shown are searched for the one it copied.
+ */
+object ListPick {
+    class Row(val id: Int, val label: String, val u: Int, val v: Int)
+
+    private val at = Regex("\\s*@\\s*(\\d{1,4})\\s*,\\s*(\\d{1,4})\\s*$")
+    private val lead = Regex("^\\s*\\d{1,3}\\s*\\[[a-z:]+\\]\\s*")
+    private val note = Regex("\\s*\\((focused|selected|disabled|SECRET[^)]*|hint: [^)]*|id: [^)]*)\\)\\s*$")
+    private fun norm(s: String) = s.lowercase().replace(Regex("\\s+"), " ").trim().trimEnd('…')
+
+    /**
+     * The id of the row meant by [query], or null. In order: the row at the position the query ends with ("@741,919");
+     * the row whose label is the query; the one row whose label begins with the query; the longest row label the
+     * query begins with. The last two only for queries of eight letters or more, so "OK" never matches by accident.
+     */
+    fun match(query: String, rows: List<Row>): Int? {
+        val pos = at.find(query)?.let { it.groupValues[1].toInt() to it.groupValues[2].toInt() }
+        val q = norm(note.replace(lead.replace(at.replace(query, ""), ""), ""))
+        if (pos != null) {
+            val near = rows.filter { kotlin.math.abs(it.u - pos.first) <= 6 && kotlin.math.abs(it.v - pos.second) <= 6 }
+            (near.firstOrNull { norm(it.label) == q } ?: near.singleOrNull())?.let { return it.id }
+        }
+        if (q.length < 2) return null
+        rows.firstOrNull { norm(it.label) == q }?.let { return it.id }
+        if (q.length < 8) return null
+        rows.filter { norm(it.label).startsWith(q) }.singleOrNull()?.let { return it.id }
+        return rows.filter { val l = norm(it.label); l.length >= 8 && q.startsWith(l) }.maxByOrNull { it.label.length }?.id
+    }
+}
+
+/**
  * Which of the things on screen a tap by text means.
  *
  * Seen on a real phone: asked to tap "Ramayana" in BookMyShow's search results, Seyal opened "Valmiki Ramayana",

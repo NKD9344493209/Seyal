@@ -70,8 +70,10 @@ class MainActivity : ComponentActivity() {
     val sharedImage = mutableStateOf<Part.Image?>(null)
     /** Goes up each time Seyal is opened as the assistant, from the tile or the shortcut: start listening. */
     val listenTick = mutableStateOf(0)
-    /** A tab a notification asked for ("brain"); cleared once shown. */
+    /** A tab a notification asked for ("brain", "foresight"); cleared once shown. */
     val openTab = mutableStateOf<String?>(null)
+    /** Which page of the Brain tab to show (0 = messages, 1 = Dirghadarshi); cleared once shown. */
+    val brainPage = mutableStateOf<Int?>(null)
     /** The last listen request the Chat screen acted on. */
     var listenSeen = 0
     /** Goes up on every return to the app, so permission states on screen refresh. */
@@ -171,7 +173,9 @@ fun Shell(openSessionId: String?) {
     LaunchedEffect(listen, hasShared) { if (listen > 0 || hasShared) tab = Tab.HOME }
     // A tap on one of the Brain's notifications opens its tab.
     val wantTab = activity?.openTab?.value
-    LaunchedEffect(wantTab) { if (wantTab == "brain") { tab = Tab.BRAIN; activity?.openTab?.value = null } }
+    LaunchedEffect(wantTab) {
+        if (wantTab == "brain" || wantTab == "foresight") { activity?.brainPage?.value = if (wantTab == "foresight") 1 else 0; tab = Tab.BRAIN; activity?.openTab?.value = null }
+    }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         // Bottom bar and composer stay above the navigation bar and the keyboard.
         // Simple mode: one big microphone and nothing else, until "Normal mode" is tapped.

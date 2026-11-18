@@ -373,8 +373,11 @@ object Llm {
     internal fun cleanText(text: String): String {
         val t = text.trim()
         if (t.equals("thought", true) || t.equals("thinking", true) || t.equals("thoughts", true)) return ""
-        return Regex("^(thought|thinking)\\s*\n+", RegexOption.IGNORE_CASE).replace(text.trimStart(), "")
+        // Seen in test runs as the whole first line of an answer: "thought", ",thought", "ifthought". A real sentence
+        // never has the word alone on its line behind a stray letter or comma, so that line is dropped.
+        return leak.replace(text.trimStart(), "")
     }
+    private val leak = Regex("^[\\p{Punct}\\s]{0,3}[a-z]{0,2}(thoughts?|thinking)[\\p{Punct}\\s]*(\n+|$)", RegexOption.IGNORE_CASE)
 
     /** Gemini 2.x models: thinking is set by budget, and they neither need nor know Gemini 3's thought signatures. */
     internal fun isGemini2(model: String) = Regex("gemini-2(\\.|-)").containsMatchIn(model)

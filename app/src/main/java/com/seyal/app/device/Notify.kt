@@ -57,27 +57,30 @@ object Notify {
     }
 
     /** A result with a title and the whole answer: pull it down to read it all, tap to open the chat. */
-    fun result(ctx: Context, title: String, body: String, sessionId: String? = null) {
+    /** [open]: what the answer is about (a Target: the mail app, the app Seyal worked in). It gets its own button; a tap on the text shows the full answer in Seyal. */
+    fun result(ctx: Context, title: String, body: String, sessionId: String? = null, open: String = "") {
         if (!allowed(ctx)) return
-        val n = NotificationCompat.Builder(ctx, CH_RESULTS)
+        val b = NotificationCompat.Builder(ctx, CH_RESULTS)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle(title.take(60))
             .setContentText(body.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(openApp(ctx, sessionId))
             .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(ctx).notify((sessionId ?: title).hashCode(), n)
+        if (open.isNotBlank()) Open.label(ctx, open).takeIf { it.isNotBlank() }?.let { b.addAction(0, "Open $it".take(24), Open.pending(ctx, open, "res" + (sessionId ?: title))) }
+        NotificationManagerCompat.from(ctx).notify((sessionId ?: title).hashCode(), b.build())
     }
 
-    fun line(ctx: Context, text: String, sessionId: String? = null) {
+    /** [open]: what a tap opens (a Target); "" = Seyal (the chat [sessionId] when given). */
+    fun line(ctx: Context, text: String, sessionId: String? = null, open: String = "") {
         if (!allowed(ctx)) return
+        val where = if (open.isBlank()) "" else Open.label(ctx, open)
         val n = NotificationCompat.Builder(ctx, CH_RESULTS)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle(text.take(60))
-            .setContentText("Tap to view")
+            .setContentText(if (where.isBlank()) "Tap to view" else "Tap to open $where")
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(openApp(ctx, sessionId))
+            .setContentIntent(if (open.isBlank()) openApp(ctx, sessionId) else Open.pending(ctx, open, "line" + text.hashCode()))
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(ctx).notify((sessionId ?: text).hashCode(), n)
@@ -98,7 +101,8 @@ object Notify {
             .setContentTitle("$lead · due $whenText".take(70))
             .setContentText(c.title)
             .setStyle(NotificationCompat.BigTextStyle().bigText("${c.title}\n${c.source}\n\n${c.text.take(300)}"))
-            .setContentIntent(openApp(ctx))
+            // A tap goes to what it is about: the form or payment page, else the chat or mail it came from.
+            .setContentIntent(com.seyal.app.agent.Target.fromSource(c.source, c.link).let { t -> if (t.isBlank()) openApp(ctx) else Open.pending(ctx, t, "caught${c.id}") })
             .setAutoCancel(true)
             .addAction(0, "Done", act("com.seyal.app.CAUGHT_DONE"))
         if (c.link.isNotBlank()) runCatching {
@@ -257,6 +261,21 @@ object Notify {
 
     private fun approvalId(sessionId: String, callId: String) = ("ask$sessionId$callId").hashCode()
 
+    /** The weekly Dirghadarshi report: a tap opens it. */
+    fun foresight(ctx: Context, title: String, body: String) {
+        if (!allowed(ctx)) return
+        val open = PendingIntent.getActivity(ctx, "foresight".hashCode(), Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("tab", "foresight"), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(ctx, CH_RESULTS)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title.take(60))
+            .setContentText(body.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(120))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify("foresight".hashCode(), n)
+    }
+
     fun cancel(ctx: Context, tag: String) { runCatching { NotificationManagerCompat.from(ctx).cancel(tag.hashCode()) } }
 
     /** Opens Seyal on the Brain tab; with [id], also answers that thought (used where the answer must open something, like a call). */
@@ -283,7 +302,8 @@ object Notify {
             .setContentTitle((if (t.level != "did") t.who else if (t.state == "failed") "Could not do it · ${t.who}" else "Done for you · ${t.who}").take(60))
             .setContentText((if (t.level == "did") t.result else t.say).take(140))
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setContentIntent(openBrain(ctx))
+            // Something only told: a tap goes to the chat or mail it is about. An offer: to the Brain tab, where its buttons are.
+            .setContentIntent(com.seyal.app.agent.Target.viaNotice(t.key, com.seyal.app.agent.Target.fromSource(t.app)).let { to -> if (t.level == "tell" && to.isNotBlank()) Open.pending(ctx, to, "brain${t.id}") else openBrain(ctx) })
             .setAutoCancel(true)
             .setSilent(silent)
         t.buttons().forEach { (label, code) ->
@@ -314,14 +334,16 @@ object Notify {
         NotificationManagerCompat.from(ctx).notify("brainauto$kind".hashCode(), n)
     }
 
-    fun reminder(ctx: Context, id: String, text: String) {
+    /** [open]: what a tap opens (a Target); "" = Seyal. The notice says where the tap leads. */
+    fun reminder(ctx: Context, id: String, text: String, open: String = "") {
         if (!allowed(ctx)) return
+        val where = if (open.isBlank()) "" else Open.label(ctx, open)
         val n = NotificationCompat.Builder(ctx, CH_ALARM)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle(text.take(60))
-            .setContentText("Reminder from Seyal")
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(openApp(ctx))
+            .setContentText(if (where.isBlank()) "Reminder from Seyal" else "Reminder from Seyal · tap to open $where")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (where.isBlank()) text else "$text\nTap to open $where"))
+            .setContentIntent(if (open.isBlank()) openApp(ctx) else Open.pending(ctx, open, "rem$id"))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setDefaults(NotificationCompat.DEFAULT_ALL)

@@ -108,7 +108,8 @@ class SeyalNotificationListener : NotificationListenerService() {
             val all = "$title $text".lowercase()
             val domain = Settings.collegeDomain
             val important = (domain.isNotBlank() && all.contains(domain)) || keywords.any { all.contains(it) }
-            if (important) Notify.line(this, "Important mail: $title", null)
+            // A tap opens that very mail (through Gmail's own notification), or Gmail if it is no longer there.
+            if (important) Notify.line(this, "Important mail: $title", null, com.seyal.app.agent.Target.viaNotice(sbn.key, "mail:"))
         }
     }
 
@@ -251,6 +252,22 @@ class SeyalNotificationListener : NotificationListenerService() {
             RemoteInput.addResultsToIntent(inputs, intent, results)
             action.actionIntent.send(s, 0, intent)
             return "${textOf(sbn.notification).first.ifBlank { "the sender" }} (${ScreenDriver.appLabel(s, sbn.packageName)})"
+        }
+
+        /**
+         * Opens the very chat or mail a notification is about, by pressing the notification itself (found again by its
+         * [key]). False = it is no longer there (already read or cleared), so the caller opens the app instead.
+         */
+        fun tap(key: String): Boolean {
+            val s = instance ?: return false
+            return runCatching {
+                val pi = s.activeNotifications?.firstOrNull { it.key == key }?.notification?.contentIntent ?: return false
+                if (Build.VERSION.SDK_INT >= 34) {
+                    val opts = ActivityOptions.makeBasic().setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED).toBundle()
+                    pi.send(s, 0, null, null, null, null, opts)
+                } else pi.send()
+                true
+            }.getOrDefault(false)
         }
 
         /** Opens what the notification points to. */

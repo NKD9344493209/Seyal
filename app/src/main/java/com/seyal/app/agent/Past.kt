@@ -20,12 +20,12 @@ object Past {
     private var sinceCompact = 0
     private val secret = Regex("\\b(otp|one[- ]time|verification code|passcode|password|cvv|upi pin)\\b", RegexOption.IGNORE_CASE)
 
-    @Synchronized fun init(dir: File) {
+    @Synchronized fun init(dir: File, now: Long = System.currentTimeMillis()) {
         file = File(dir, "seyal/past.jsonl"); notes.clear()
         runCatching {
             file!!.forEachLine { line -> runCatching { JSONObject(line).let { o -> notes += Note(o.optLong("at"), o.optString("app"), o.optString("chat"), o.optString("text"), o.optBoolean("g")) } } }
         }
-        compact(System.currentTimeMillis())
+        compact(now)
     }
 
     private fun compact(now: Long) {

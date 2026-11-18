@@ -384,6 +384,14 @@ object ScreenDriver {
         return null
     }
 
+    /** The row of the listing the AI was shown that [text] is a copy of, found again on the screen as it is now. */
+    private fun listed(text: String): Pair<AccessibilityNodeInfo, Boolean>? {
+        val els = modelEls.ifEmpty { lastEls }
+        val (sw, sh) = screenSize(svc())
+        val rows = els.map { (id, e) -> ListPick.Row(id, e.text, (e.bounds.centerX() * 1000L / sw.coerceAtLeast(1)).toInt(), (e.bounds.centerY() * 1000L / sh.coerceAtLeast(1)).toInt()) }
+        return ListPick.match(text, rows)?.let { resolve(it) }
+    }
+
     private fun labelOf(id: Int): String? = (modelEls[id] ?: lastEls[id])?.text
     private fun roleOf(id: Int): String? = (modelEls[id] ?: lastEls[id])?.role
 
@@ -457,6 +465,8 @@ object ScreenDriver {
             hit?.first ?: (if (!text.isNullOrBlank()) findByText(text, exactOnly = true)?.also { byId = false; refound = true } else null) ?: return@withLock changed(id)
         } else {
             (if (!text.isNullOrBlank()) findByText(text, exactOnly) else null)
+                // Nothing on screen has that text of its own: it may be a whole row copied from the list (see ListPick).
+                ?: (if (!text.isNullOrBlank()) listed(text) else null)?.also { refound = it.second }?.first
                 ?: return@withLock JSONObject().put("ok", false).put("error", "Nothing called \"$text\" on screen. Here is the screen now.").put("screen", runCatching { describe(90) }.getOrNull())
         }
         val label = ((if (byId) labelOf(id!!) else null) ?: node.text?.toString()?.takeIf { it.isNotBlank() && !node.isEditable } ?: node.contentDescription?.toString()?.ifBlank { null } ?: hintOf(node).ifBlank { null } ?: text ?: "#$id").take(80)
