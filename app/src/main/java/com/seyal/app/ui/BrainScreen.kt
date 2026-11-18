@@ -81,7 +81,7 @@ fun BrainScreen() {
             Row {
                 Chip("Messages", selected = page == 0) { page = 0 }
                 Spacer(Modifier.width(8.dp))
-                Chip("Dirghadarshi", selected = page == 1) { page = 1 }
+                Chip("Signals", selected = page == 1) { page = 1 }
             }
         }
         if (page == 1) { ForesightSection(); Spacer(Modifier.height(16.dp)) } else {

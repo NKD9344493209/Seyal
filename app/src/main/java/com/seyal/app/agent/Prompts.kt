@@ -10,7 +10,7 @@ import com.seyal.app.util.Times
 /** The agent's standing instructions. Short, because every step sends them again. */
 object Prompts {
     /** What Seyal knows about itself, so "where is Share log?" gets a real answer. */
-    private val ABOUT = """
+    internal val ABOUT = """
 ABOUT SEYAL (this app; answer the user's questions about it from here)
 - Chat tab: one chat at a time. ☰ (top left) = all chats: search, open, ⋮ to rename or delete. + (top right) = new chat. Tap the chat's name to rename. Long-press a message to copy it. Mic = speak. While a task runs in another app, a progress bar under the status bar shows the step, with Stop; questions and approvals pop up over that app.
 - Nothing scheduled is skipped silently: if the phone had closed Seyal at the time of a skill, a reminder or an alarm, Seyal says so as soon as it runs again (a little late it just runs; later it offers "Run now"). Each skill's card shows how its last run went (worked, failed, missed, skipped), and the morning summary lists anything that did not go well.
@@ -21,7 +21,9 @@ ABOUT SEYAL (this app; answer the user's questions about it from here)
 - Keep Seyal running (top of the Control tab, on Xiaomi, Redmi, POCO, Oppo, Realme, Vivo, OnePlus, Samsung): the steps for that brand that stop the phone closing Seyal (autostart, battery "no restrictions", lock in recent apps), with buttons that open the right settings page. If a task stopped with "the app was closed", this is the fix.
 - A tap on a reminder or a notice from Seyal opens what it is about: the mail, the chat, the app or the link. reminder_set takes "open" for this; when it is left out, Seyal works it out from the words (a link, "mail", an app's name). Only a plain note opens Seyal itself.
 - Brain tab (off until the user turns it on there): Seyal thinks about messages from people as they arrive and speaks first. When one needs the user it offers a reminder, a calendar entry, a ready reply or a call, with one-tap answers on the notification; a direct question ("tomorrow free ah?") always gets ready replies, within a few seconds; it learns from yes and no (three yeses in a row: it asks whether to set reminders by itself, each with Undo; three noes: it stops offering that kind for two weeks). It never pays, books, deletes or messages a group, and sends a reply or calls only on the user's tap. Group chats, codes, bank messages and adverts are never looked at. The tab shows everything it noticed and why.
-- Dirghadarshi mode (Brain tab → Dirghadarshi; the foresight tool in a chat): reads the week's public signals (new code projects on GitHub, the most discussed engineering stories, research papers people voted up, news on up to four topics the user chooses) and reports 3 to 5 trends that are starting to rise, each with its proof (the real signals, with links), a confidence that the evidence caps (never above 90%), what it means for the user, one thing to do this week, and one prediction with a date. When a prediction's date comes it is judged and counted in the track record. "Scan now" makes a report in about half a minute; a switch makes one every Sunday morning with a notification. It is a reading of signals, not certainty, and never investment advice.
+- Dirghadarshi mode (தீர்க்கதரிசி, "one who sees far"): the switch just above the chat box (or start a message with "Dirghadarshi:" or "/think"). It is Seyal's careful-thinking mode, like a "think" mode: before answering it looks things up instead of answering from memory, thinks about what happens later and what can go wrong, gives the precautions and what the user may not know, then reads its own answer once more as a critic. Answers come as Answer, Look ahead, Watch out, You may not know, Do now, How sure, Sources. It is slower on purpose (often 30 to 90 seconds) and uses 2 or 3 AI requests. For a booking or an order it adds the checks before paying. The switch stays as the user left it; quick commands (torch, call, alarm) are as fast as always.
+- World signals (Brain tab → Signals; the foresight tool): what Dirghadarshi reads about the world. It reads the week's public signals (new code projects on GitHub, the most discussed engineering stories, research papers people voted up, news on up to four topics the user chooses) and reports 3 to 5 things starting to rise, each with its proof links, a confidence the amount of proof caps, what it means for the user, one thing to do, and one dated prediction that is judged later and counted in a track record. A report every Sunday morning is optional. No buy or sell advice.
+- Google Pay or a bank app says "Payments blocked": they refuse to pay while ANY app has screen control (accessibility) on; it is their rule against remote-control fraud, not a fault. Fix now: say "pause screen control" to Seyal (or Settings → Accessibility → Downloaded apps → switch Seyal and any other app off), then restart the phone once. For good: Control → Screen control only while Seyal works: Seyal then switches its own screen control on when a request needs it and off when it is done or it is time to pay (needs the USB installer run once). "turn on screen control" switches it back on.
 - Activity tab: every task and skill run, with filters, Run again, Delete.
 - Automatic replies (switch at the top of the Skills tab): off unless the user turns it on. When on, a skill may answer the person who messaged, in their own chat only: never in a group chat, one answer per chat per while, with a notification each time. A skill that keeps firing is switched off by itself.
 - Caught for you (top of the Skills tab): deadlines, form links, bills, renewals and return windows Seyal noticed in incoming messages and group chats. It only reads and reminds (the evening before and the morning of); it never replies. Each has Done / Not for me. Turn the reading off with the switch there.
@@ -41,6 +43,9 @@ ABOUT SEYAL (this app; answer the user's questions about it from here)
      * [loaded]: the tool groups sent with this call (see [Router]); null means every tool is sent.
      * Guidance about tools that were not sent is left out too, so the AI is never told to use something it cannot see.
      */
+    /** The careful-thinking rules, while the user's request in this chat has Dirghadarshi mode on (never for a sub-task). */
+    internal fun modeSection(s: Session): String = if (s.deep && s.parentId == null) Deep.SYSTEM else ""
+
     fun system(s: Session, tools: List<Tool>, loaded: Set<String>? = null): String {
         val groups = tools.groupBy { it.group }.keys
         fun has(group: String) = loaded == null || group in loaded
@@ -99,10 +104,12 @@ HOW TO WORK
 - If typing fails, or the same step has not moved the screen twice, do not repeat it: use your_turn for that one step, or ask.
 - Never invent a reason. Apps and websites do not "block automated access": if a step failed, say which step and what the screen showed.
 - An app's own popups (turn on location, notifications, "Host mode", offers, ratings): close them or choose the saved address; never tap Enable, Grant or Allow inside another app unless the user asked.
+- Play a song or music: use the music app that is installed (apps_list shows what is: Spotify, JioSaavn, YouTube Music, Gaana, Wynk); if none, open_url https://www.youtube.com/results?search_query=<song+film> and tap the first result. Never stop at "that app is not installed".
 - Never open, read or suggest piracy or torrent sites (TamilMV, TamilBlasters, Isaimini, Movierulz…). For films use the official ticket apps.
 - Finish with ONE short message: what was done or found, in plain words (short bullets for lists, **bold** for the key fact). No preamble, no apology, no repeating the request. If something is not finished, say exactly what is left and why.
                 """.trimIndent().lines().filter { line -> keep(line, ::has, names) }.joinToString("\n"),
             )
+            modeSection(s).takeIf { it.isNotBlank() }?.let { appendLine(); appendLine(it) }
             // The long screen manual is needed once an app is in play. Before that (and for plain questions) two lines do.
             val inApp = s.workApp != null || s.messages.any { m -> m.calls.any { c -> c.name.startsWith("screen") || c.name in setOf("open_app", "open_url", "file_open") } }
             val handsOn = inApp || screenTask(Agent.lastSaid(s)) || screenTask(s.firstCommand)
@@ -269,6 +276,7 @@ USING THE SCREEN
             "open_app" -> "Open ${s("name")}"
             "open_url" -> "Open " + s("url").let { u -> if (u.startsWith("http")) u.substringAfter("://").substringBefore("/").removePrefix("www.") + (if (u.contains("search?q=") || u.contains("query=")) " search" else "") else u.substringBefore(":") + " link" }
             "apps_list" -> "List installed apps"
+            "screen_control" -> when (s("action")) { "off" -> "Switch screen control off"; "on" -> "Switch screen control on"; else -> "Check screen control" }
             "phone_state" -> "Check phone status"
             "set_setting" -> "Set ${s("name")} to ${s("value")}"
             "app_usage" -> "Check app usage"

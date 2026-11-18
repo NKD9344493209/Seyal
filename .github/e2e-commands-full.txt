@@ -77,3 +77,9 @@ What is on my calendar this week?
 !brain Ram Kumar|tomorrow free ah?
 Remind me tomorrow at 6 pm to reply to the mail from the placement cell
 Use Dirghadarshi mode: what is starting to rise in AI and tech this week?
+Dirghadarshi: should I buy a new phone now or wait for the year end sales?
+Give me two good websites to learn Kotlin, each with its full link
+> go to the second link
+pause screen control
+turn on screen control
+Open Settings and tell me the Android version, to show screen control works again

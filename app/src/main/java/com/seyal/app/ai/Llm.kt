@@ -153,6 +153,17 @@ object Llm {
     /** How little each model may "think" before answering: minimal → low → (none, for models without the setting). Moves right when a model rejects a level. */
     private val thinkLevels = listOf("minimal", "low", null)
     private val thinkIndex = ConcurrentHashMap<String, Int>()
+    /** Dirghadarshi mode asks for the model's most careful thinking: high → medium → low → (none). */
+    private val deepLevels = listOf("high", "medium", "low", null)
+    private val deepIndex = ConcurrentHashMap<String, Int>()
+    /** Set for one request: think as hard as the model can (see [chat]'s deep). */
+    private val deepThink = ThreadLocal<Boolean>()
+    /** How long one request may stay silent before it counts as hung. Careful thinking takes far longer than a quick step. */
+    internal fun readTimeoutMs(deep: Boolean): Int = if (deep) 120_000 else 25_000
+    /** After how long a second model is asked as well. */
+    internal fun hedgeAfterMs(deep: Boolean, maxTokens: Int): Long = if (deep) 75_000L else if (maxTokens > 3000) 18_000L else HEDGE_AFTER_MS
+    /** The thinking level for a request: [level] counts how many levels the model has already refused. */
+    internal fun thinkLevel(deep: Boolean, level: Int): String? = (if (deep) deepLevels else thinkLevels).let { it[level.coerceIn(0, it.size - 1)] }
 
     /** Gemini's free daily limits start again at midnight in California. */
     fun quotaResetAt(): Long {
@@ -225,7 +236,7 @@ object Llm {
      */
     suspend fun chat(
         system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int = 2048,
-        forceTool: Boolean = false, onWait: (String) -> Unit = {},
+        forceTool: Boolean = false, onWait: (String) -> Unit = {}, deep: Boolean = false,
     ): LlmResponse = withContext(Dispatchers.IO) {
         if (!Settings.hasKey) throw LlmException("No AI key yet. Add one in Control → AI.")
         syncKey()
@@ -260,19 +271,20 @@ object Llm {
                 // One request, on whichever thread runs it.
                 val ask: (String) -> LlmResponse = { m ->
                     mustCall.set(forceTool && tools.isNotEmpty())
+                    deepThink.set(deep)
                     try {
                         when (Settings.provider) {
                             "anthropic" -> anthropic(system, messages, tools, maxTokens, m)
                             "openai" -> openai(system, messages, tools, maxTokens, m)
                             else -> gemini(system, messages, tools, maxTokens, m)
                         }
-                    } finally { mustCall.remove() }
+                    } finally { mustCall.remove(); deepThink.remove() }
                 }
                 // A normal answer takes one or two seconds. When nothing has come back after ten, the request is
                 // most likely stuck (it used to sit for 25 s before giving up): ask a second model as well and take
                 // whichever answers first.
                 val (winner, out) = hedged(
-                    model, if (maxTokens > 3000) 18_000L else HEDGE_AFTER_MS,
+                    model, hedgeAfterMs(deep, maxTokens),
                     backup = { val n = System.currentTimeMillis(); models().firstOrNull { it != model && coolWhy[it] != "missing" && roomAt(it, n) <= n } },
                     onBackup = { b ->
                         used(b, System.currentTimeMillis()); Settings.aiRequestsToday = Settings.aiRequestsToday + 1
@@ -358,15 +370,20 @@ object Llm {
 
     // ---------------------------------------------------------------- Gemini
 
-    private fun gemini(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int, model: String): LlmResponse = try {
-        geminiCall(system, messages, tools, maxTokens, model, thinkLevels[thinkIndex[model] ?: 0])
-    } catch (e: LlmException) {
-        val i = thinkIndex[model] ?: 0
-        if (!e.busy && i < thinkLevels.size - 1 && (e.message ?: "").contains("think", ignoreCase = true)) {
-            thinkIndex[model] = i + 1
-            log("$model rejected thinking level ${thinkLevels[i]}, using ${thinkLevels[i + 1] ?: "none"}")
-            gemini(system, messages, tools, maxTokens, model)
-        } else throw e
+    private fun gemini(system: String, messages: List<Msg>, tools: List<ToolDecl>, maxTokens: Int, model: String): LlmResponse {
+        val deep = deepThink.get() == true
+        val index = if (deep) deepIndex else thinkIndex
+        val levels = if (deep) deepLevels else thinkLevels
+        return try {
+            geminiCall(system, messages, tools, if (deep) maxOf(maxTokens, 8192) else maxTokens, model, thinkLevel(deep, index[model] ?: 0))
+        } catch (e: LlmException) {
+            val i = index[model] ?: 0
+            if (!e.busy && i < levels.size - 1 && (e.message ?: "").contains("think", ignoreCase = true)) {
+                index[model] = i + 1
+                log("$model rejected thinking level ${levels[i]}, using ${levels[i + 1] ?: "none"}")
+                gemini(system, messages, tools, maxTokens, model)
+            } else throw e
+        }
     }
 
     /** Some models leak the word "thought" (their thinking marker) as the text of a reply. It is not something to show the user. */
@@ -458,7 +475,7 @@ object Llm {
                 put("temperature", 0.2)
                 put("maxOutputTokens", maxOf(maxTokens, 4096))
                 // Phone tasks need little "thinking"; high thinking made every step take a minute.
-                if (isGemini2(model)) put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+                if (isGemini2(model)) put("thinkingConfig", JSONObject().put("thinkingBudget", if (deepThink.get() == true) -1 else 0))
                 else if (think != null) put("thinkingConfig", JSONObject().put("thinkingLevel", think))
             })
         }
@@ -634,7 +651,8 @@ object Llm {
             requestMethod = "POST"
             connectTimeout = 20_000
             // Flash-Lite answers in 1-3 s. A model that says nothing for 25 s has hung: another one takes over.
-            readTimeout = 25_000
+            // (Two minutes when it was asked to think hard.)
+            readTimeout = readTimeoutMs(deepThink.get() == true)
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("User-Agent", "Seyal/2.0")

@@ -2,6 +2,7 @@ package com.seyal.app.agent
 
 import android.content.Context
 import android.content.Intent
+import com.seyal.app.BuildConfig
 import com.seyal.app.ai.Llm
 import com.seyal.app.ai.LlmException
 import com.seyal.app.data.CallState
@@ -17,6 +18,7 @@ import com.seyal.app.data.Store
 import com.seyal.app.data.newId
 import com.seyal.app.device.AgentService
 import com.seyal.app.device.Notify
+import com.seyal.app.device.ScreenAccess
 import com.seyal.app.device.ScreenDriver
 import com.seyal.app.device.Speech
 import com.seyal.app.ui.MainActivity
@@ -184,6 +186,11 @@ object Agent {
 
     fun init(context: Context) {
         app = context.applicationContext
+        // "Screen control only while Seyal works": nothing is running when the app starts, so it rests (payment apps work).
+        scope.launch {
+            delay(8000)
+            if (BuildConfig.FLAVOR == "full" && ScreenDriver.available && ScreenAccess.onDemand(app) && lock.withLock { live.values.none { it.status.isOpen } }) runCatching { ScreenAccess.off(app) }
+        }
         index = Store.loadIndex()
         _paused.value = Settings.paused
         // The status pill shown over other apps: Stop stops everything, a tap on the text opens Seyal.
@@ -306,7 +313,7 @@ object Agent {
             purchase = s.order != null || Preflight.kind(said) != null || Preflight.kind(s.firstCommand) != null,
             attached = s.messages.any { m -> m.role == "user" && m.parts.any { it is Part.Image } },
             fromSkill = s.source.startsWith("skill"),
-        )
+        ).let { if (s.deep) it + "foresight" else it }
     }
 
     /** The one line kept in the task list and the notification: the first line that says something, not a lead-in ending in a colon when more follows. */
@@ -390,9 +397,10 @@ object Agent {
     // ------------------------------------------------------------ requests
 
     /** Starts a new session for a user request and runs the loop. */
-    fun start(command: String, image: Part.Image? = null, source: String = "user", files: List<Part.Image> = emptyList()): Session {
+    fun start(command: String, image: Part.Image? = null, source: String = "user", files: List<Part.Image> = emptyList(), deep: Boolean = false): Session {
         val s = Session(newId(), System.currentTimeMillis(), source)
         s.title = titleFrom(command)
+        s.deep = source == "user" && (deep || Deep.wants(command))
         val parts = mutableListOf<Part>(Part.Text(command.trim()))
         image?.let { parts += it }
         parts += files
@@ -416,7 +424,7 @@ object Agent {
      * If a tool round is in flight, it is queued until the results are in (the transcript must stay
      * assistant-calls → tool-results). Otherwise it is appended and the loop runs again.
      */
-    fun say(sessionId: String, text: String, image: Part.Image? = null, files: List<Part.Image> = emptyList()) = scope.launch {
+    fun say(sessionId: String, text: String, image: Part.Image? = null, files: List<Part.Image> = emptyList(), deep: Boolean = false) = scope.launch {
         val msg = text.trim()
         val s = lock.withLock {
             val s = live[sessionId] ?: Store.loadSession(sessionId)?.also { live[sessionId] = it } ?: return@launch
@@ -436,11 +444,11 @@ object Agent {
                 // On a real phone one chat was used all day and a booking started at "step 73", slow and confused.
                 newTask(s, msg) -> {
                     // (The lock is held here; start() takes it in its own coroutine, so the note lands before anything reads the chat.)
-                    start(msg, image, files = files).note = NEW_CHAT_NOTE
+                    start(msg, image, files = files, deep = deep).note = NEW_CHAT_NOTE
                     return@launch
                 }
-                // A finished, stopped or failed conversation carries on.
-                else -> { s.messages += Msg("user", parts); s.status = SessionStatus.RUNNING; touch(s); run(s) }
+                // A finished, stopped or failed conversation carries on. The switch counts for this request only.
+                else -> { s.deep = deep || Deep.wants(msg); s.messages += Msg("user", parts); s.status = SessionStatus.RUNNING; touch(s); run(s) }
             }
             s
         }
@@ -462,6 +470,8 @@ object Agent {
         if (s.status.isOpen || s.parentId != null) return false
         val m = msg.trim()
         if (m.length < 12 || followUp.containsMatchIn(m)) return false
+        // "Go to that link" means a link of this chat's last answer; "pause screen control" is no job at all.
+        if (LinkPick.pointsAtLink(m) || PayPause.asks(m) != null) return false
         if (Preflight.kind(m) != null) return true
         val served = s.messages.count { fromUser(it) }
         return served >= 2 && m.split(Regex("\\s+")).size >= 4
@@ -505,6 +515,11 @@ object Agent {
         try {
             while (coroutineContext.isActive) {
                 pauseGate.await()
+                // The words of a new request (first round only).
+                val said = if (!firstRound) "" else lock.withLock { s.messages.lastOrNull() }?.takeIf { it.role == "user" && it.parts.none { p -> p is Part.Image } }?.text?.removePrefix(MIDTASK).orEmpty()
+                // Screen control may be resting (payment apps refuse to pay while it is on): it is switched on, or asked
+                // for, BEFORE the tools are listed, so that this very step can use the screen.
+                if (firstRound && !screenReady(s, said)) return
                 // Tools can appear mid-task (the user turns screen control on), so look each step.
                 val noShots = runCatching { ScreenDriver.shotsBroken() }.getOrDefault(false)
                 val every = Toolbox.available().filter { (allowDelegate || it.name != "delegate") && !(noShots && it.name == "screenshot") }
@@ -529,8 +544,6 @@ object Agent {
                     firstRound = false
                     // A new request gets its own checks before "done".
                     s.checked.clear()
-                    val lastMsg = lock.withLock { s.messages.lastOrNull() }
-                    val said = lastMsg?.takeIf { it.role == "user" && it.parts.none { p -> p is Part.Image } }?.text?.removePrefix(MIDTASK).orEmpty()
                     if (s.source == "user" && s.parentId == null && said.isNotBlank()) {
                         // 1. A command that needs no thinking ("torch on", "open YouTube"): do it now.
                         val quick = Quick.match(said)
@@ -545,7 +558,9 @@ object Agent {
                         }
                         // 1a. The everyday commands (call, message, alarm, weather, battery…): understood on the phone, no AI asked.
                         val lastPlace = s.messages.asReversed().asSequence().filter { it.role == "tool" }.flatMap { it.results.asSequence() }.firstOrNull { it.name == "weather" && !it.isError }?.output?.optString("place")?.substringBefore(",")?.takeIf { it.isNotBlank() }
-                        val basic = if (quick == null) Basics.plan(said, whatsApp = runCatching { Preflight.appLabels().any { it.contains("WhatsApp", true) } }.getOrDefault(true), lastPlace = lastPlace) else null
+                        // The answer before this message: "go to that link" means a link in it.
+                        val lastAnswer = lock.withLock { s.messages.dropLast(1).lastOrNull { it.role == "assistant" && it.calls.isEmpty() && it.text.isNotBlank() }?.text }
+                        val basic = if (quick == null) Basics.plan(said, whatsApp = runCatching { Preflight.appLabels().any { it.contains("WhatsApp", true) } }.getOrDefault(true), lastPlace = lastPlace, lastAnswer = lastAnswer) else null
                         if (basic != null) {
                             val answer = runBasic(s, basic, byName)
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
@@ -557,7 +572,7 @@ object Agent {
                             }
                         }
                         // 1b. Asked before, done the same way: repeat the steps that worked, with no AI at all.
-                        val known = if (quick == null && basic == null && Preflight.kind(said) == null) Routines.exact(said)?.takeIf { r -> r.steps.all { byName[it.name] != null } } else null
+                        val known = if (quick == null && basic == null && !s.deep && Preflight.kind(said) == null) Routines.exact(said)?.takeIf { r -> r.steps.all { byName[it.name] != null } } else null
                         if (known != null) {
                             report("Doing it the way that worked last time…")
                             val steps = known.steps.map { Part.Call(newId(), it.name, JSONObject(it.args.toString())) }
@@ -660,12 +675,15 @@ object Agent {
                 }
 
                 val snapshot = lock.withLock { repair(s); forModel(s) }
-                report(if (stepsThisRun == 0) "Thinking…" else "Thinking · step ${stepsThisRun + 1}")
+                // Dirghadarshi mode thinks hard about the answer and the plan, not about each tap inside an app.
+                val usedScreen = s.deep && lock.withLock { didSince(s).any { usesScreen(it.name) } }
+                val hard = Deep.thinkHard(s.deep, usedScreen, s.order != null, if (s.deep) lock.withLock { lastSaid(s) } else "")
+                report(if (hard) Deep.status(stepsThisRun, reviewing = "deep-review" in s.checked) else if (stepsThisRun == 0) "Thinking…" else "Thinking · step ${stepsThisRun + 1}")
                 // From here on, element ids mean the screen the AI is about to see.
                 ScreenDriver.freezeIds(s.id)
                 val t0 = System.currentTimeMillis()
                 val resp = try {
-                    Llm.chat(Prompts.system(s, tools, loaded), snapshot, decls, 2048, onWait = { report(it) })
+                    Llm.chat(Prompts.system(s, tools, loaded), snapshot, decls, if (hard) 6000 else 2048, onWait = { report(it) }, deep = hard)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -699,6 +717,32 @@ object Agent {
                         lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Honest.NUDGE))); touch(s) }
                         continue
                     }
+                    // It said it selected, booked or sent something, yet no step of this request did that: never told to the user as fact.
+                    if ("claim" !in s.checked && s.parentId == null && (s.order != null || Preflight.kind(lock.withLock { lastSaid(s) }) != null)) {
+                        val did = lock.withLock { didSince(s) }
+                        val deed = Honest.unbacked(resp.text, did.filter { it.ok }.map { it.name })
+                        if (deed != null) {
+                            s.checked += "claim"
+                            lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Honest.claimNudge(deed, ScreenDriver.available)))); touch(s) }
+                            continue
+                        }
+                    }
+                    // Dirghadarshi mode: a question about things that change is looked up, never answered from memory…
+                    if (s.deep && s.parentId == null && "deep-look" !in s.checked) {
+                        val asked = lock.withLock { lastSaid(s) }
+                        val used = lock.withLock { didSince(s).map { it.name } }
+                        if (Deep.needsLookup(asked) && !Deep.lookedUp(used) && used.none { usesScreen(it) }) {
+                            s.checked += "deep-look"
+                            lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Deep.LOOKUP_NUDGE))); touch(s) }
+                            continue
+                        }
+                    }
+                    // …and the first full answer is read once more, as a critic would, before the user sees it.
+                    if (s.deep && s.parentId == null && "deep-review" !in s.checked && Deep.worthReview(resp.text, usedScreen, s.order != null)) {
+                        s.checked += "deep-review"
+                        lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Deep.REVIEW_NUDGE))); touch(s) }
+                        continue
+                    }
                     // "Done" has to mean done: compare what was asked with what happened, and send the AI back once per gap.
                     val gap = if (s.source == "user" && s.parentId == null && s.checked.size < 5) lock.withLock {
                         val said = lastSaid(s)
@@ -714,7 +758,10 @@ object Agent {
                     }
                     // A meeting that is not in the calendar is never reported as "scheduled": if the answer leaves that out, it is added.
                     val meetings = lock.withLock { didSince(s).filter { it.name == "calendar_add" }.mapNotNull { it.output } }
-                    val answer = Meetings.withProof(resp.text, meetings)
+                    // A booking that has reached payment: payment apps refuse to pay while screen control is on.
+                    val onDemand = ScreenAccess.onDemand(app)
+                    val payNote = PayPause.payNote(s.order != null && s.parentId == null && PayPause.speaksOfPaying(resp.text), ScreenDriver.available, onDemand)
+                    val answer = Meetings.withProof(resp.text, meetings).let { if (payNote != null && it.isNotBlank()) it.trimEnd() + "\n\n" + payNote else it }
                     if (answer != resp.text) lock.withLock {
                         val i = s.messages.indexOfLast { it.role == "assistant" && it.calls.isEmpty() }
                         if (i >= 0) s.messages[i] = Msg("assistant", listOf(Part.Text(answer))) else s.messages += Msg("assistant", listOf(Part.Text(answer)))
@@ -954,7 +1001,7 @@ object Agent {
         if (status == SessionStatus.DONE && s.parentId == null && Settings.hasKey) s.workApp?.let { pkg ->
             scope.launch { runCatching { Lessons.learnFrom(s, ScreenDriver.appLabel(app, pkg)) } }
         }
-        idleCheck(if (s.parentId == null) (if (status == SessionStatus.DONE) "Done · " else "Stopped · ") + (s.result ?: "") else null)
+        idleCheck(if (s.parentId == null) (if (status == SessionStatus.DONE) "Done · " else "Stopped · ") + (s.result ?: "") else null, payingNext = s.order != null)
         if (s.parentId == null) {
             val skillId = s.source.takeIf { it.startsWith("skill:") }?.removePrefix("skill:")
             if (skillId != null) runCatching { Skills.noteResult(skillId, status == SessionStatus.DONE, s.result ?: "") }
@@ -1078,19 +1125,68 @@ object Agent {
         else SessionStatus.FAILED to "Not finished. $why Done so far: $did. Say \"continue\" to carry on."
     }
 
+    /** What Seyal is doing this moment, in words ("Noting your details…", "Waiting 20 s for the AI's limit"): shown under the chat. */
+    private val _progress = MutableStateFlow("")
+    val progress: StateFlow<String> = _progress
+
+    /** "Screen control only while Seyal works": switched on here, at the start of a request that may need it. */
+    private suspend fun ensureScreen() {
+        if (BuildConfig.FLAVOR != "full" || ScreenDriver.available || !ScreenAccess.onDemand(app)) return
+        report("Switching screen control on…")
+        runCatching { ScreenAccess.on(app) }
+    }
+
+    /**
+     * Before a request starts: is the screen usable if the request needs it? Everyday commands (torch, call, "pause
+     * screen control") need nothing. Otherwise a resting screen control is switched on where Seyal can do that itself.
+     * A booking or an order with screen control off, on a phone where it cannot: the user is asked at once, and either
+     * switches it on or gets the app opened with an honest "the rest is yours". (On a real phone Seyal instead handed
+     * every step to the user and then invented the seats.) False = the request has been answered or stopped here.
+     */
+    private suspend fun screenReady(s: Session, said: String): Boolean {
+        if (BuildConfig.FLAVOR != "full" || ScreenDriver.available) return true
+        if (s.parentId != null) return true
+        if (s.source != "user") { ensureScreen(); return true }
+        if (said.isBlank() || Quick.match(said) != null || runCatching { Basics.plan(said) }.getOrNull() != null) return true
+        ensureScreen()
+        val kind = Preflight.kind(said)
+        if (ScreenDriver.available || kind == null) return true
+        val ask = Toolbox.get("ask_user") ?: return true
+        val appName = runCatching { Preflight.appsFor(kind, said).firstOrNull() }.getOrNull().orEmpty()
+        val q = Part.Call(newId(), "ask_user", JSONObject().put("question", PayPause.needQuestion(appName)).put("options", org.json.JSONArray(listOf(PayPause.TURN_ON, PayPause.JUST_OPEN))))
+        val a = runSynthetic(s, q, ask).output.optString("answer"); s.steps++
+        if (lock.withLock { s.status == SessionStatus.CANCELLED }) return false
+        var on = false
+        if (PayPause.wantsOn(a)) {
+            report("Switching screen control on…")
+            on = ScreenAccess.on(app)
+            if (!on && ScreenAccess.openSettings(app)) { report("Waiting for you to switch Seyal on in Accessibility…"); on = ScreenAccess.waitForUser() }
+            // Back from the Settings page to the chat, where the questions about the booking come next.
+            if (on) runCatching { app.startActivity(Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)) }
+        }
+        if (on) return true
+        if (appName.isNotBlank()) Toolbox.get("open_app")?.let { runSynthetic(s, Part.Call(newId(), "open_app", JSONObject().put("name", appName)), it); s.steps++ }
+        finish(s, SessionStatus.DONE, (if (appName.isNotBlank()) "Opened $appName. " else "") + PayPause.stillOff(appName))
+        return false
+    }
+
     private fun report(text: String) {
+        _progress.value = plain(text)
         val g = activity.incrementAndGet()
         ScreenDriver.status(plain(text))
         AgentService.working(app, text, g)
     }
 
     /** When nothing is open any more: say the result on the pill for a moment, then clear up. */
-    private fun idleCheck(lastWords: String?) {
+    private fun idleCheck(lastWords: String?, payingNext: Boolean = false) {
         scope.launch {
             val g = lock.withLock { if (live.values.any { it.status.isOpen }) return@launch; activity.get() }
             AgentService.idle(g)
-            if (lastWords != null) { ScreenDriver.status(plain(lastWords).take(70), busy = false); delay(4500) }
+            _progress.value = ""
+            if (lastWords != null) { ScreenDriver.status(plain(lastWords).take(70), busy = false); delay(if (payingNext) 1200 else 4500) }
             lock.withLock { if (activity.get() == g && live.values.none { it.status.isOpen }) ScreenDriver.status(null) }
+            // "Only while Seyal works": nothing is running any more, so screen control goes off (the user may be about to pay).
+            if (ScreenDriver.available && ScreenAccess.onDemand(app) && lock.withLock { activity.get() == g && live.values.none { it.status.isOpen } }) runCatching { ScreenAccess.off(app) }
         }
     }
 

@@ -20,6 +20,30 @@ object ScreenTools {
     val all: List<Tool> by lazy {
         listOf(
             Tool(
+                "screen_control", "phone",
+                "Switch Seyal's OWN screen control off or on. Off: before the user pays, or when Google Pay / a bank app says \"Payments blocked\" (they refuse to pay while any screen-control app is on). On: when the user wants Seyal to work inside apps again. status: whether it is on.",
+                schema { str("action", "off | on | status", required = true) },
+                available = { com.seyal.app.BuildConfig.FLAVOR == "full" },
+            ) { a, _ ->
+                val ctx = com.seyal.app.agent.Agent.app
+                when (a.optString("action").lowercase()) {
+                    "off" -> {
+                        val was = com.seyal.app.device.ScreenAccess.off(ctx)
+                        val say = com.seyal.app.agent.PayPause.offSaid(was, com.seyal.app.device.ScreenAccess.canSwitch(ctx))
+                        ToolResult.ok("Screen control off", "on" to false, "say" to say)
+                    }
+                    "on" -> {
+                        var on = com.seyal.app.device.ScreenAccess.on(ctx)
+                        val opened = !on && com.seyal.app.device.ScreenAccess.openSettings(ctx)
+                        if (opened) on = com.seyal.app.device.ScreenAccess.waitForUser(60_000)
+                        ToolResult.ok(if (on) "Screen control on" else "Screen control is still off", "on" to on, "say" to com.seyal.app.agent.PayPause.onSaid(on, opened))
+                    }
+                    else -> ToolResult.ok(if (ScreenDriver.available) "Screen control is on" else "Screen control is off", "on" to ScreenDriver.available,
+                        "can_switch_itself" to com.seyal.app.device.ScreenAccess.canSwitch(ctx), "only_while_working" to com.seyal.app.data.Settings.screenOnDemand)
+                }
+            },
+
+            Tool(
                 "screen_read", "screen",
                 "What is on the screen right now: app, and elements one per line as `id [role] label (notes) @x,y`. Roles: button, tap (tappable row), field, check:on/off, heading, text. Only needed at the start or after waiting: every screen action already returns the new screen.",
                 noArgs, available = screenOn,

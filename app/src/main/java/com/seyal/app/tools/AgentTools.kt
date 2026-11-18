@@ -53,7 +53,12 @@ object AgentTools {
                 if (!shown) {
                     // No bar can be drawn (Screen control off, or Seyal itself is in front): ask in the chat instead.
                     val answer = ctx.askUser("$what\nDo it in the app, then come back here and tap $label.", listOf(label))
-                    return@Tool ToolResult.Done(JSONObject().put("ok", true).put("answer", answer), "You did it yourself")
+                    return@Tool ToolResult.Done(
+                        JSONObject().put("ok", true).put("answer", answer).put("seen", false).put("note", "You could not see the app while the user did this (" +
+                            (if (com.seyal.app.device.ScreenDriver.available) "Seyal itself was in front" else "screen control is off") +
+                            "). You do NOT know what they chose: never state seats, items or prices. Ask them, or say only what is left to do."),
+                        "You did it yourself",
+                    )
                 }
                 com.seyal.app.device.ScreenDriver.status(null)
                 runCatching { com.seyal.app.device.Notify.line(com.seyal.app.agent.Agent.app, "Your turn: $what. Tap $label on the bar when finished.", ctx.sessionId) }

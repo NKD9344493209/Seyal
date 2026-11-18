@@ -99,6 +99,8 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
     val tick by Agent.tick.collectAsState()
     val listState = rememberLazyListState()
     var text by remember { mutableStateOf("") }
+    // Dirghadarshi: the careful-thinking switch above the chat box. It stays as the user left it.
+    var deep by remember { mutableStateOf(Settings.deepMode) }
     var listening by remember { mutableStateOf(false) }
     var showChats by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -141,8 +143,8 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
                 val parts = files.mapNotNull { it.part }
                 if (parts.isNotEmpty()) msg += "\n\n(Attached: " + files.filter { it.part != null }.joinToString(", ") { it.name } + ")"
                 val uris = files.filter { it.kind == "image" }.mapNotNull { it.uri }
-                if (current != null) { Agent.say(current.id, msg, sharedImage, parts); com.seyal.app.device.Attach.remember(current.id, uris) }
-                else com.seyal.app.device.Attach.remember(Agent.start(msg, sharedImage, files = parts).id, uris)
+                if (current != null) { Agent.say(current.id, msg, sharedImage, parts, deep = deep); com.seyal.app.device.Attach.remember(current.id, uris) }
+                else com.seyal.app.device.Attach.remember(Agent.start(msg, sharedImage, files = parts, deep = deep).id, uris)
                 text = ""
                 activity?.sharedText?.value = null
                 activity?.sharedImage?.value = null
@@ -228,9 +230,18 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
                     if (attaching) Text("Reading the file…", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 }
             }
+            // The thinking mode, like the "Think" switch of other assistants: on = checked facts, a look ahead, precautions.
+            Row(Modifier.padding(start = 4.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Chip(if (deep) "Dirghadarshi · on" else "Dirghadarshi", selected = deep) { deep = !deep; Settings.deepMode = deep }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (deep) "Thinks further: checks facts, looks ahead, warns you. Slower." else "தீர்க்கதரிசி · tap for careful thinking",
+                    style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1,
+                )
+            }
             val shape = RoundedCornerShape(26.dp)
             Row(
-                Modifier.fillMaxWidth().background(cs.surface, shape).border(1.dp, cs.outline, shape).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                Modifier.fillMaxWidth().background(cs.surface, shape).border(1.dp, if (deep) Ink.green else cs.outline, shape).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
@@ -245,6 +256,7 @@ fun ChatScreen(openSessionId: String?, goTo: (Tab) -> Unit) {
                             waitingQuestion -> "Type your answer…"
                             open != null -> "Add to this task…"
                             sharedText != null || sharedImage != null || attached.any { it.ok } -> "What should I do with it?"
+                            deep -> "Ask, and I'll think it through…"
                             current != null -> "Reply in this chat…"
                             else -> "Ask Seyal to do anything…"
                         },

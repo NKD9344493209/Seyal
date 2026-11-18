@@ -101,7 +101,7 @@ object Basics {
     }
 
     /** [lastPlace]: the place of the weather answer just given in this chat, so "and tomorrow?" needs no AI. */
-    fun plan(raw: String, now: LocalDateTime = LocalDateTime.now(), whatsApp: Boolean = true, lastPlace: String? = null): Plan? {
+    fun plan(raw: String, now: LocalDateTime = LocalDateTime.now(), whatsApp: Boolean = true, lastPlace: String? = null, lastAnswer: String? = null): Plan? {
         val original = polite.replace(polite.replace(raw.trim(), ""), "").trim().trimEnd('.', '!')
         val t = original.lowercase().replace(Regex("\\s+"), " ").trimEnd('?').trim()
         if (t.length < 3 || t.length > 220 || t.contains('\n')) return null
@@ -212,8 +212,14 @@ object Basics {
         }?.let { return it }
         if (Regex("^(?:put (?:the )?phone (?:on|in|to) |switch to |set (?:the )?(?:phone|ringer) to )?(?:normal|ring|ringing|sound)(?: mode)?$|^unmute(?: the)?(?: phone)?$").matches(t)) return Plan("set_setting", args("name" to "ringer", "value" to "normal"))
 
+        // ---- "go to that link": the link of the answer just given, never a place on the map
+        // (seen on a real phone: "go to that link" opened Maps with directions to "that link").
+        LinkPick.pick(asTyped, lastAnswer)?.let { url -> return Plan("open_url", args("url" to url), say = "Opened ${LinkPick.host(url)}.") }
+        // ---- screen control off before paying, on again after (Google Pay blocks payments while it is on)
+        PayPause.asks(t)?.let { ask -> return Plan("screen_control", args("action" to if (ask == PayPause.Ask.OFF) "off" else "on")) { o -> o.optString("say").ifBlank { "Done." } } }
+
         // ---- places and searches: open the right page straight away
-        Regex("^(?:navigate|navigation|directions?|route|take me|drive|go)(?: me)? to (.{2,80})$|^(?:show|get|give)(?: me)? (?:the )?(?:directions?|route|way) to (.{2,80})$|^how (?:do i|to) (?:get|go|reach) to (.{2,80})$|^(.{2,60}?) ?(?:ku|kku) (?:vazhi|route|direction) (?:kaattu|kaatu|sollu|podu)$").on { m ->
+        if (!LinkPick.pointsAtLink(t)) Regex("^(?:navigate|navigation|directions?|route|take me|drive|go)(?: me)? to (.{2,80})$|^(?:show|get|give)(?: me)? (?:the )?(?:directions?|route|way) to (.{2,80})$|^how (?:do i|to) (?:get|go|reach) to (.{2,80})$|^(.{2,60}?) ?(?:ku|kku) (?:vazhi|route|direction) (?:kaattu|kaatu|sollu|podu)$").on { m ->
             val place = typed(m, (1..m.groupValues.lastIndex).first { m.groupValues[it].isNotBlank() })
             Plan("open_url", args("url" to "https://www.google.com/maps/dir/?api=1&destination=${enc(place)}"), say = "Opened directions to ${place.trim()} in Maps.")
         }?.let { return it }

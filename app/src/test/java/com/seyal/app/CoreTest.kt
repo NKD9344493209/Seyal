@@ -26,6 +26,9 @@ import com.seyal.app.agent.Prompts
 import com.seyal.app.agent.Router
 import com.seyal.app.agent.Links
 import com.seyal.app.agent.Target
+import com.seyal.app.agent.Deep
+import com.seyal.app.agent.LinkPick
+import com.seyal.app.agent.PayPause
 import com.seyal.app.agent.ForesightStore
 import com.seyal.app.agent.Foresight
 import com.seyal.app.agent.Brain
@@ -2301,8 +2304,150 @@ fun testForesight() {
     T.eq("the step is named in the chat", "Dirghadarshi: read this week's signals", Prompts.friendly(Part.Call("f1", "foresight", JSONObject().put("action", "scan"))))
 }
 
+fun testSixthVideos() {
+    val now = LocalDateTime.of(2026, 11, 18, 18, 30)
+    val shoes = "Here are some options:\n- [Flipkart Black Shoes](https://www.flipkart.com/q/black-shoes-under-500).\n- Amazon: https://www.amazon.in/Mens-Casual-Shoes-Under-500/s?rh=n%3A9780814031, and\n- https://www.myntra.com/men-casual-shoes?rf=Price"
+
+    println("Recording of 18 Nov, 16:51: \"go to that link\" opened Maps")
+    T.eq("the links of an answer, in order, without the sentence's punctuation",
+        listOf("https://www.flipkart.com/q/black-shoes-under-500", "https://www.amazon.in/Mens-Casual-Shoes-Under-500/s?rh=n%3A9780814031", "https://www.myntra.com/men-casual-shoes?rf=Price"), LinkPick.links(shoes))
+    T.eq("'go to that link' is the first link of the answer", "https://www.flipkart.com/q/black-shoes-under-500", LinkPick.pick("go to that link", shoes))
+    T.eq("'go the link' (as typed on the phone) too", "https://www.flipkart.com/q/black-shoes-under-500", LinkPick.pick("go the link", shoes))
+    T.eq("'open the second link'", "https://www.amazon.in/Mens-Casual-Shoes-Under-500/s?rh=n%3A9780814031", LinkPick.pick("Open the second link.", shoes))
+    T.eq("'open the amazon link' goes by the name", "https://www.amazon.in/Mens-Casual-Shoes-Under-500/s?rh=n%3A9780814031", LinkPick.pick("open the amazon link", shoes))
+    T.eq("'open the myntra one'", "https://www.myntra.com/men-casual-shoes?rf=Price", LinkPick.pick("open the myntra one", shoes))
+    T.eq("'open the last link'", "https://www.myntra.com/men-casual-shoes?rf=Price", LinkPick.pick("open the last link", shoes))
+    T.eq("'open it'", "https://www.flipkart.com/q/black-shoes-under-500", LinkPick.pick("open it", shoes))
+    T.eq("no link in the answer: not ours to answer", null, LinkPick.pick("go to that link", "I found three shoes under 500."))
+    T.eq("…nor with no answer before", null, LinkPick.pick("open the link", null))
+    T.eq("a page of the phone is not a link of the answer", null, LinkPick.pick("open the settings page", shoes))
+    T.eq("'open the one' says nothing", null, LinkPick.pick("open the one", shoes))
+    T.eq("a web address typed outright is that address", "https://irctc.co.in", LinkPick.pick("go to irctc.co.in", null))
+    T.eq("…with its path", "https://www.flipkart.com/offers", LinkPick.pick("open https://www.flipkart.com/offers", null))
+    T.eq("a request that is not about a link", null, LinkPick.pick("open YouTube", shoes))
+    T.eq("the site's name, for the answer", "flipkart.com", LinkPick.host("https://www.flipkart.com/q/black-shoes-under-500"))
+    val go = Basics.plan("go to that link", now, true, null, shoes)
+    T.check("the everyday command opens the link, not Maps", go?.tool == "open_url" && go.args.optString("url") == "https://www.flipkart.com/q/black-shoes-under-500" && go.say == "Opened flipkart.com.")
+    T.eq("with no link to mean, it is never directions to \"that link\"", null, Basics.plan("go to that link", now, true, null, null))
+    T.eq("…nor to \"the website\"", null, Basics.plan("take me to the website", now, true))
+    T.check("a real place still opens directions", Basics.plan("go to Gandhipuram bus stand", now, true)?.args?.optString("url").orEmpty().contains("maps/dir/?api=1&destination=Gandhipuram"))
+    T.check("…and 'navigate to RS Puram'", Basics.plan("navigate to RS Puram", now, true)?.say == "Opened directions to RS Puram in Maps.")
+    fun served(n: Int) = Session("lk$n", 1L).apply { repeat(n) { messages += Msg("user", listOf(Part.Text("request $it"))); messages += Msg("assistant", listOf(Part.Text("answer $it https://example.com/$it"))) }; status = SessionStatus.DONE }
+    T.check("\"go to the second link\" stays in the chat whose answer it means", !Agent.newTask(served(3), "go to the second link") && !Agent.newTask(served(3), "open the amazon link please"))
+    T.check("…a new job in that chat still gets its own", Agent.newTask(served(3), "what is the weather in coimbatore tomorrow"))
+    for (w in listOf("go to that link", "take me to the site", "go to www.irctc.co.in", "go to it", "go to the first one", "navigate to flipkart.com"))
+        T.check("points at a link, not a place: $w", LinkPick.pointsAtLink(w))
+    for (w in listOf("go to gandhipuram bus stand", "take me to brookefields mall", "navigate to rs puram, coimbatore", "go to the temple in perur"))
+        T.check("a place: $w", !LinkPick.pointsAtLink(w))
+
+    println("Recording of 18 Nov, 18:30: \"book me o. m ticket\" with screen control off")
+    T.eq("a title typed as letters with dots is the letters together", "OM", Order.initials("o. m"))
+    T.eq("…R.R.R", "RRR", Order.initials("R.R.R"))
+    T.eq("…k g f", "KGF", Order.initials("k g f"))
+    T.eq("a real title is left alone", "Ramayana", Order.initials("Ramayana"))
+    T.eq("…so is a two-word title", "Jai Bhim", Order.initials("Jai Bhim"))
+    T.eq("…and a one-letter word in a title", "I am Kathalan", Order.initials("I am Kathalan"))
+    T.eq("the film is taken from the user's words", "OM", Order.itemFromWords(listOf("book me o. m ticket", "2d\nnearby\n20th Nov anytime\n2\n170")))
+    T.eq("…and searched for by that name", "OM", Opener.movieQuery("o. m"))
+    T.check("a start is planned for it", (Opener.plan(Preflight.Kind.MOVIE, "BookMyShow", Order("MOVIE", item = "OM")) as? Opener.Plan.Movie)?.title == "OM")
+    T.check("its poster on the home page is the film", Opener.onScreen(Opener.items("3 [tap] OM @500,400\n4 [tap] I Play Rocky @300,900"), "OM")?.id == 3)
+    T.eq("\"I have selected 2 tickets\" with no step on the screen is caught", "selected", Honest.unbacked("I have selected 2 tickets for the 2D movie on 20th Nov at a nearby theatre for ₹170 each (Seats: F10, F11).", listOf("ask_user", "open_app", "your_turn", "order_check").filter { it != "order_check" }))
+    T.eq("…and \"I've booked\"", "booked", Honest.unbacked("I've booked two seats for you.", listOf("open_app")))
+    T.eq("words backed by taps are fine", null, Honest.unbacked("I have selected 2 tickets (F10, F11). Please pay.", listOf("open_app", "screen_tap", "seats_check")))
+    T.eq("saying what was not done is fine", null, Honest.unbacked("I have not selected any seats: screen control is off.", listOf("open_app")))
+    T.eq("an answer that claims nothing", null, Honest.unbacked("Opened BookMyShow. The rest is yours this time.", listOf("open_app")))
+    T.check("the correction says why it cannot know", Honest.claimNudge("selected", screenOn = false).let { it.contains("Screen control is OFF") && it.contains("Never state seats") })
+    T.check("…and leaves that out when screen control is on", !Honest.claimNudge("booked", screenOn = true).contains("OFF"))
+
+    println("Screenshot of 18 Nov, 18:17: Google Pay \"Payments blocked\"")
+    val me = "com.seyal.app/com.seyal.app.device.SeyalAccessibilityService"; val short = "com.seyal.app/.device.SeyalAccessibilityService"
+    T.eq("Seyal is added to an empty list", me, PayPause.with(null, me))
+    T.eq("…and to the literal \"null\" some phones store", me, PayPause.with("null", me))
+    T.eq("…behind other apps' services", "com.a/.S:$me", PayPause.with("com.a/.S", me))
+    T.eq("…once only", "com.a/.S:$me", PayPause.with("com.a/.S:$me", me))
+    T.eq("Seyal is taken out, other apps stay", "com.a/.S:com.b/.T", PayPause.without("com.a/.S:$me:com.b/.T", me, short))
+    T.eq("…in its short spelling too", "com.a/.S", PayPause.without("$short:com.a/.S", me, short))
+    T.eq("…from a list with only Seyal", "", PayPause.without(me, me, short))
+    for (w in listOf("pause screen control", "Turn off screen control.", "payment mode", "payments blocked", "stop screen control for payment", "gpay is blocked", "I want to pay now"))
+        T.eq("switches it off: $w", PayPause.Ask.OFF, PayPause.asks(w))
+    for (w in listOf("turn on screen control", "resume screen control", "screen control on", "payment mode off", "paid", "I have paid"))
+        T.eq("switches it on: $w", PayPause.Ask.ON, PayPause.asks(w))
+    for (w in listOf("pay the electricity bill", "pause the music", "turn on the torch", "how do I pay with gpay", "paid 500 to Ram"))
+        T.eq("something else: $w", null, PayPause.asks(w))
+    val pp = Basics.plan("pause screen control", now, true)
+    T.check("the everyday command needs no AI", pp?.tool == "screen_control" && pp.args.optString("action") == "off" && pp.answer?.invoke(JSONObject().put("say", "Screen control is off now.")) == "Screen control is off now.")
+    T.eq("…and back on", "on", Basics.plan("turn on screen control", now, true)?.args?.optString("action"))
+    T.check("after switching off: pay, and how it comes back", PayPause.offSaid(wasOn = true, canSwitchBack = true).let { it.startsWith("Screen control is off now.") && it.contains("restart the phone once") && it.contains("by myself") })
+    T.check("…where Seyal cannot switch it back, the way is told", PayPause.offSaid(wasOn = false, canSwitchBack = false).let { it.startsWith("Screen control is already off.") && it.contains("Accessibility → Downloaded apps → Seyal") })
+    T.check("switching on: said plainly either way", PayPause.onSaid(true, false).contains("is on") && PayPause.onSaid(false, true).contains("opened Accessibility") && PayPause.onSaid(false, false).contains("could not"))
+    T.eq("no note for a request that is not a booking", null, PayPause.payNote(reachedPay = false, screenOn = true, onDemand = false))
+    T.eq("…nor when screen control is off already", null, PayPause.payNote(reachedPay = true, screenOn = false, onDemand = true))
+    T.check("a booking at payment: told to pause first", PayPause.payNote(true, true, false).orEmpty().contains("pause screen control"))
+    T.check("…or told it is going off by itself", PayPause.payNote(true, true, true).orEmpty().contains("switching off now"))
+    T.check("an answer that has reached the paying step", PayPause.speaksOfPaying("2 seats (F10, F11) for OM are selected. The payment page is open: pay ₹340 to confirm.") && PayPause.speaksOfPaying("Ready at checkout."))
+    T.check("…one that never got there is not", !PayPause.speaksOfPaying("I couldn't find OM in cinemas near you, so nothing was booked or paid.") && !PayPause.speaksOfPaying("The film is not running this week."))
+    T.check("a booking with screen control off is asked about at once", PayPause.needQuestion("BookMyShow").let { it.contains("can't tap or type inside BookMyShow") && it.contains("Payments blocked") })
+    T.check("'Turn it on' means yes", PayPause.wantsOn(PayPause.TURN_ON) && PayPause.wantsOn("ok turn on") && PayPause.wantsOn("yes"))
+    T.check("'Just open the app' means no", !PayPause.wantsOn(PayPause.JUST_OPEN) && !PayPause.wantsOn("no") && !PayPause.wantsOn("don't turn it on"))
+    T.check("left off: the steps are named as the user's", PayPause.stillOff("BookMyShow").contains("inside BookMyShow are yours"))
+    T.eq("the step is named in the chat", "Switch screen control off", Prompts.friendly(Part.Call("p1", "screen_control", JSONObject().put("action", "off"))))
+
+    println("\"make Dirghadarshi a think mode in the chat\"")
+    for (q in listOf("Dirghadarshi: should I buy a new phone now or wait for the year end sales?", "should I book the tickets now or wait for prices to drop?", "is it worth buying the iPhone 17", "which is better to order from, Swiggy or Zomato?", "when is the best time to buy a laptop"))
+        T.eq("advice about buying is a question, not a purchase: $q", null, Preflight.kind(q))
+    for (q in listOf("buy black shoes under 500", "book 2 tickets for Ramayana tomorrow", "order a chicken biryani", "Dirghadarshi: book 2 tickets for OM tomorrow evening"))
+        T.check("a real purchase still is one: $q", Preflight.kind(q) != null)
+    for (w in listOf("Dirghadarshi: should I buy a phone now or wait?", "use dheergadharisi mode, which course is better", "dheerkadharisi mode la sollu", "dheergadhirisi: is this job offer good", "theerkatharisi mode", "தீர்க்கதரிசி: இந்த வேலை நல்லதா", "/think is it safe to pay rent with a credit card", "think deep: should I do an MBA"))
+        T.check("the message itself asks for the mode: $w", Deep.wants(w))
+    T.eq("the mode's name is taken off the front of the question", "should I buy a phone now or wait?", Deep.strip("Dirghadarshi: should I buy a phone now or wait?"))
+    T.eq("…however it was asked for", listOf("which course is better", "is it safe to pay rent with a credit card", "should I do an MBA", "இந்த வேலை நல்லதா"),
+        listOf(Deep.strip("use dheergadharisi mode, which course is better"), Deep.strip("/think is it safe to pay rent with a credit card"), Deep.strip("think deep: should I do an MBA"), Deep.strip("தீர்க்கதரிசி: இந்த வேலை நல்லதா")))
+    T.eq("an ordinary message is left as it is", "direct me to the darshan queue", Deep.strip("direct me to the darshan queue"))
+    T.eq("the name alone is not stripped to nothing", "Dirghadarshi", Deep.strip("Dirghadarshi"))
+    T.eq("\"please open the second link\"", "https://www.amazon.in/Mens-Casual-Shoes-Under-500/s?rh=n%3A9780814031", LinkPick.pick("Please open the second link", shoes))
+    for (w in listOf("torch on", "book 2 tickets for Ramayana", "what is the weather", "I think deep down he knows", "direct me to the darshan queue", "/thinking"))
+        T.check("an ordinary message does not: $w", !Deep.wants(w))
+    for (q in listOf("should I buy the iPhone 17 now or wait?", "is it safe to pay rent with a credit card", "best laptop under 60000 for coding", "what is the last date for TNPSC group 2", "which is better, a data engineering internship or an MBA", "இந்த போன் விலை என்ன"))
+        T.check("must be looked up before answering: $q", Deep.needsLookup(q))
+    for (q in listOf("explain how a hash map works", "write a poem about rain", "what did I tell you", "hi"))
+        T.check("can be thought through without a search: $q", !Deep.needsLookup(q))
+    T.check("a web search counts as looking up", Deep.lookedUp(listOf("ask_user", "web_search")))
+    T.check("…so do the user's own mail and the world signals", Deep.lookedUp(listOf("read_mail")) && Deep.lookedUp(listOf("foresight")))
+    T.check("…a question to the user does not", !Deep.lookedUp(listOf("ask_user", "memory_save")))
+    val long = "Buy it now if your current phone is failing. ".repeat(5)
+    T.check("a full answer is read a second time", Deep.worthReview(long, usedScreen = false, hasOrder = false))
+    T.check("…a one-line result is not", !Deep.worthReview("Alarm set for 6:30 AM.", false, false))
+    T.check("…nor work done on the screen, nor a booking (those are checked against the order)", !Deep.worthReview(long, true, false) && !Deep.worthReview(long, false, true))
+    T.check("it thinks hard about answers and plans", Deep.thinkHard(deep = true, usedScreen = false, hasOrder = false))
+    T.check("…not about each tap in an app, and not at all when the mode is off", !Deep.thinkHard(true, true, false) && !Deep.thinkHard(true, false, true) && !Deep.thinkHard(false, false, false))
+    for (w in listOf("send a message to Ram that I am late", "Set an alarm for 6 am", "open YouTube", "Dirghadarshi: book 2 tickets for OM", "please call Amma"))
+        T.check("a plain instruction is done, not pondered: $w", Deep.isAction(w) && !Deep.thinkHard(true, false, false, w))
+    for (w in listOf("should I send this mail to my manager?", "is it a good time to book flight tickets for December?", "Dirghadarshi: which internship should I take", "make me a 3 month plan to learn data engineering"))
+        T.check("a question is thought through: $w", !Deep.isAction(w) && Deep.thinkHard(true, false, false, w))
+    val shaped = "**Answer**: Wait two weeks.\n\n**Look ahead**: Prices drop in the sale.\n**Watch out**:\n- Fake sellers → buy from the brand store.\n**You may not know**: Exchange bonus.\n**Do now**: Set a price alert.\n**How sure**: Medium.\n**Sources**: https://example.com"
+    T.eq("a shaped answer has its seven parts", listOf("Answer", "Look ahead", "Watch out", "You may not know", "Do now", "How sure", "Sources"), Deep.parts(shaped))
+    T.eq("a plain answer has none", emptyList<String>(), Deep.parts("Wait two weeks: the answer to your question is that prices drop."))
+    T.check("the mode's rules reach the AI", Deep.SYSTEM.let { it.contains("DIRGHADARSHI MODE IS ON") && it.contains("Never answer such things from memory") && it.contains("**Watch out**") && it.contains("No buy or sell advice") && it.contains("Check before you pay") })
+    T.check("the review asks for a critic's reading and only the final answer", Deep.REVIEW_NUDGE.let { it.contains("careful critic") && it.contains("not verified") && it.contains("do not mention the draft") })
+    T.check("the look-up reminder forbids guessing", Deep.LOOKUP_NUDGE.contains("instead of guessing"))
+    T.eq("the status says what it is doing", "Thinking far ahead…", Deep.status(0, reviewing = false))
+    T.eq("…step by step", "Thinking far ahead · step 3", Deep.status(2, false))
+    T.eq("…and when it reads its answer again", "Reading my answer again for what it missed…", Deep.status(4, true))
+    val ds = Session("deep1", 1L).apply { deep = true; messages += Msg("user", listOf(Part.Text("should I buy a phone now?"))) }
+    T.check("the switch is kept with the chat", Session.fromJson(ds.toJson()).deep && !Session.fromJson(Session("d2", 1L).toJson()).deep)
+    T.check("the prompt carries the mode only while it is on", Prompts.modeSection(ds).contains("DIRGHADARSHI MODE IS ON") && Prompts.modeSection(Session("d3", 1L)).isEmpty())
+    T.check("…and never for a sub-task", Prompts.modeSection(Session("d5", 1L).apply { deep = true; parentId = "deep1" }).isEmpty())
+    T.check("the world-signals tool is at hand in the mode", Agent.loadedGroups(ds).contains("foresight") && !Agent.loadedGroups(Session("d4", 1L).apply { messages += Msg("user", listOf(Part.Text("should I buy a phone now?"))) }).contains("foresight"))
+    T.check("Seyal can say where the mode is", Prompts.ABOUT.let { it.contains("the switch just above the chat box") && it.contains("Brain tab → Signals") && it.contains("Payments blocked") })
+    T.eq("hard thinking asks for the model's highest level", "high", Llm.thinkLevel(deep = true, level = 0))
+    T.eq("…one lower each time a model refuses", listOf("medium", "low", null), listOf(Llm.thinkLevel(true, 1), Llm.thinkLevel(true, 2), Llm.thinkLevel(true, 9)))
+    T.eq("everyday steps stay quick", listOf("minimal", "low", null), listOf(Llm.thinkLevel(false, 0), Llm.thinkLevel(false, 1), Llm.thinkLevel(false, 2)))
+    T.check("a hard thought is given two minutes before it counts as hung", Llm.readTimeoutMs(true) == 120_000 && Llm.readTimeoutMs(false) == 25_000)
+    T.check("…and no second model is asked for the first 75 seconds", Llm.hedgeAfterMs(true, 6000) == 75_000L && Llm.hedgeAfterMs(false, 2048) == Llm.HEDGE_AFTER_MS && Llm.hedgeAfterMs(false, 4000) == 18_000L)
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -2311,7 +2456,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

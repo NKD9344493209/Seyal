@@ -113,6 +113,9 @@ echo "Switching on screen control, notification access and special access ..."
 "$ADB" shell cmd notification allow_dnd $PKG >/dev/null 2>&1
 # Background location: for automations like "when Amma asks where I am, send my location".
 "$ADB" shell pm grant $PKG android.permission.ACCESS_BACKGROUND_LOCATION >/dev/null 2>&1
+# Lets Seyal switch its own screen control on and off (Control > "Screen control only while Seyal works"),
+# so Google Pay and bank apps are not blocked the rest of the time.
+"$ADB" shell pm grant $PKG android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1
 for op in GET_USAGE_STATS WRITE_SETTINGS SCHEDULE_EXACT_ALARM ACCESS_RESTRICTED_SETTINGS MANAGE_EXTERNAL_STORAGE RUN_IN_BACKGROUND RUN_ANY_IN_BACKGROUND; do "$ADB" shell appops set $PKG $op allow >/dev/null 2>&1; done
 "$ADB" shell dumpsys deviceidle whitelist +$PKG >/dev/null 2>&1
 # Xiaomi's own "Autostart" switch (op 10008): without it, automations stop when Seyal is closed.
@@ -121,6 +124,8 @@ MAKER=$("$ADB" shell getprop ro.product.manufacturer 2>/dev/null | tr -d '\r' | 
 "$ADB" shell am start -n $PKG/.ui.MainActivity >/dev/null 2>&1
 
 if "$ADB" shell settings get secure enabled_accessibility_services 2>/dev/null | grep -q $PKG; then echo "  Screen control ......... ON"; else echo "  Screen control ......... turn it on in Seyal: the setup card at the top"; fi
+if "$ADB" shell dumpsys package $PKG 2>/dev/null | grep -q "android.permission.WRITE_SECURE_SETTINGS: granted=true"; then echo "  Switch itself on/off ... ALLOWED (for Google Pay: Control > Screen control only while Seyal works)"
+else echo "  Switch itself on/off ... not allowed by this phone"; case "$MAKER" in *xiaomi*|*redmi*|*poco*) echo "     Xiaomi: Settings > Additional settings > Developer options > turn ON \"USB debugging (Security settings)\", then run this again.";; esac; fi
 if "$ADB" shell settings get secure enabled_notification_listeners 2>/dev/null | grep -q $PKG; then echo "  Notification access .... ON"; else echo "  Notification access .... turn it on in Seyal: the setup card at the top"; fi
 case "$MAKER" in
   *xiaomi*|*redmi*|*poco*) echo; echo "Xiaomi/Redmi/POCO: also open Settings > Apps > Seyal, turn ON \"Autostart\", and set Battery saver to \"No restrictions\"."; echo "Without these, automations (\"when Amma messages...\") stop working when Seyal is closed." ;;

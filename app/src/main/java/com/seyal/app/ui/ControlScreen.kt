@@ -164,6 +164,7 @@ private fun ScreenSection() {
                 Text(
                     if (!IS_FULL) "Lite edition: not available. The Full edition (installed over USB) lets Seyal see the screen and use any app for you."
                     else if (on) "On. Seyal can see the screen and tap, type and scroll for you while it works on your request."
+                    else if (Settings.screenOnDemand && com.seyal.app.device.ScreenAccess.canSwitch(ctx)) "Off for now (payment apps work). Seyal switches it on when a request needs it."
                     else "Off. Turn it on: Accessibility → Installed apps → Seyal → On.",
                     style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
                 )
@@ -171,6 +172,33 @@ private fun ScreenSection() {
             if (IS_FULL) SmallButton(if (on) "Settings" else "Turn on", filled = !on) { ctx.open(Intent(SysSettings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
         if (IS_FULL) {
+            // Google Pay and bank apps refuse to pay while any screen-control app is on: Seyal's goes off when it is not working.
+            val canSwitch = remember(resumed) { com.seyal.app.device.ScreenAccess.canSwitch(ctx) }
+            var onDemand by remember(resumed) { mutableStateOf(Settings.screenOnDemand) }
+            val scope = rememberCoroutineScope()
+            Spacer(Modifier.height(8.dp))
+            SwitchRow(com.seyal.app.agent.PayPause.SWITCH_TITLE, com.seyal.app.agent.PayPause.SWITCH_ABOUT, onDemand && canSwitch) { v ->
+                if (canSwitch) {
+                    Settings.screenOnDemand = v; onDemand = v
+                    // Nothing running: it goes off now. Switched back to "always": it comes on now.
+                    if (v && Agent.sessions.value.none { it.status.isOpen }) com.seyal.app.device.ScreenAccess.off(ctx)
+                    if (!v) scope.launch { com.seyal.app.device.ScreenAccess.on(ctx) }
+                }
+            }
+            if (!canSwitch) Text(com.seyal.app.agent.PayPause.NEEDS_USB, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+            if (on) {
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("About to pay with Google Pay or a bank app?", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    SmallButton("Pause screen control", filled = false) { com.seyal.app.device.ScreenAccess.off(ctx) }
+                }
+            } else if (canSwitch) {
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Seyal switches it on by itself when a request needs it.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    SmallButton("Turn on now", filled = false) { scope.launch { com.seyal.app.device.ScreenAccess.on(ctx) } }
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

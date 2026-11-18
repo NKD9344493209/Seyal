@@ -52,9 +52,9 @@ fun ForesightSection() {
     val error = remember(version) { ForesightStore.lastError }
 
     Card {
-        Text("Dirghadarshi · தீர்க்கதரிசி", style = MaterialTheme.typography.titleMedium)
+        Text("World signals", style = MaterialTheme.typography.titleMedium)
         Text(
-            "One who sees far. Seyal reads this week's public signals (new code projects, engineers' discussions, research papers, news on your topics) and tells you what is starting to rise, with the proof, what it means for you, and one thing to do about it.",
+            "What Dirghadarshi mode reads about the world. (The thinking mode itself is the Dirghadarshi switch above the chat box.) Seyal reads this week's public signals (new code projects, engineers' discussions, research papers, news on your topics) and tells you what is starting to rise, with the proof, what it means for you, and one thing to do about it.",
             style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))

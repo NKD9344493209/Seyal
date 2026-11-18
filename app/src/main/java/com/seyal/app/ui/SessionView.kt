@@ -26,6 +26,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -91,8 +92,13 @@ fun SessionView(s: Session, onOpenSession: (String) -> Unit = {}) {
                 Spacer(Modifier.width(8.dp))
                 // Steps of THIS request: a new request in a long chat used to open with "step 30".
                 val step = com.seyal.app.agent.Agent.stepsOfRequest(s)
-                Text(if (step == 0) "Thinking…" else "Working · step $step", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
+                // What it is doing this moment, in words. "Working · step 1" for 45 seconds told the user nothing.
+                val doing by com.seyal.app.agent.Agent.progress.collectAsState()
+                Text(
+                    doing.ifBlank { if (step == 0) "Thinking…" else "Working · step $step" } + (if (doing.isNotBlank() && step > 0 && !doing.contains("step")) " · step $step" else ""),
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
                 SmallButton("Stop", filled = false) { Agent.cancel(s.id) }
             }
         } else if (s.status == SessionStatus.WAITING) {

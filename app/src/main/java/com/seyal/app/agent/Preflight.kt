@@ -140,7 +140,8 @@ object Preflight {
     private val orderVerb = Regex("\\border\\b|ஆர்டர்", RegexOption.IGNORE_CASE)
 
     fun kind(text: String): Kind? {
-        val t = text.trim()
+        // "Dirghadarshi: should I buy…" is the question "should I buy…" asked in the thinking mode.
+        val t = Deep.strip(text).trim()
         if (t.length < 6 || notBuying.containsMatchIn(t) || other.containsMatchIn(t)) return null
         if (lookup.containsMatchIn(t) && !thenBuy.containsMatchIn(t)) return null
         // "Read a book", "summarise this book": nothing is being bought unless it also says buy or order.

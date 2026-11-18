@@ -90,7 +90,16 @@ class Order(
         /** What the user asked for, taken straight from their request: "book a ticket to scene movie" → "scene". "" when it cannot be told. */
         fun itemFromWords(words: List<String>): String {
             val left = words.firstOrNull().orEmpty().trim().split(Regex("\\s+")).filter { w -> w.lowercase().trim(',', '.', '!', '?') !in notTheThing && !Regex("^\\d+$").matches(w) }
-            return if (left.size in 1..5) left.joinToString(" ").trim(',', '.', '!', '?') else ""
+            return if (left.size in 1..5) initials(left.joinToString(" ").trim(',', '!', '?').trim()).trimEnd('.') else ""
+        }
+
+        /**
+         * A title typed as letters with dots or spaces ("o. m", "R.R.R", "k g f") is the letters together: "OM", "RRR", "KGF".
+         * Seen on a real phone: "book me o. m ticket" (the film OM) was searched for as "o. m". Anything else comes back unchanged.
+         */
+        fun initials(item: String): String {
+            val t = item.trim()
+            return if (Regex("^(?:[A-Za-z][.\\s]+){1,5}[A-Za-z]\\.?$").matches(t)) t.filter { it.isLetter() }.uppercase() else t
         }
 
         /** "any", "you choose", "-" and the like mean the user left it open. */

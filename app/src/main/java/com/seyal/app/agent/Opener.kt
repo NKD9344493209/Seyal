@@ -43,7 +43,7 @@ object Opener {
 
     /** The words to type into the app's search: the film's name without "movie", the language or 2D/3D after it. */
     fun movieQuery(item: String): String {
-        val w = item.replace(Regex("\\(.*?\\)"), " ").trim().split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
+        val w = Order.initials(item.replace(Regex("\\(.*?\\)"), " ").trim()).split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
         while (w.size > 1 && w.last().lowercase().trim(',', '.', ':', '-') in afterTitle) w.removeAt(w.size - 1)
         return w.joinToString(" ").trim(',', '.', ' ').take(60)
     }

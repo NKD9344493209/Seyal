@@ -68,6 +68,8 @@ object ScreenDriver {
     internal fun attach(s: SeyalAccessibilityService) { service = s; main.post { renderPill() }; accessChanged() }
     internal fun detach(s: SeyalAccessibilityService) { if (service === s) { main.post { removePill(s) }; service = null; accessChanged() } }
     internal fun noteChange() { lastChange = System.currentTimeMillis() }
+    /** Switches Seyal's own screen control off (Android's own way for a service to do so). */
+    internal fun disable() { service?.let { s -> main.post { runCatching { removePill(s) }; runCatching { s.disableSelf() } } } }
 
     // ---------------------------------------------------------------- safety rules
 

@@ -230,6 +230,16 @@ object Settings {
         get() = plain.getBoolean("brain_on", false)
         set(v) = plain.edit().putBoolean("brain_on", v).apply()
 
+    /** Screen control only while Seyal works on a request, off otherwise (payment apps refuse to pay while it is on). */
+    var screenOnDemand: Boolean
+        get() = plain.getBoolean("screen_on_demand", false)
+        set(v) = plain.edit().putBoolean("screen_on_demand", v).apply()
+
+    /** The Dirghadarshi switch beside the chat box: stays as the user left it. */
+    var deepMode: Boolean
+        get() = plain.getBoolean("deep_mode", false)
+        set(v) = plain.edit().putBoolean("deep_mode", v).apply()
+
     var suggestHabits: Boolean
         get() = plain.getBoolean("suggest_habits", true)
         set(v) = plain.edit().putBoolean("suggest_habits", v).apply()
