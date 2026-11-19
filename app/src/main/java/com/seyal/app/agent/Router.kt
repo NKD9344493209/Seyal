@@ -20,7 +20,7 @@ object Router {
     /** Always sent: the things nearly every request touches. */
     val core = setOf(
         "ask_user", "memory_save", "memory_forget", "contacts_search", "call", "send_sms", "send_whatsapp", "send_email",
-        "alarm_set", "reminder_set", "open_app", "open_url", "apps_list", "phone_state", "set_setting", "location",
+        "alarm_set", "alarm_list", "alarm_cancel", "reminder_set", "open_app", "open_url", "apps_list", "phone_state", "set_setting", "location",
         "web_search", "read_page", "news", "weather", "wikipedia", "notify", "say", "wait", "clipboard", "app_usage", MORE,
     )
 

@@ -335,6 +335,27 @@ object Notify {
     }
 
     /** [open]: what a tap opens (a Target); "" = Seyal. The notice says where the tap leads. */
+    /** A snoozed alarm, kept in sight until it rings again, with a Dismiss button. */
+    fun snoozed(ctx: Context, id: String, label: String, at: Long) {
+        if (!allowed(ctx)) return
+        val dismiss = PendingIntent.getBroadcast(
+            ctx, ("snz$id").hashCode(),
+            Intent(ctx, com.seyal.app.agent.SchedulerReceiver::class.java).setAction(com.seyal.app.agent.Scheduler.ACTION_CANCEL).putExtra("kind", "alarm").putExtra("id", id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = NotificationCompat.Builder(ctx, CH_RESULTS)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Alarm snoozed: rings again at ${com.seyal.app.util.Times.clock(at)}")
+            .setContentText(label.take(60))
+            .setContentIntent(openApp(ctx))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "Dismiss", dismiss)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(("snooze$id").hashCode(), n)
+    }
+
     fun reminder(ctx: Context, id: String, text: String, open: String = "") {
         if (!allowed(ctx)) return
         val where = if (open.isBlank()) "" else Open.label(ctx, open)

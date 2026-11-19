@@ -83,3 +83,7 @@ Give me two good websites to learn Kotlin, each with its full link
 pause screen control
 turn on screen control
 Open Settings and tell me the Android version, to show screen control works again
+Set an alarm for 5:10 am tomorrow
+what alarms do I have
+cancel the 5:10 alarm
+cancel all alarms

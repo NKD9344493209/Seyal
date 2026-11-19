@@ -67,6 +67,9 @@ object ScreenDriver {
 
     internal fun attach(s: SeyalAccessibilityService) { service = s; main.post { renderPill() }; accessChanged() }
     internal fun detach(s: SeyalAccessibilityService) { if (service === s) { main.post { removePill(s) }; service = null; accessChanged() } }
+    /** The name, in the last list given out, of element [id]; null when there is none. */
+    fun labelFor(id: Int): String? = runCatching { labelOf(id) }.getOrNull()
+
     internal fun noteChange() { lastChange = System.currentTimeMillis() }
     /** Switches Seyal's own screen control off (Android's own way for a service to do so). */
     internal fun disable() { service?.let { s -> main.post { runCatching { removePill(s) }; runCatching { s.disableSelf() } } } }
@@ -276,9 +279,11 @@ object ScreenDriver {
                         els += El(n, "field", value.take(120), extra, r, rawOf(n))
                     }
                     (n.isClickable || n.isCheckable) && r.width().toLong() * r.height() < screenArea * 45 / 100 -> {
-                        val parts = mutableListOf<String>()
-                        if (own.isNotBlank()) parts += own.take(120) else if (desc.isNotBlank()) parts += desc.take(120)
-                        collectLabel(n, parts, 0)
+                        // What the user can see wins over a description the app forgot to update: a date chip showing
+                        // "SUN 22 NOV" still described as "Thu, 20 Nov" was tapped for the 20th (see BookGuard.name).
+                        val inside = mutableListOf<String>()
+                        collectLabel(n, inside, 0)
+                        val parts = com.seyal.app.agent.BookGuard.name(own.take(120), desc.take(120), inside)
                         var label = parts.distinct().joinToString(" · ")
                         if (label.length > 240) label = label.take(240) + "…"
                         val role = when {
@@ -415,7 +420,13 @@ object ScreenDriver {
             if (!n.isVisibleToUser) return
             val d1 = n.contentDescription?.toString()?.trim() ?: ""
             val t1 = n.text?.toString()?.trim() ?: ""
-            if (d1.contains(t, true) || t1.contains(t, true)) all += n
+            if (t1.contains(t, true)) all += n
+            else if (d1.contains(t, true)) {
+                // A description the visible words contradict is a leftover (see BookGuard.name): never a match.
+                val inside = mutableListOf<String>()
+                collectLabel(n, inside, 0)
+                if (com.seyal.app.agent.BookGuard.name(t1, d1, inside).contains(d1)) all += n
+            }
             for (i in 0 until n.childCount) walk(n.getChild(i), d + 1)
         }
         walk(root, 0)

@@ -25,6 +25,7 @@ import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.telephony.SmsManager
 import com.seyal.app.agent.Preflight
+import com.seyal.app.agent.AlarmPick
 import com.seyal.app.agent.Scheduler
 import com.seyal.app.agent.Target
 import com.seyal.app.agent.Tool
@@ -107,6 +108,34 @@ object PhoneTools {
                 schema { str("at", "Local ISO date-time, e.g. 2026-11-08T06:30", required = true); str("label", "Short label") },
                 sideEffect = true,
             ) { a, _ -> timer("alarm", a.optString("at"), a.optString("label").ifBlank { "Alarm" }) },
+
+            Tool(
+                "alarm_list", "phone", "The alarms waiting in Seyal (set with alarm_set, or snoozed). Output: alarms[id, at, label, snoozed].",
+                schema { },
+            ) { _, _ ->
+                val all = Scheduler.alarms().map { AlarmPick.A(it.id, it.at, it.text) }
+                val arr = JSONArray(); all.forEach { arr.put(JSONObject().put("id", it.id).put("at", com.seyal.app.util.Times.clock(it.at)).put("label", it.label).put("snoozed", it.snoozed)) }
+                ToolResult.Done(JSONObject().put("alarms", arr).put("say", AlarmPick.listed(all) { com.seyal.app.util.Times.clock(it) }), "${all.size} alarm(s)")
+            },
+
+            Tool(
+                "alarm_cancel", "phone",
+                "Dismiss or cancel an alarm: the one ringing now, a snoozed one (so it does not ring again), or one that is set. which: \"\" = the ringing or snoozed one, else the only one set; \"all\"; or its time (\"6:30\", \"6 am\"). Also dismisses the phone's Clock app alarm when its notification is showing. Tell the user the say text.",
+                schema { str("which", "\"\" (the ringing/snoozed/only one), \"all\", or a time like \"6:30 am\"") },
+                sideEffect = true,
+            ) { a, _ ->
+                val which = a.optString("which").trim()
+                val want = AlarmPick.Want(all = which.equals("all", true), time = if (which.equals("all", true)) "" else which)
+                val ringing = com.seyal.app.device.AlarmActivity.stopRinging()
+                val pick = AlarmPick.choose(Scheduler.alarms().map { AlarmPick.A(it.id, it.at, it.text) }, want, ringing, java.time.ZoneId.systemDefault()) { com.seyal.app.util.Times.clock(it) }
+                pick.cancel.forEach { Scheduler.cancelTimer(ctx, "alarm", it.id) }
+                // The phone's own Clock app: only what its notification lets anyone dismiss.
+                val clock = if (want.time.isBlank()) runCatching { com.seyal.app.device.SeyalNotificationListener.dismissClockAlarms() }.getOrDefault(0) else 0
+                val nothing = pick.cancel.isEmpty() && !ringing && clock == 0
+                val say = (if (clock > 0 && nothing.not() && pick.cancel.isEmpty() && !ringing) "Dismissed the alarm in the phone's Clock app." else pick.say + (if (clock > 0) AlarmPick.CLOCK_TOO else "")) +
+                    (if (nothing && want.time.isBlank() && !want.all && Scheduler.alarms().isEmpty()) AlarmPick.CLOCK_HINT else "")
+                ToolResult.Done(JSONObject().put("ok", true).put("cancelled", pick.cancel.size).put("stopped_ringing", ringing).put("clock_app_dismissed", clock).put("say", say), say.take(80))
+            },
 
             Tool(
                 "reminder_set", "phone", "Show a reminder notification at a time. A tap on it opens what it is about.",

@@ -168,6 +168,21 @@ class SeyalNotificationListener : NotificationListenerService() {
             return (runCatching { s.activeNotifications }.getOrNull() ?: emptyArray()).filter { it.packageName != s.packageName }
         }
 
+        /**
+         * Presses "Dismiss" (or "Stop", "Turn off") on the phone's own Clock app notification of a ringing or snoozed
+         * alarm. Returns how many were dismissed; 0 when there is none, or Notification access is off.
+         */
+        fun dismissClockAlarms(): Int {
+            val notes = runCatching { active() }.getOrNull() ?: return 0
+            var done = 0
+            for (sbn in notes) {
+                if (!com.seyal.app.agent.AlarmPick.isClockApp(sbn.packageName)) continue
+                val act = sbn.notification.actions?.firstOrNull { a -> com.seyal.app.agent.AlarmPick.isDismiss(a.title?.toString().orEmpty()) } ?: continue
+                if (runCatching { act.actionIntent.send(); true }.getOrDefault(false)) done++
+            }
+            return done
+        }
+
         /** What is in the notification shade now, newest first. [app] filters by app name. */
         fun list(app: String, max: Int): JSONArray {
             val s = instance ?: throw IllegalStateException("Notification access is off. Control → Notification access → allow Seyal.")

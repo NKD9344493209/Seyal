@@ -518,6 +518,8 @@ object Agent {
         try {
             while (coroutineContext.isActive) {
                 pauseGate.await()
+                // The "How many seats?" sheet is set to the user's number by code (it opens on the last visit's number).
+                if (!firstRound && s.parentId == null) stepsThisRun += runCatching { setSeatCount(s) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
                 // A dead end met during the last step (the app's search has nothing by that name, twice over): stop here.
                 deadEnds.remove(s.id)?.let { end -> finish(s, SessionStatus.DONE, end); return }
                 // The words of a new request (first round only).
@@ -1189,6 +1191,33 @@ object Agent {
         else SessionStatus.FAILED to "Not finished. $why Done so far: $did. Say \"continue\" to carry on."
     }
 
+    /**
+     * The seat-count sheet of a booking app, set by code: tap the user's number, then the button that goes on.
+     * Done at most twice per request; anything unexpected is left to the AI. Returns the steps taken.
+     */
+    private suspend fun setSeatCount(s: Session): Int {
+        val order = s.order ?: return 0
+        if (order.count !in 1..10 || !ScreenDriver.available || s.checked.count { it.startsWith("seatsheet") } >= 2) return 0
+        // Only when the last thing that happened was a step on the screen, and that screen is the sheet.
+        val last = lock.withLock { s.messages.lastOrNull()?.takeIf { it.role == "tool" }?.results?.lastOrNull()?.output?.optJSONObject("screen")?.optString("elements") } ?: return 0
+        if (BookGuard.seatSheet(Opener.items(last), order.count) == null) return 0
+        val tapTool = Toolbox.get("screen_tap") ?: return 0
+        s.checked += "seatsheet" + s.checked.size
+        var n = 0
+        val now = runCatching { ScreenDriver.read().optString("elements") }.getOrDefault("")
+        val sheet = BookGuard.seatSheet(Opener.items(now), order.count) ?: return 0
+        var after = now
+        if (sheet.number != null) {
+            report("Setting ${order.count} ticket${if (order.count == 1) "" else "s"}…")
+            val r = runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", sheet.number.id)), tapTool); s.steps++; n++
+            if (r.isError) return n
+            after = r.output.optJSONObject("screen")?.optString("elements") ?: runCatching { ScreenDriver.read().optString("elements") }.getOrDefault("")
+        } else if (!sheet.alreadySet) return n
+        val go = BookGuard.seatSheet(Opener.items(after), order.count)?.go ?: return n
+        runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", go.id)), tapTool); s.steps++; n++
+        return n
+    }
+
     /** A request that code has found cannot go on (the film is not running): the words to finish with, by chat id. */
     private val deadEnds = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** The film's own page, looked for on the web while the booking details are still being noted: chat id → (title, link). */
@@ -1356,6 +1385,13 @@ object Agent {
             else { state.status = CallStatus.RUNNING; s.status = SessionStatus.RUNNING; touch(s); false }
         }
         if (stopped) return lock.withLock { fail("Stopped by the user", CallStatus.CANCELLED) }
+        // In a booking: never a seat (the user's choice), never a date chip for another day than the user's.
+        if (s.order != null && s.parentId == null && tool.name in setOf("screen_tap", "screen_long_press")) {
+            val name = call.args.optString("text").ifBlank { call.args.optInt("id", 0).takeIf { it > 0 }?.let { ScreenDriver.labelFor(it) }.orEmpty() }
+            BookGuard.beforeTap(name, s.order?.date.orEmpty(), java.time.LocalDateTime.now())?.let { why ->
+                return lock.withLock { fail(why).also { touch(s) } }
+            }
+        }
         if (usesScreen(tool.name) && ScreenDriver.available && !ScreenDriver.claim(s.id)) {
             return lock.withLock { fail("Another Seyal task is using the screen right now. Wait for it (or tell the user), then try again.").also { touch(s) } }
         }
@@ -1399,6 +1435,11 @@ object Agent {
                 // The app's search has nothing by that name. Told once; if the AI keeps looking, the request ends here.
                 // (On a real phone it retyped, switched tabs and scrolled for 18 steps for a film from years ago.)
                 if (Detour.nothingFound(page) && !s.checked.add("nofind")) deadEnds[s.id] = Detour.notRunning(s.order?.item.orEmpty(), "none")
+                // On the seat map and its count sheet: is this the user's day and the user's number of tickets? Said at once,
+                // not after six seats are selected. (Seen: Sunday the 22nd and "6 Tickets" for a request of 2 on the 20th.)
+                if (!r.output.has("wrong_turn") && s.order != null && BookGuard.seatPage(page)) {
+                    SeatScreen.problem(page, s.order, java.time.LocalDateTime.now())?.let { r.output.put("wrong_turn", "Before anything else on this screen: $it") }
+                }
             }
         }
         if (usesScreen(tool.name)) ScreenDriver.workAppNow()?.let { s.workApp = it }

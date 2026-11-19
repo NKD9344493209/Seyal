@@ -26,6 +26,8 @@ import com.seyal.app.agent.Prompts
 import com.seyal.app.agent.Router
 import com.seyal.app.agent.Links
 import com.seyal.app.agent.Target
+import com.seyal.app.agent.BookGuard
+import com.seyal.app.agent.AlarmPick
 import com.seyal.app.agent.Deep
 import com.seyal.app.agent.LinkPick
 import com.seyal.app.agent.PayPause
@@ -2577,8 +2579,106 @@ fun testEighthVideos() {
     T.check("the correction names them", Deep.factsNudge(listOf("₹1,29,000", "7.5%")).let { it.contains("₹1,29,000, 7.5%") && it.contains("by my sum") && it.contains("Do not mention this check") })
 }
 
+fun testNinthVideos() {
+    val now = LocalDateTime.of(2026, 11, 19, 14, 36)
+    val today = now.toLocalDate()
+
+    println("Recording of 19 Nov, 14:36 (v3.21.0): asked for 2 tickets on the 20th; Sunday the 22nd, 6 tickets, and Seyal tapped a seat")
+    T.eq("a chip is named by what it shows when its description disagrees", listOf("SUN", "22", "NOV"), BookGuard.name("", "Thu, 20 Nov", listOf("SUN", "22", "NOV")))
+    T.eq("…a description that agrees is kept", listOf("Sun, 22 Nov", "SUN", "22", "NOV"), BookGuard.name("", "Sun, 22 Nov", listOf("SUN", "22", "NOV")))
+    T.eq("…a description with no numbers is kept", listOf("Search", "Movies"), BookGuard.name("", "Search", listOf("Movies")))
+    T.eq("…and one beside words with no numbers", listOf("Seat quantity selector", "Tickets"), BookGuard.name("", "Seat quantity selector", listOf("Tickets")))
+    T.eq("…its own text comes first", listOf("Book tickets"), BookGuard.name("Book tickets", "Button", emptyList()))
+    T.eq("…a price inside keeps a description that has the same price", listOf("GOLD ₹190 AVAILABLE", "GOLD", "₹190"), BookGuard.name("", "GOLD ₹190 AVAILABLE", listOf("GOLD", "₹190")))
+    T.eq("a date chip's day, as shown", LocalDate.of(2026, 11, 22), BookGuard.chipDay("SUN · 22 · NOV", today))
+    T.eq("…written the other ways", listOf(LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 20)),
+        listOf(BookGuard.chipDay("FRI 20 NOV", today), BookGuard.chipDay("Fri, 20 Nov", today), BookGuard.chipDay("Nov 20", today), BookGuard.chipDay("20 Nov (selected)", today)))
+    T.eq("…a January chip in December is next year's", LocalDate.of(2027, 1, 2), BookGuard.chipDay("SAT 2 JAN", LocalDate.of(2026, 12, 28)))
+    T.eq("a show time is not a date chip", null, BookGuard.chipDay("01:30 PM · DOLBY ATMOS", today))
+    T.eq("…nor a seat class", null, BookGuard.chipDay("GOLD · ₹190 · AVAILABLE", today))
+    T.eq("…nor a film", null, BookGuard.chipDay("O.M Operation Mole", today))
+    T.eq("…nor a long line that mentions a date", null, BookGuard.chipDay("Releasing on 20 Nov, 2026 in cinemas", today))
+    T.check("a chip for another day than the user's is not tapped", BookGuard.beforeTap("SUN · 22 · NOV", "2026-11-20", now).orEmpty().let { it.contains("Sun 22 Nov") && it.contains("Fri 20 Nov") && it.contains("SHOWS 20") })
+    T.eq("the chip for the user's day goes through", null, BookGuard.beforeTap("FRI · 20 · NOV", "2026-11-20", now))
+    T.eq("…whatever weekday the AI wrote", null, BookGuard.beforeTap("Thu, 20 Nov", "2026-11-20", now))
+    T.eq("with no day asked for, any chip may be tapped", null, BookGuard.beforeTap("SUN · 22 · NOV", "", now))
+    T.eq("a show time, a class, a button: not held back", listOf<String?>(null, null, null), listOf(BookGuard.beforeTap("01:30 PM · DOLBY ATMOS", "2026-11-20", now), BookGuard.beforeTap("GOLD · ₹190 · AVAILABLE", "2026-11-20", now), BookGuard.beforeTap("Select Seats", "2026-11-20", now)))
+    for (w in listOf("Row E, Seat 23, GOLD, Price ₹190", "Row AA Seat 4", "Seat F10 available", "Seat No. 12, price Rs 190"))
+        T.check("a seat is never tapped by Seyal: $w", BookGuard.isSeat(w) && BookGuard.beforeTap(w, "", now) == BookGuard.SEAT)
+    for (w in listOf("Select Seats", "Seat quantity selector", "2", "GOLD · ₹190 · AVAILABLE", "How many seats?", "Pick your seats"))
+        T.check("not a seat: $w", !BookGuard.isSeat(w))
+    T.check("the refusal sends it to the user's own fingers", BookGuard.SEAT.contains("your_turn") && BookGuard.SEAT.contains("number of tickets"))
+
+    val sheetAt6 = Opener.items(listOf(
+        "1 [text] How many seats? @500,1150", "2 [tap] 1 @360,1310", "3 [tap] 2 @392,1310", "4 [tap] 3 @423,1310", "5 [tap] 4 @454,1310", "6 [tap] 5 @485,1310",
+        "7 [tap] 6 (selected) @515,1310", "8 [tap] 7 @546,1310", "9 [tap] 8 @576,1310", "10 [tap] 9 @607,1310", "11 [tap] 10 @637,1310",
+        "12 [tap] GOLD · ₹190 · AVAILABLE @500,1385", "13 [button] Select Seats @500,1442",
+    ).joinToString("\n"))
+    val plan = BookGuard.seatSheet(sheetAt6, 2)
+    T.check("the count sheet at 6 is set to the user's 2, then Select Seats", plan?.number?.id == 3 && plan.go?.id == 13 && !plan.alreadySet)
+    val sheetAt2 = Opener.items("1 [text] How many seats? @500,1150\n2 [tap] 1 @360,1310\n3 [tap] 2 (selected) @392,1310\n4 [tap] 3 @423,1310\n5 [tap] 4 @454,1310\n6 [tap] 5 @485,1310\n7 [button] Select Seats @500,1442")
+    T.check("already at the user's number: only Select Seats is tapped", BookGuard.seatSheet(sheetAt2, 2).let { it != null && it.number == null && it.alreadySet && it.go?.id == 7 })
+    T.check("no number marked as selected: the user's number is tapped anyway", BookGuard.seatSheet(Opener.items("1 [text] How many seats? @500,1150\n2 [tap] 1 @360,1310\n3 [tap] 2 @392,1310\n4 [tap] 3 @423,1310\n5 [tap] 4 @454,1310\n6 [tap] 5 @485,1310\n7 [button] Select Seats @500,1442"), 2)?.number?.id == 3)
+    T.eq("a seat map with seat numbers is not the sheet", null, BookGuard.seatSheet(Opener.items("1 [tap] 23 @100,1050\n2 [tap] 22 @130,1050\n3 [tap] 21 @160,1050\n4 [tap] 20 @190,1050\n5 [tap] 19 @220,1050\n6 [button] Pay ₹1140 @500,1442"), 2))
+    T.check("the sheet without a readable number row is left to the AI", BookGuard.seatSheet(Opener.items("1 [text] How many seats? @500,1150\n2 [button] Select Seats @500,1442"), 2).let { it != null && it.number == null && !it.alreadySet })
+    T.eq("more than ten tickets is not a sheet matter", null, BookGuard.seatSheet(sheetAt6, 12))
+    val seatMap = "Sun, 22 Nov\n6 Tickets\n10:00 AM DOLBY ATMOS\n01:30 PM DOLBY ATMOS\nRs.190 PLATINUM\nPay ₹1140"
+    T.check("the seat page is recognised", BookGuard.seatPage(seatMap) && BookGuard.seatPage("How many seats?") && !BookGuard.seatPage("FRI 20 NOV SAT 21 NOV\n06:00 AM\n11:30 PM"))
+    T.check("on it, the wrong day and the wrong count are both said", SeatScreen.problem(seatMap, Order("MOVIE", item = "OM", count = 2, date = "2026-11-20"), now).orEmpty().let { it.contains("6 tickets") && it.contains("asked for 2") && it.contains("Sun 22 Nov") && it.contains("Fri 20 Nov") })
+    T.eq("the right day and count: nothing to say", null, SeatScreen.problem("Fri, 20 Nov\n2 Tickets\nRs.190 GOLD", Order("MOVIE", item = "OM", count = 2, date = "2026-11-20"), now))
+
+    println("\"I snoozed the alarm instead of dismissing it; Seyal did not dismiss it; it rang again\"")
+    val zone = java.time.ZoneId.of("Asia/Kolkata")
+    fun at(h: Int, m: Int, plusDays: Long = 0) = java.time.ZonedDateTime.of(2026, 11, 19, h, m, 0, 0, zone).plusDays(plusDays).toInstant().toEpochMilli()
+    val fmt: (Long) -> String = { ms -> java.time.Instant.ofEpochMilli(ms).atZone(zone).format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.ENGLISH)) }
+    for (w in listOf("dismiss the alarm", "Stop the alarm.", "cancel alarm", "turn off the alarm", "dismiss the snoozed alarm", "stop the ringing alarm", "delete my alarm", "alarm off pannu", "alarm venam", "no more snooze", "cancel the snooze", "அலாரம் நிறுத்து"))
+        T.check("means the alarm in hand: $w", AlarmPick.asks(w).let { it != null && !it.all && it.time.isBlank() })
+    for (w in listOf("cancel all alarms", "delete all my alarms", "turn off every alarm", "stop all the alarms"))
+        T.check("means every alarm: $w", AlarmPick.asks(w)?.all == true)
+    T.eq("\"cancel the 6:30 alarm\" names its time", "6:30", AlarmPick.asks("cancel the 6:30 alarm")?.time)
+    T.eq("…\"cancel the alarm for 6 am\"", "6 am", AlarmPick.asks("cancel the alarm for 6 am")?.time)
+    T.eq("…\"delete alarm at 18:30\"", "18:30", AlarmPick.asks("delete alarm at 18:30")?.time)
+    for (w in listOf("set an alarm for 6 am", "stop the music", "cancel the meeting", "turn off wifi", "cancel the morning alarm", "what is an alarm clock", "dismiss the notification"))
+        T.eq("something else: $w", null, AlarmPick.asks(w))
+    for (w in listOf("what alarms do I have", "show my alarms", "list alarms", "which alarms are set", "my alarms"))
+        T.check("asks what is set: $w", AlarmPick.asksList(w))
+    T.check("…a request to set one does not", !AlarmPick.asksList("set an alarm for 6 am") && !AlarmPick.asksList("dismiss the alarm"))
+    T.eq("times as people say them", listOf(390 to false, 1110 to true, 360 to true, 1110 to true, 0 to true), listOf(AlarmPick.clock("6:30"), AlarmPick.clock("6.30 pm"), AlarmPick.clock("6 am"), AlarmPick.clock("18:30"), AlarmPick.clock("12 am")))
+    T.eq("a bare number or a word is not a time", listOf<Pair<Int, Boolean>?>(null, null, null), listOf(AlarmPick.clock("6"), AlarmPick.clock("morning"), AlarmPick.clock("25:00")))
+
+    val snoozedOne = AlarmPick.A("snzab12", at(14, 43), "Alarm"); val morning = AlarmPick.A("k3", at(6, 30, 1), "Gym"); val evening = AlarmPick.A("k4", at(18, 30), "Alarm")
+    val c1 = AlarmPick.choose(listOf(morning, snoozedOne), AlarmPick.Want(false, ""), ringing = false, zone, fmt)
+    T.check("the snoozed alarm is the one dismissed, the others stay", c1.cancel.map { it.id } == listOf("snzab12") && c1.say.startsWith("Dismissed the snoozed alarm: it will not ring again.") && c1.say.contains("Still set: 6:30 AM \"Gym\""))
+    val c2 = AlarmPick.choose(listOf(evening), AlarmPick.Want(false, ""), false, zone, fmt)
+    T.check("the only alarm there is, is the one meant", c2.cancel.map { it.id } == listOf("k4") && c2.say == "Cancelled the alarm for 6:30 PM.")
+    val c3 = AlarmPick.choose(listOf(morning, evening), AlarmPick.Want(false, ""), false, zone, fmt)
+    T.check("several and none snoozed: none is cancelled, they are named", c3.cancel.isEmpty() && c3.say.startsWith("You have 2 alarms: 6:30 PM, 6:30 AM \"Gym\".") && c3.say.contains("cancel all alarms"))
+    val c4 = AlarmPick.choose(listOf(morning, evening), AlarmPick.Want(false, "6:30 am"), false, zone, fmt)
+    T.check("by its time, morning or evening as said", c4.cancel.map { it.id } == listOf("k3") && c4.say == "Cancelled the alarm for 6:30 AM \"Gym\".")
+    T.check("a time without am or pm takes both", AlarmPick.choose(listOf(morning, evening), AlarmPick.Want(false, "6:30"), false, zone, fmt).cancel.size == 2)
+    T.check("a 24-hour time takes only that one", AlarmPick.choose(listOf(morning, evening), AlarmPick.Want(false, "18:30"), false, zone, fmt).cancel.map { it.id } == listOf("k4"))
+    val c5 = AlarmPick.choose(listOf(morning), AlarmPick.Want(false, "9 pm"), false, zone, fmt)
+    T.check("no alarm at that time: said, with what is waiting", c5.cancel.isEmpty() && c5.say == "No alarm at 9 pm. Waiting: 6:30 AM \"Gym\".")
+    val c6 = AlarmPick.choose(listOf(morning, evening, snoozedOne), AlarmPick.Want(true, ""), false, zone, fmt)
+    T.check("all of them", c6.cancel.size == 3 && c6.say.startsWith("Cancelled all 3 alarms: 2:43 PM (snoozed), 6:30 PM, 6:30 AM \"Gym\"."))
+    val c7 = AlarmPick.choose(listOf(morning), AlarmPick.Want(false, ""), ringing = true, zone, fmt)
+    T.check("one is ringing: it is stopped, and one set for later is not touched", c7.stopRinging && c7.cancel.isEmpty() && c7.say == "Stopped the alarm that was ringing. Still set: 6:30 AM \"Gym\".")
+    T.check("nothing set at all: said plainly", AlarmPick.choose(emptyList(), AlarmPick.Want(false, ""), false, zone, fmt).say == "No alarm is set in Seyal." && AlarmPick.choose(emptyList(), AlarmPick.Want(true, ""), false, zone, fmt).say == "No alarm is set in Seyal.")
+    T.eq("what is set, when asked", "Alarms in Seyal: 2:43 PM (snoozed), 6:30 AM \"Gym\".", AlarmPick.listed(listOf(morning, snoozedOne), fmt))
+    T.check("the phone's clock apps are known by their package", listOf("com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage", "com.oneplus.deskclock", "com.coloros.alarmclock").all { AlarmPick.isClockApp(it) } && !AlarmPick.isClockApp("com.whatsapp") && !AlarmPick.isClockApp("com.seyal.app"))
+    T.check("Dismiss and Stop end an alarm; Snooze does not", AlarmPick.isDismiss("Dismiss") && AlarmPick.isDismiss("STOP") && AlarmPick.isDismiss("Turn off") && !AlarmPick.isDismiss("Snooze") && !AlarmPick.isDismiss("Snooze 10 min") && !AlarmPick.isDismiss("Open"))
+    val bp = Basics.plan("dismiss the alarm", now, true)
+    T.check("the everyday command needs no AI", bp?.tool == "alarm_cancel" && bp.args.optString("which") == "" && bp.answer?.invoke(JSONObject().put("say", "Dismissed the snoozed alarm: it will not ring again.")) == "Dismissed the snoozed alarm: it will not ring again.")
+    T.eq("…\"cancel all alarms\"", "all", Basics.plan("cancel all alarms", now, true)?.args?.optString("which"))
+    T.eq("…\"cancel the 6:30 alarm\"", "6:30", Basics.plan("cancel the 6:30 alarm", now, true)?.args?.optString("which"))
+    T.eq("…\"what alarms do I have\"", "alarm_list", Basics.plan("what alarms do I have", now, true)?.tool)
+    T.eq("setting an alarm still sets one", "alarm_set", Basics.plan("set an alarm for 6 am", now, true)?.tool)
+    T.eq("the steps are named in the chat", listOf("Dismiss the alarm", "Cancel all alarms", "Cancel the 6:30 alarm", "Check the alarms"),
+        listOf(Prompts.friendly(Part.Call("a1", "alarm_cancel", JSONObject())), Prompts.friendly(Part.Call("a2", "alarm_cancel", JSONObject().put("which", "all"))), Prompts.friendly(Part.Call("a3", "alarm_cancel", JSONObject().put("which", "6:30"))), Prompts.friendly(Part.Call("a4", "alarm_list", JSONObject()))))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -2587,7 +2687,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

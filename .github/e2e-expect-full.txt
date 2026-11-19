@@ -66,3 +66,7 @@ go to the second link => done; tool:open_url; says:Opened
 pause screen control => done; noai; tool:screen_control; says:off
 turn on screen control => done; noai; tool:screen_control; says:is on
 Open Settings and tell me the Android version, to show screen control works again => done; tool:screen_read|screen_tap|screen_scroll|screen_type; says:\d
+Set an alarm for 5:10 am tomorrow => done; tool:alarm_set
+what alarms do I have => done; noai; tool:alarm_list; says:5:10
+cancel the 5:10 alarm => done; noai; tool:alarm_cancel; says:Cancelled the alarm for 5:10
+cancel all alarms => done; noai; tool:alarm_cancel; says:Cancelled|No alarm

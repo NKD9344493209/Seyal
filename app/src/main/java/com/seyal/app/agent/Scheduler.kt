@@ -59,6 +59,19 @@ object Scheduler {
         return id
     }
 
+    /** The alarm again in a while (Snooze). Its id begins with "snz", so "dismiss the alarm" knows which one is meant. */
+    fun snoozeAlarm(ctx: Context, at: Long, label: String): String {
+        val id = "snz" + newId()
+        remember("alarm", id, at, label)
+        set(ctx, "alarm", id, at, label)
+        return id
+    }
+
+    /** Every alarm waiting in Seyal, soonest first. */
+    fun alarms(): List<Timer> = Store.loadTimers().filter { it.kind == "alarm" && it.at > System.currentTimeMillis() - 30_000 }.sortedBy { it.at }
+
+    const val ACTION_CANCEL = "com.seyal.app.CANCEL_TIMER"
+
     /** [open]: what a tap on the reminder opens (a Target: "app:WhatsApp", "mail:", "url:…"); "" = Seyal. */
     fun setReminder(ctx: Context, at: Long, text: String, open: String = ""): String {
         val id = newId()
@@ -91,6 +104,7 @@ object Scheduler {
     fun cancelTimer(ctx: Context, kind: String, id: String) {
         am(ctx).cancel(pending(ctx, kind, id, 0, ""))
         forget(kind, id)
+        if (kind == "alarm") com.seyal.app.device.Notify.cancel(ctx, "snooze$id")
     }
 
     fun schedule(ctx: Context, skill: Skill) {
@@ -148,7 +162,7 @@ object Scheduler {
 
     fun fire(ctx: Context, kind: String, id: String, at: Long, text: String) {
         when (kind) {
-            "alarm" -> { forget("alarm", id); AlarmActivity.ring(ctx, id, text) }
+            "alarm" -> { forget("alarm", id); com.seyal.app.device.Notify.cancel(ctx, "snooze$id"); AlarmActivity.ring(ctx, id, text) }
             "remind" -> {
                 // What the reminder is about (the mail, the app, the link) was noted when it was set: a tap goes there.
                 val open = runCatching { Store.loadTimers().firstOrNull { it.kind == "remind" && it.id == id }?.open }.getOrNull().orEmpty()
@@ -164,6 +178,13 @@ object Scheduler {
 
 class SchedulerReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // "Dismiss" on the notification of a snoozed alarm.
+        if (intent.action == Scheduler.ACTION_CANCEL) {
+            val id = intent.getStringExtra("id") ?: return
+            Scheduler.cancelTimer(context, intent.getStringExtra("kind") ?: "alarm", id)
+            com.seyal.app.device.Notify.cancel(context, "snooze$id")
+            return
+        }
         if (intent.action != Scheduler.ACTION_FIRE) return
         if (intent.getStringExtra("kind") == "tick") {
             // Background checks take a few seconds of network: hold the broadcast open until they finish.

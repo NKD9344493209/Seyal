@@ -177,6 +177,10 @@ object Basics {
         // "dad ku I will be late nu message pannu"
         Regex("^(.{2,30}?) ?(?:ku|kku|kitta) (.{2,}?) (?:nu|nnu|endru|apdinu) (?:oru )?(whatsapp|message|msg|sms|text) (?:pannu|anuppu|anupu|podu|pannunga|send pannu)$").on { m -> message(m.groupValues[1], typed(m, 2), m.groupValues[3]) }?.let { return it }
 
+        // ---- "dismiss the alarm", "cancel the 6:30 alarm", "what alarms do I have": Seyal's own alarms, no AI
+        AlarmPick.asks(t)?.let { w -> return Plan("alarm_cancel", args("which" to if (w.all) "all" else w.time)) { o -> o.optString("say").ifBlank { "Done." } } }
+        if (AlarmPick.asksList(t)) return Plan("alarm_list") { o -> o.optString("say").ifBlank { "No alarm is set in Seyal." } }
+
         // ---- alarms, reminders, timers
         Regex("^(?:set |put |keep |create |add )?(?:an |a |the )?alarm (?:for|at|to) (.{2,30})$|^wake me(?: up)? (?:at|by) (.{2,30})$|^(.{2,30}?) ?(?:ku|kku|manikku) (?:oru )?alarm (?:vei|vai|podu|set pannu|vechiru)$").on { m ->
             val w = m.groupValues.drop(1).first { it.isNotBlank() }

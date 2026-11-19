@@ -276,6 +276,8 @@ USING THE SCREEN
             "open_app" -> "Open ${s("name")}"
             "open_url" -> "Open " + s("url").let { u -> if (u.startsWith("http")) u.substringAfter("://").substringBefore("/").removePrefix("www.") + (if (u.contains("search?q=") || u.contains("query=")) " search" else "") else u.substringBefore(":") + " link" }
             "apps_list" -> "List installed apps"
+            "alarm_list" -> "Check the alarms"
+            "alarm_cancel" -> when (s("which").lowercase()) { "" -> "Dismiss the alarm"; "all" -> "Cancel all alarms"; else -> "Cancel the ${s("which")} alarm" }
             "screen_control" -> when (s("action")) { "off" -> "Switch screen control off"; "on" -> "Switch screen control on"; else -> "Check screen control" }
             "phone_state" -> "Check phone status"
             "set_setting" -> "Set ${s("name")} to ${s("value")}"

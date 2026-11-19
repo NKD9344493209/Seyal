@@ -51,6 +51,7 @@ class AlarmActivity : ComponentActivity() {
         val label = intent.getStringExtra("text") ?: "Alarm"
         val id = intent.getStringExtra("id") ?: ""
         startSound()
+        ringing = this
         setContent {
             Column(
                 Modifier.fillMaxSize().background(Color(0xFF1C1B18)).padding(28.dp),
@@ -102,7 +103,10 @@ class AlarmActivity : ComponentActivity() {
     }
 
     private fun snooze(id: String, label: String) {
-        Scheduler.setAlarm(this, System.currentTimeMillis() + 10 * 60_000L, label)
+        val at = System.currentTimeMillis() + 10 * 60_000L
+        val again = Scheduler.snoozeAlarm(this, at, label)
+        // A snoozed alarm stays in sight, with its own Dismiss: pressing Snooze by mistake can be undone in one tap.
+        Notify.snoozed(this, again, label, at)
         stopAndClose(id)
     }
 
@@ -114,10 +118,21 @@ class AlarmActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopSound()
+        if (ringing === this) ringing = null
         super.onDestroy()
     }
 
     companion object {
+        /** The alarm sounding right now, if any. */
+        @Volatile private var ringing: AlarmActivity? = null
+
+        /** Stops the alarm that is sounding now ("dismiss the alarm" said to Seyal). False = none was. */
+        fun stopRinging(): Boolean {
+            val a = ringing ?: return false
+            a.runOnUiThread { runCatching { a.stopAndClose(a.intent.getStringExtra("id") ?: "") } }
+            return true
+        }
+
         /** Full-screen notification; Android opens the activity on the lock screen when allowed. */
         fun ring(ctx: Context, id: String, label: String) {
             val full = Intent(ctx, AlarmActivity::class.java).putExtra("id", id).putExtra("text", label)
