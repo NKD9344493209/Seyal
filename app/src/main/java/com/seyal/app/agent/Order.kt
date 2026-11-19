@@ -132,8 +132,67 @@ class Order(
          * A safety net when the AI could not be reached to write the order down: the number and the
          * price limit, read straight from the user's words.
          */
-        fun fromWords(kind: Preflight.Kind, words: List<String>): Order =
-            Order(kind = kind.name, count = countIn(words), maxEach = budgetIn(words))
+        fun fromWords(kind: Preflight.Kind, words: List<String>, now: java.time.LocalDateTime = java.time.LocalDateTime.now()): Order {
+            val count = countIn(words); val max = budgetIn(words)
+            if (kind != Preflight.Kind.MOVIE) return Order(kind = kind.name, count = count, maxEach = max)
+            // A film booking said in one line ("book o. m movie ticket on 20th November, any nearby theatre, 2 tickets,
+            // tamil, any time, 190 per ticket") is read here in full, so a slow AI does not make Seyal ask it all again.
+            return Order(
+                kind = kind.name, item = titleIn(words), language = languageIn(words), place = placeIn(words),
+                date = dayIn(words, now), time = timeIn(words), count = count, maxEach = max,
+            )
+        }
+
+        private const val STOP_AT = "on|at|in|for|from|by|tomorrow|today|tonight|tmrw|tmrw|naalaikku|innaiku|this|next|coming|releasing|release|released|any|near|nearby|nearest|with|and|under|below|within|max"
+        private val titleRx = listOf(
+            // "book o. m movie ticket …", "book 2 Leo tickets", "book ramayana ticket"
+            Regex("\\b(?:book|reserve|get|need|want|buy)(?:\\s+(?:me|us))?(?:\\s+(?:a|an|the|one|two|three|four|five|six|\\d{1,2}))?\\s+(?!tickets?\\b|seats?\\b)(.{1,40}?)\\s+(?:(?:movie|film|padam)\\s+)?(?:tickets?|seats?|show)\\b", RegexOption.IGNORE_CASE),
+            // "2 tickets for Leo tomorrow", "a ticket to scene movie"
+            Regex("\\b(?:tickets?|seats?)\\s+(?:for|to|of)\\s+(?:the\\s+)?(?:(?:movie|film)\\s+)?(.{1,40}?)(?:\\s+(?:movie|film|padam))?(?=\\s+(?:$STOP_AT)\\b|\\s*[,;]|\\s*\\.\\.|\\s+\\d+\\s*(?:tickets?|seats?)|\\s*$)", RegexOption.IGNORE_CASE),
+            // "book the movie Leo for tomorrow"
+            Regex("\\b(?:movie|film|padam)\\s+(?:called\\s+|named\\s+)?(.{1,40}?)(?=\\s+(?:$STOP_AT)\\b|\\s*[,;]|\\s*\\.\\.|\\s+\\d+\\s*(?:tickets?|seats?)|\\s*$)", RegexOption.IGNORE_CASE),
+        )
+
+        /** The film in a booking request, in the user's own words ("OM" for "o. m"); "" when it cannot be told for sure. */
+        fun titleIn(words: List<String>): String {
+            val first = words.firstOrNull().orEmpty().trim()
+            val stop = Regex("\\b(?:$STOP_AT|movie|film|padam|tickets?|seats?)\\b", RegexOption.IGNORE_CASE)
+            for (rx in titleRx) {
+                val raw = rx.find(first)?.groupValues?.get(1)?.trim()?.trim(',', '!', '?', '-', ':')?.trim() ?: continue
+                // A title does not run across a comma or a word like "for", "tomorrow", "tickets": then this is not where the title is.
+                if (raw.contains(',') || raw.contains(';') || stop.containsMatchIn(raw)) continue
+                val left = raw.split(Regex("\\s+")).filter { it.isNotBlank() }
+                if (left.isEmpty() || left.size > 6 || left.all { it.lowercase().trim('.', ',') in notTheThing || Regex("^\\d+$").matches(it) }) continue
+                return initials(left.joinToString(" ")).trimEnd('.').take(60)
+            }
+            return itemFromWords(words)
+        }
+
+        private val languages = listOf("tamil", "hindi", "english", "telugu", "malayalam", "kannada", "marathi", "bengali", "punjabi", "gujarati")
+        fun languageIn(words: List<String>): String =
+            words.asReversed().firstNotNullOfOrNull { w -> languages.firstOrNull { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(w) } }?.replaceFirstChar { it.uppercase() }.orEmpty()
+
+        /** The day the user named ("20th November", "tomorrow", "this Friday") as YYYY-MM-DD; "" when none. */
+        fun dayIn(words: List<String>, now: java.time.LocalDateTime): String =
+            words.asReversed().firstNotNullOfOrNull { w -> runCatching { com.seyal.app.util.Dates.find(w, now)?.at?.toLocalDate() }.getOrNull() }
+                ?.takeIf { !it.isBefore(now.toLocalDate()) && it.isBefore(now.toLocalDate().plusDays(120)) }?.toString().orEmpty()
+
+        private val clockRx = Regex("\\b(\\d{1,2})(?::(\\d{2}))?\\s?(am|pm)\\b|\\b(\\d{1,2}):(\\d{2})\\b", RegexOption.IGNORE_CASE)
+        private val partRx = Regex("\\b(morning|afternoon|evening|night|matinee|first show|second show|late night|kaalai|maalai|iravu)\\b", RegexOption.IGNORE_CASE)
+        private val anyTimeRx = Regex("\\bany\\s?time\\b|\\bany show\\b|\\bwhenever\\b|\\bentha time\\b", RegexOption.IGNORE_CASE)
+        /** The show time the user named ("6 pm", "evening"); "" when they named none or left it open ("any time"). */
+        fun timeIn(words: List<String>): String =
+            words.asReversed().firstNotNullOfOrNull { w -> (clockRx.find(w) ?: partRx.find(w))?.value?.trim() }.orEmpty()
+        /** Whether the user spoke of the time at all (a time, a part of the day, or "any time"). */
+        fun saysTime(words: List<String>): Boolean = words.any { clockRx.containsMatchIn(it) || partRx.containsMatchIn(it) || anyTimeRx.containsMatchIn(it) }
+
+        private val anyPlaceRx = Regex("\\b(?:any|nearby|near me|near by|nearest|close by|closest|pakkath\\w*|arugil)\\b[^,.;]{0,24}\\b(?:theat(?:re|er)s?|cinemas?|multiplex|halls?|screens?)\\b|\\b(?:any nearby|anywhere nearby|any theat(?:re|er)|nearby theat(?:re|er)|nearest theat(?:re|er))\\b", RegexOption.IGNORE_CASE)
+        private val namedPlaceRx = Regex("\\b(?i:at|in)\\s+((?:[A-Za-z][\\w&'.-]*\\s+){0,3}(?i:cinemas?|theat(?:re|er)s?|mall|multiplex|pvr|inox|talkies|cineplex)(?:\\s+[A-Z][\\w-]*){0,2})")
+        /** The theatre the user named ("at Broadway Cinemas"); "" when they named none or left it open ("any nearby theatre"). */
+        fun placeIn(words: List<String>): String =
+            words.asReversed().firstNotNullOfOrNull { w -> if (anyPlaceRx.containsMatchIn(w)) null else namedPlaceRx.find(w)?.groupValues?.get(1)?.trim() }.orEmpty().take(60)
+        /** Whether the user spoke of the theatre at all (named one, or said "any nearby"). */
+        fun saysPlace(words: List<String>): Boolean = words.any { anyPlaceRx.containsMatchIn(it) || namedPlaceRx.containsMatchIn(it) }
 
         private val numberWords = mapOf(
             "one" to 1, "single" to 1, "onnu" to 1, "oru" to 1, "two" to 2, "couple" to 2, "rendu" to 2, "irandu" to 2, "three" to 3, "moonu" to 3, "moondru" to 3,

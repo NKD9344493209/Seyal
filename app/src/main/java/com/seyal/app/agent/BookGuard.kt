@@ -66,17 +66,29 @@ object BookGuard {
     }
 
     /**
+     * The day a tappable thing stands for when it is a date chip, however its name was put together
+     * ("FRI · 20 · NOV", "Fri, 20 Nov · FRI · 20 · NOV", "20 Nov"). Null when it is not one, or its parts name different days.
+     */
+    fun dayOfLabel(label: String, today: LocalDate): LocalDate? {
+        chipDay(label, today)?.let { return it }
+        val parts = label.split(" · ").map { it.trim() }.filter { it.isNotBlank() }
+        if (parts.size !in 2..6) return null
+        val found = (parts.mapNotNull { chipDay(it, today) } + listOfNotNull(chipDay(parts.takeLast(3).joinToString(" "), today), chipDay(parts.takeLast(2).joinToString(" "), today))).distinct()
+        return found.singleOrNull()
+    }
+
+    /**
      * Before a tap in a booking: null when it may go ahead, else why not (in words for the AI).
      * [label]: the name of what is about to be tapped. [wanted]: the day the user asked for ("2026-11-20"), "" when none.
      */
     fun beforeTap(label: String, wanted: String, now: LocalDateTime): String? {
         if (isSeat(label)) return SEAT
         val want = runCatching { LocalDate.parse(wanted) }.getOrNull() ?: return null
-        val day = chipDay(label, now.toLocalDate()) ?: return null
+        val day = dayOfLabel(label, now.toLocalDate()) ?: return null
         if (day == want) return null
         val fmt = java.time.format.DateTimeFormatter.ofPattern("EEE d MMM", java.util.Locale.ENGLISH)
-        return "Not done: that is the chip for ${day.format(fmt)}, but the user asked for ${want.format(fmt)}. Tap the chip that SHOWS ${want.dayOfMonth} " +
-            "(${want.format(java.time.format.DateTimeFormatter.ofPattern("EEE", java.util.Locale.ENGLISH)).uppercase()}). If it is already the highlighted one, tap nothing and go on to the show times."
+        return "Not done: that is the chip for ${day.format(fmt)}, but the user asked for ${want.format(fmt)}. Call screen_day with date ${want} instead: " +
+            "it presses the chip that SHOWS ${want.dayOfMonth} and checks which one is highlighted."
     }
 
     /** The "How many seats?" sheet: what to tap to set it to the user's count. */
@@ -100,6 +112,28 @@ object BookGuard {
         val already = mine != null && marked.size == 1 && marked[0] === mine
         return Sheet(if (already) null else mine, items.firstOrNull { goRx.matches(it.label.trim()) }, already)
     }
+
+    /**
+     * The seat map itself is open on [screen] (not the "How many seats?" sheet over it, and not after seats were
+     * picked): the header names the number of tickets and the map's own words are there. This is where the user is
+     * handed the screen to pick seats.
+     */
+    fun seatMap(screen: String): Boolean =
+        Regex("\\b\\d{1,2}\\s*tickets?\\b", I).containsMatchIn(screen) &&
+            !Regex("how many seats|number of seats|how many tickets|select number of", I).containsMatchIn(screen) &&
+            Regex("\\b(?:available|sold|selected|bestseller|screen this way|all eyes this way)\\b", I).findAll(screen).map { it.value.lowercase() }.distinct().count() >= 2 &&
+            !Regex("\\b(?:pay|proceed to pay)\\s*(?:₹|rs\\.?)", I).containsMatchIn(screen)
+
+    /** The user asked Seyal to choose the seats ("pick the seats for me", "best seats"): then they are not handed the seat map. */
+    fun seyalPicksSeats(words: List<String>): Boolean =
+        words.any { Regex("\\b(?:pick|choose|select)\\s+(?:the\\s+|my\\s+)?seats?\\s+(?:for me|yourself|your ?self)\\b|\\byou\\s+(?:pick|choose|select)\\s+(?:the\\s+)?seats?\\b|\\bbest\\s+(?:available\\s+)?seats?\\b|\\bany\\s+seats?\\b", I).containsMatchIn(it) }
+
+    /** What the user is told on the bar over the seat map. */
+    fun pickSeats(count: Int): String = if (count >= 2) "Pick your $count seats, side by side, then tap Done" else "Pick your seat, then tap Done"
+
+    private val showTime = Regex("\\b\\d{1,2}:\\d{2}\\s?(?:AM|PM)\\b", I)
+    /** [label] is a show time ("06:00 AM · RGB LASER"): the tap on one opens the count sheet or the seat map a moment later. */
+    fun isShowTime(label: String): Boolean = showTime.containsMatchIn(label) && label.length <= 60
 
     /** The screen is a seat map or its count sheet (the only places where the header's day and ticket count are checked). */
     fun seatPage(screen: String): Boolean = Regex("\\b\\d{1,2} tickets?\\b|how many seats|select seats", I).containsMatchIn(screen)

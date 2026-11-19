@@ -93,11 +93,38 @@ front() { # bring Seyal back if another app (dialer, calendar, browser) is in fr
 
 CMDS="$HERE/e2e-commands.txt"
 [ "$FULL" = "full" ] && CMDS="$HERE/e2e-commands-full.txt"
+# On a push only the commands that need no AI are run (E2E_AI=none). The AI ones spend the key's free daily limit,
+# which the phone shares: on 19 Nov 2026 a push's test run used the day's limit up, and the phone was left with
+# "The AI is slow" all evening. The full test runs when the workflow is started by hand (E2E_AI=all).
+MODE="${E2E_AI:-all}"
+if [ "$MODE" != "all" ]; then
+  EXPECT_NOW="$HERE/e2e-expect.txt"; [ "$FULL" = "full" ] && EXPECT_NOW="$HERE/e2e-expect-full.txt"
+  python3 - "$EXPECT_NOW" > noai.txt <<'PYEOF'
+import sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    if "=>" not in line or line.lstrip().startswith("#"):
+        continue
+    cmd, rules = line.split("=>", 1)
+    if "noai" in [r.strip() for r in rules.split(";")]:
+        print(cmd.strip())
+PYEOF
+  echo "Push run: only the $(wc -l < noai.txt | tr -d ' ') commands that need no AI were tested, so the phone keeps the key's free daily limit. For the full test with the AI: GitHub, Actions, Build APK, Run workflow." >> e2e-warnings.txt
+fi
+skipped_prev=0
 n=0
 while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   [ -z "$cmd" ] && continue
   case "$cmd" in \#*) continue ;; esac
   n=$((n + 1)); tag=$(printf "%02d" "$n")
+  if [ "$MODE" != "all" ]; then
+    key="${cmd#> }"
+    case "$cmd" in
+      "!feed "*|"!gpost "*) : ;;
+      "!"*) echo "== [$tag] skipped on a push (needs the AI): $cmd"; skipped_prev=1; continue ;;
+      "> "*) if [ "$skipped_prev" = 1 ] || ! grep -qxF -- "$key" noai.txt; then echo "== [$tag] skipped on a push (needs the AI): $cmd"; skipped_prev=1; continue; fi ;;
+      *) if grep -qxF -- "$key" noai.txt; then skipped_prev=0; else echo "== [$tag] skipped on a push (needs the AI): $cmd"; skipped_prev=1; continue; fi ;;
+    esac
+  fi
   # "!post Title|Text": a message notification arrives (from the Shell app); a skill that watches for it should run by itself.
   # "!gpost Group|Sender:Text": the same in a GROUP chat. Nothing may run: skills answer people, not groups.
   # "!feed Sender|Text": a message arrives that no skill is waiting for. Seyal only reads it (a payment, an order,

@@ -229,6 +229,7 @@ USING THE SCREEN
             "more_tools" -> "Get more tools"
             "foresight" -> when (s("action")) { "scan" -> "Dirghadarshi: read this week's signals"; "record" -> "Dirghadarshi: check the track record"; else -> "Dirghadarshi: the latest report" }
             "your_turn" -> "Your turn: ${s("what").take(40)}"
+            "screen_day" -> "The day: " + (runCatching { com.seyal.app.agent.DayStrip.name(java.time.LocalDate.parse(s("date"))) }.getOrNull() ?: s("date"))
             "contacts_search" -> "Find ${s("name")} in contacts"
             "call" -> "Call ${s("name").ifBlank { s("phone") }}"
             "send_whatsapp" -> "WhatsApp ${s("name").ifBlank { s("phone") }}"

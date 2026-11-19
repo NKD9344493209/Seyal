@@ -74,7 +74,25 @@ object ScreenTools {
                 schema { int("id", "Element id from the latest screen"); str("text", "Visible text or label, if you have no id") },
                 available = screenOn, sideEffect = true,
             ) { a, _ ->
-                wrap(ScreenDriver.tap(a.optInt("id").takeIf { it > 0 }, a.optString("text").ifBlank { null })) { "Tapped ${it.optString("tapped")}" }
+                val id = a.optInt("id").takeIf { it > 0 }
+                val text = a.optString("text").ifBlank { null }
+                // A date on a strip of dates is pressed where it shows, not "clicked" by name (see DayStrip).
+                val day = com.seyal.app.agent.BookGuard.dayOfLabel(text ?: id?.let { ScreenDriver.labelFor(it) }.orEmpty(), java.time.LocalDate.now())
+                if (day != null) ScreenDriver.pickDay(day)?.let { r -> return@Tool wrap(r) { dayLine(it) } }
+                // A date that is not on a strip Seyal can read is still pressed with a finger's touch, not "clicked" by name.
+                wrap(ScreenDriver.tap(id, text, byFinger = day != null)) { "Tapped ${it.optString("tapped")}" }
+            },
+
+            Tool(
+                "screen_day", "screen",
+                "On a booking page with a strip of dates (FRI 20 NOV · SAT 21 NOV …): make one day the selected one. It presses the chip that SHOWS that day, the way a finger does, and checks which chip is highlighted; " +
+                    "a day that is already selected is not tapped. ALWAYS use this for the day, never screen_tap on a date chip. $SCREEN_NOTE",
+                schema { str("date", "The day as YYYY-MM-DD", required = true) },
+                available = screenOn, sideEffect = true,
+            ) { a, _ ->
+                val day = runCatching { java.time.LocalDate.parse(a.optString("date").trim()) }.getOrNull() ?: return@Tool ToolResult.Failed("date must be YYYY-MM-DD, for example 2026-11-20")
+                val r = ScreenDriver.pickDay(day) ?: JSONObject().put("ok", false).put("error", com.seyal.app.agent.DayStrip.NONE).also { o -> ScreenDriver.snapshotAfter(0)?.let { o.put("screen", it) } }
+                wrap(r) { dayLine(it) }
             },
 
             Tool(
@@ -144,6 +162,9 @@ object ScreenTools {
     }
 
     /** A failed action still hands back the current screen, as a normal result marked ok=false, so the AI can carry on from it. */
+    /** The line in the chat for a day that was chosen: "Fri 20 Nov is already the selected day". */
+    private fun dayLine(o: JSONObject): String = o.optString("say").substringBefore(" (").substringBefore(":").substringBefore(". ").take(70)
+
     private fun wrap(o: JSONObject, line: (JSONObject) -> String): ToolResult =
         if (o.optBoolean("ok", true) && !o.has("error")) ToolResult.Done(o, line(o))
         else if (o.has("screen") && !o.optBoolean("blocked")) ToolResult.Done(o.put("ok", false), "Didn't work: ${o.optString("error").take(60)}")

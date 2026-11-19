@@ -28,6 +28,7 @@ import com.seyal.app.agent.Links
 import com.seyal.app.agent.Target
 import com.seyal.app.agent.BookGuard
 import com.seyal.app.agent.AlarmPick
+import com.seyal.app.agent.DayStrip
 import com.seyal.app.agent.Aware
 import com.seyal.app.agent.AwareStore
 import java.time.ZoneId
@@ -2892,8 +2893,96 @@ fun testAwareness() {
     T.check("Seyal can tell the user about it", Prompts.ABOUT.contains("any recent news on AI") && Prompts.ABOUT.contains("daily brief on") && Prompts.ABOUT.contains("more on 2"))
 }
 
+fun testBookingByCode() {
+    val today = LocalDate.of(2026, 11, 19)
+    val now = LocalDateTime.of(2026, 11, 19, 20, 49)
+    println("A booking's day, count and seats by code (recording of 19 Nov 2026, 8:50 PM, v3.24.0)")
+
+    // ---- the strip of dates, as BookMyShow draws it on a 1080-wide screen: weekday, number, month, one under the other
+    fun chip(x: Int, wd: String, n: Int, mon: String = "NOV", sel: Boolean = false) = listOf(
+        DayStrip.Seen(wd, x - 35, 252, x + 35, 288, sel), DayStrip.Seen(n.toString(), x - 30, 303, x + 30, 357, sel), DayStrip.Seen(mon, x - 35, 372, x + 35, 408, sel),
+    )
+    val other = listOf(
+        DayStrip.Seen("O.M Operation Mole", 140, 110, 600, 160), DayStrip.Seen("Tamil • 2D", 40, 460, 240, 500), DayStrip.Seen("Sort by", 60, 560, 200, 610),
+        DayStrip.Seen("06:00 AM", 90, 920, 260, 960), DayStrip.Seen("09:35 AM", 390, 920, 560, 960), DayStrip.Seen("11:30 PM", 90, 1040, 260, 1080), DayStrip.Seen("1/3", 900, 2100, 960, 2140),
+        DayStrip.Seen("Cosmo Cinemas: NARASIMANAIKEN PALAYAM, AC 4k ATMOS", 170, 730, 800, 800),
+    )
+    val xs = listOf(80, 257, 434, 611, 788, 965)
+    val week = listOf("FRI" to 20, "SAT" to 21, "SUN" to 22, "MON" to 23, "TUE" to 24, "WED" to 25)
+    val nodes = other + week.flatMapIndexed { i, (wd, n) -> chip(xs[i], wd, n) }
+    val strip = DayStrip.find(nodes, today)
+    T.eq("the strip of dates is read from the words on the screen and where they are", listOf("2026-11-20", "2026-11-21", "2026-11-22", "2026-11-23", "2026-11-24", "2026-11-25"), strip?.chips?.map { it.day.toString() })
+    T.eq("…each date's spot to press is the middle of its number", listOf(80 to 330, 788 to 330), listOf(strip!!.chips[0], strip.chips[4]).map { it.x to it.y })
+    T.eq("…and how far apart they stand", 177, strip.pitch)
+    T.check("a show list with no dates has no strip", DayStrip.find(other, today) == null)
+    T.check("two dates are not a strip; a weekday that does not fit its number is not a date", DayStrip.find(other + chip(80, "FRI", 20) + chip(257, "SAT", 21), today) == null &&
+        DayStrip.find(other + chip(80, "MON", 20) + chip(257, "SAT", 21) + chip(434, "SUN", 22), today) == null)
+    T.check("dates that do not run forward are not a strip (a table, a calendar grid read wrongly)", DayStrip.find(other + chip(80, "SUN", 22) + chip(257, "SAT", 21) + chip(434, "FRI", 20), today) == null)
+    val onePiece = listOf(DayStrip.Seen("FRI\n20\nNOV", 20, 250, 140, 410), DayStrip.Seen("SAT\n21\nNOV", 197, 250, 317, 410, true), DayStrip.Seen("Sun, 22 Nov", 374, 250, 494, 410), DayStrip.Seen("2 Tickets", 800, 250, 1000, 300), DayStrip.Seen("09:25 AM", 100, 260, 300, 400))
+    T.eq("a date written in one piece is read too, and the one the app marks is the selected one", listOf("2026-11-20", "2026-11-21", "2026-11-22") to "2026-11-21", DayStrip.find(onePiece, today)?.let { st -> st.chips.map { it.day.toString() } to st.marked?.day.toString() })
+    val dec = DayStrip.find(listOf(chip(80, "MON", 30), chip(257, "TUE", 1, "DEC"), chip(434, "WED", 2, "DEC")).flatten(), today)
+    T.eq("the month changes along the strip", listOf("2026-11-30", "2026-12-01", "2026-12-02"), dec?.chips?.map { it.day.toString() })
+    val newYear = DayStrip.find(listOf(chip(80, "THU", 31, "DEC"), chip(257, "FRI", 1, "JAN"), chip(434, "SAT", 2, "JAN")).flatten(), LocalDate.of(2026, 12, 30))
+    T.eq("…and the year", listOf("2026-12-31", "2027-01-01", "2027-01-02"), newYear?.chips?.map { it.day.toString() })
+    val noMonth = DayStrip.find(listOf("FRI" to 20, "SAT" to 21, "SUN" to 22).flatMapIndexed { i, (wd, n) -> listOf(DayStrip.Seen(wd, xs[i] - 35, 252, xs[i] + 35, 288), DayStrip.Seen(n.toString(), xs[i] - 30, 303, xs[i] + 30, 357)) }, today)
+    T.eq("a strip with weekdays and numbers only", listOf("2026-11-20", "2026-11-21", "2026-11-22"), noMonth?.chips?.map { it.day.toString() })
+
+    // Which one is highlighted: by what the app marks, else by the colour behind each number.
+    val white = 0xFFFFFFFF.toInt(); val crimson = 0xFFDC3558.toInt(); val dark = 0xFF121212.toInt()
+    T.eq("where the colour is looked at: beside each number, inside its chip", listOf(24 to 330, 136 to 330, 201 to 330, 313 to 330), DayStrip.samplePoints(strip).take(4))
+    fun cols(sel: Int, page: Int = white, fill: Int = crimson) = strip.chips.indices.flatMap { if (it == sel) listOf(fill, fill) else listOf(page, page) }
+    T.eq("the highlighted date is the one on a filled chip", "2026-11-20", DayStrip.byColor(strip, cols(0))?.day.toString())
+    T.eq("…wherever it stands, in dark mode too", "2026-11-24", DayStrip.byColor(strip, cols(4, dark))?.day.toString())
+    T.check("…none or two filled, or a picture that does not fit, tell nothing", DayStrip.byColor(strip, cols(-1)) == null && DayStrip.byColor(strip, cols(0).toMutableList().also { it[4] = crimson; it[5] = crimson }) == null && DayStrip.byColor(strip, cols(0).drop(1)) == null)
+    T.check("…a number's own ink under one of the two spots is not a filled chip", DayStrip.byColor(strip, cols(2).toMutableList().also { it[0] = 0xFF333333.toInt() })?.day.toString() == "2026-11-22")
+    val marked = DayStrip.find(other + week.flatMapIndexed { i, (wd, n) -> chip(xs[i], wd, n, sel = i == 1) }, today)!!
+    T.eq("what the app marks is believed before any picture", "2026-11-21", DayStrip.selected(marked, cols(4))?.day.toString())
+    T.check("with no mark and no picture the highlighted date is not known", DayStrip.selected(strip, null) == null)
+    val later = DayStrip.find(week.drop(1).flatMapIndexed { i, (wd, n) -> chip(xs[i], wd, n) } + chip(xs[5], "THU", 26), today)!!
+    T.eq("a day off the left edge: the strip is dragged for earlier days", listOf("earlier", "later", null), listOf(DayStrip.drag(later, LocalDate.of(2026, 11, 20)), DayStrip.drag(later, LocalDate.of(2026, 11, 29)), DayStrip.drag(later, LocalDate.of(2026, 11, 24))))
+    T.eq("what the AI is told: already selected", "Fri 20 Nov is already the selected day (its chip is the highlighted one), so nothing was tapped. Go on to the show times.", DayStrip.alreadySaid(LocalDate.of(2026, 11, 20)))
+    T.check("…pressed and checked; pressed but not checkable; pressed and still wrong; not on the page", DayStrip.nowSaid(LocalDate.of(2026, 11, 20)).startsWith("Fri 20 Nov is now the selected day") && DayStrip.unsureSaid(LocalDate.of(2026, 11, 20)).contains("could not be checked") &&
+        DayStrip.wrongSaid(LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 24)).startsWith("Not done:") && DayStrip.wrongSaid(LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 24)).contains("Tue 24 Nov") &&
+        DayStrip.missingSaid(LocalDate.of(2026, 11, 20), later) == "Not done: this page has no chip for Fri 20 Nov. Its dates run from Sat 21 Nov to Thu 26 Nov. If the film has no show that day, tell the user which days it has and ask.")
+
+    // A tap on a date chip, however it is named, goes through the strip.
+    T.eq("a date chip is known by any of its names", listOf("2026-11-20", "2026-11-20", "2026-11-20", "2026-11-22"),
+        listOf("20 Nov", "FRI · 20 · NOV", "Fri, 20 Nov · FRI · 20 · NOV", "SUN · 22 · NOV").map { BookGuard.dayOfLabel(it, today).toString() })
+    T.check("…a name whose parts say two different days is not trusted; other things are not dates", BookGuard.dayOfLabel("Thu, 20 Nov · SUN · 22 · NOV", today) == null &&
+        listOf("06:00 AM · RGB LASER", "2 Tickets", "Select Seats", "Cosmo Cinemas PEELAMEDU AC 4K RGB Laser:Coimbatore", "2").all { BookGuard.dayOfLabel(it, today) == null })
+    T.check("a chip for another day than the user's is refused, with the tool to use instead", BookGuard.beforeTap("TUE · 24 · NOV", "2026-11-20", now)?.let { it.startsWith("Not done: that is the chip for Tue 24 Nov") && it.contains("screen_day with date 2026-11-20") } == true && BookGuard.beforeTap("FRI · 20 · NOV", "2026-11-20", now) == null)
+
+    // ---- the seat map, and what waits for it
+    val sheetText = "1 [text] Tue, 24 Nov @100,60\n2 [tap] 09:25 AM · DOLBY ATMOS @80,115\n3 [text] How many seats? @500,465\n4 [tap] 1 @40,670\n5 [tap] 2 @85,670\n6 [tap] 3 @128,670\n7 [tap] 4 @170,670\n8 [tap] 5 @212,670\n9 [tap] 6 @255,670\n10 [text] XLSLIDER @255,705\n11 [text] ₹183.8 @255,720\n12 [text] AVAILABLE @255,735\n13 [text] SOLD OUT @85,735\n14 [button] Select Seats @500,780"
+    val mapText = "1 [text] Fri, 20 Nov @100,60\n2 [tap] 2 Tickets @900,60\n3 [tap] 06:00 AM · RGB LASER @80,115\n4 [tap] 09:35 AM · RGB LASER @220,115\n5 [text] Rs.190 GOLD @80,160\n6 [text] Rs.190 SILVER @80,830\n7 [text] Available @180,905\n8 [text] Selected @260,905\n9 [text] Sold @330,905\n10 [text] YES Private Debit Card Offer @200,950"
+    T.check("the seat map is known from its own words", BookGuard.seatMap(mapText))
+    T.check("…the \"How many seats?\" sheet is not it, nor a show list, nor the map once seats are picked", !BookGuard.seatMap(sheetText) && !BookGuard.seatMap("1 [text] Cosmo Cinemas @1,1\n2 [tap] 06:00 AM · RGB LASER @2,2\n3 [text] Cancellation available @3,3") && !BookGuard.seatMap(mapText + "\n11 [button] Pay ₹380 @500,960"))
+    T.check("the sheet is still set by code", BookGuard.seatSheet(Opener.items(sheetText), 2)?.let { it.number?.label == "2" && it.go?.label == "Select Seats" } == true)
+    T.check("on the right day with the right number the map goes to the user; on another day it does not", SeatScreen.problem(mapText, Order("MOVIE", date = "2026-11-20", count = 2), now) == null && SeatScreen.problem(mapText.replace("Fri, 20 Nov", "Tue, 24 Nov"), Order("MOVIE", date = "2026-11-20", count = 2), now) != null)
+    T.eq("what the bar over the seat map says", listOf("Pick your 2 seats, side by side, then tap Done", "Pick your seat, then tap Done"), listOf(BookGuard.pickSeats(2), BookGuard.pickSeats(1)))
+    T.check("a user who asked Seyal to choose the seats is not handed the map", BookGuard.seyalPicksSeats(listOf("book 2 tickets for Leo, pick the seats for me")) && BookGuard.seyalPicksSeats(listOf("book Leo", "2, any seats")) && BookGuard.seyalPicksSeats(listOf("you choose the seats")) && !BookGuard.seyalPicksSeats(listOf("book o. m movie ticket, 2 tickets, 190 per ticket")))
+    T.check("a tap on a show time is waited on", BookGuard.isShowTime("06:00 AM · RGB LASER") && BookGuard.isShowTime("09:25 AM") && !BookGuard.isShowTime("Select Seats") && !BookGuard.isShowTime("FRI · 20 · NOV"))
+
+    // ---- his request, read in full by code when the AI is slow
+    val his = listOf("book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket")
+    val o = Order.fromWords(Preflight.Kind.MOVIE, his, now)
+    T.eq("\"book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket\"", listOf("OM", "Tamil", "", "2026-11-20", "", "2", "190"), listOf(o.item, o.language, o.place, o.date, o.time, o.count.toString(), o.maxEach.toString()))
+    T.eq("…so nothing is asked again", emptyList<String>(), Preflight.missingMovie(his, now))
+    T.eq("only what is missing is asked: one thing as it is", "Which seat class, or the most to pay per ticket (or 'any')?", Preflight.askFor(Preflight.missingMovie(listOf("book 2 tickets for Leo tomorrow evening at any nearby theatre"), now)))
+    T.eq("…several, numbered", "Before I book, tell me:\n1) Which day?\n2) What time (or 'any time')?\n3) Which theatre (or 'any nearby')?\n4) How many tickets? (They will be seats next to each other.)\n5) Which seat class, or the most to pay per ticket (or 'any')?\nAnswer in one line, or say 'you choose'.", Preflight.askFor(Preflight.missingMovie(listOf("book ramayana ticket"), now)))
+    T.eq("…and the answer fills them", emptyList<String>(), Preflight.missingMovie(listOf("book ramayana ticket", "tomorrow, evening show, any nearby, 2, under 200"), now))
+    T.eq("the film in the user's own words", listOf("OM", "Leo", "ramayana", "scene", "OM", "Jailer 2", "Leo", "Vettaiyan"),
+        listOf(his, listOf("book 2 tickets for Leo tomorrow evening"), listOf("book ramayana ticket"), listOf("book a ticket to scene movie"), listOf("book me o. m ticket"),
+            listOf("2 tickets for Jailer 2 at Broadway Cinemas tomorrow 6 pm"), listOf("book the movie Leo for tomorrow night, 2 tickets under 200"), listOf("I want 3 tickets for Vettaiyan on Sunday, any theatre")).map { Order.titleIn(it) })
+    T.check("…and none is made up when the request names none", Order.titleIn(listOf("book 2 tickets for tomorrow")) == "" && Order.titleIn(listOf("book movie tickets")) == "")
+    val two = Order.fromWords(Preflight.Kind.MOVIE, listOf("2 tickets for Jailer 2 at Broadway Cinemas tomorrow 6 pm"), now)
+    T.eq("a named theatre, a time and \"tomorrow\"", listOf("Jailer 2", "Broadway Cinemas", "2026-11-20", "6 pm", "2"), listOf(two.item, two.place, two.date, two.time, two.count.toString()))
+    T.check("other kinds are noted as before (how many and the limit)", Order.fromWords(Preflight.Kind.FOOD, listOf("order 2 plates of biryani under 300"), now).let { it.count == 2 && it.maxEach == 300 && it.item == "" && it.date == "" })
+    T.check("the tool is named in the chat and offered to the AI with the other screen tools", Prompts.friendly(Part.Call("d", "screen_day", JSONObject().put("date", "2026-11-20"))) == "The day: Fri 20 Nov" && Router.groups.first { it.name == "screen" }.tools.contains("screen_day"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -2902,7 +2991,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

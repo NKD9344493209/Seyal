@@ -518,8 +518,10 @@ object Agent {
         try {
             while (coroutineContext.isActive) {
                 pauseGate.await()
-                // The "How many seats?" sheet is set to the user's number by code (it opens on the last visit's number).
-                if (!firstRound && s.parentId == null) stepsThisRun += runCatching { setSeatCount(s) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
+                // In a booking, the steps that need no judgement are done by code, on the screen as it is now: the day in the
+                // strip of dates, the "How many seats?" sheet, and handing the seat map to the user.
+                if (!firstRound && s.parentId == null) stepsThisRun += runCatching { bookSteps(s) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
+                if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                 // A dead end met during the last step (the app's search has nothing by that name, twice over): stop here.
                 deadEnds.remove(s.id)?.let { end -> finish(s, SessionStatus.DONE, end); return }
                 // The words of a new request (first round only).
@@ -639,7 +641,10 @@ object Agent {
                                 val needSeat = kind == Preflight.Kind.MOVIE && !Preflight.saysSeatOrBudget(words) && usual?.let { it.seat.isNotBlank() || it.maxEach > 0 } != true
                                 question = when {
                                     leaves -> null
-                                    !saidComplete -> Part.Call(newId(), "ask_user", JSONObject().put("question", Preflight.fallbackQuestion(kind, onlyCount = false)))
+                                    // The AI did not answer in time. For a film, what the user's own words say is read by code and
+                                    // only what is missing is asked (nothing, when it was all said). Other kinds: the full question.
+                                    !saidComplete -> (if (kind == Preflight.Kind.MOVIE) Preflight.missingMovie(words, java.time.LocalDateTime.now()).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it) } else Preflight.fallbackQuestion(kind, onlyCount = false))
+                                        ?.let { q -> Part.Call(newId(), "ask_user", JSONObject().put("question", q)) }
                                     else -> Preflight.missingQuestion(kind, needCount, needSeat)?.let { q ->
                                         val args = JSONObject().put("question", q)
                                         if (needCount && !needSeat) args.put("options", org.json.JSONArray(listOf("1", "2", "3", "4")))
@@ -653,7 +658,7 @@ object Agent {
                             // Meanwhile the film's own page is looked for on the web (two seconds, in the background):
                             // opening it skips the app's splash, adverts and search box.
                             if (kind == Preflight.Kind.MOVIE && ScreenDriver.available) {
-                                val title = Opener.movieQuery(Order.itemFromWords(lock.withLock { requestWords(s) }))
+                                val title = Opener.movieQuery(Order.titleIn(lock.withLock { requestWords(s) }))
                                 if (title.isNotBlank()) filmLinks[s.id] = scope.async { title to findFilmLink(title) }
                             }
                             if (written == null && question != null) {
@@ -673,8 +678,10 @@ object Agent {
                             val noted = if (byAi == null) byWords.takeIf { !it.isEmpty } else Order.fromJson(byAi.toJson().apply {
                                 if (byWords.count > 0) put("count", byWords.count)
                                 if (byWords.maxEach > 0) put("max_each", byWords.maxEach)
+                                // So does a day they wrote out ("20th November") when the AI noted none.
+                                if (byAi.date.isBlank() && byWords.date.isNotBlank()) put("date", byWords.date)
                                 // The thing itself must be the user's own word. The AI once wrote "Sikandar" for "scene".
-                                if (!Order.grounded(byAi.item, words)) put("item", Order.itemFromWords(words))
+                                if (!Order.grounded(byAi.item, words)) put("item", if (kind == Preflight.Kind.MOVIE) Order.titleIn(words) else Order.itemFromWords(words))
                             })
                             // "Same as last time": what they left out comes from the last order of this kind that went through.
                             s.order = if (words.any { Usual.asksForSame(it) }) Usual.fill(noted ?: Order(kind.name)).takeIf { !it.isEmpty } else noted
@@ -682,6 +689,8 @@ object Agent {
                             // done by code, at once, instead of one AI question per tap.
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                             stepsThisRun += runCatching { runOpener(s, kind, byName) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
+                            // The page the opener leaves (the film's show list) gets the user's day before the AI sees it.
+                            stepsThisRun += runCatching { bookSteps(s) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
                             filmLinks.remove(s.id)?.cancel()
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                             // The film is not running: said at once, with no AI steps spent looking further.
@@ -1195,16 +1204,16 @@ object Agent {
      * The seat-count sheet of a booking app, set by code: tap the user's number, then the button that goes on.
      * Done at most twice per request; anything unexpected is left to the AI. Returns the steps taken.
      */
-    private suspend fun setSeatCount(s: Session): Int {
+    private suspend fun setSeatCount(s: Session, screen: String): Int {
         val order = s.order ?: return 0
-        if (order.count !in 1..10 || !ScreenDriver.available || s.checked.count { it.startsWith("seatsheet") } >= 2) return 0
-        // Only when the last thing that happened was a step on the screen, and that screen is the sheet.
-        val last = lock.withLock { s.messages.lastOrNull()?.takeIf { it.role == "tool" }?.results?.lastOrNull()?.output?.optJSONObject("screen")?.optString("elements") } ?: return 0
-        if (BookGuard.seatSheet(Opener.items(last), order.count) == null) return 0
+        if (order.count !in 1..10 || s.checked.count { it.startsWith("seatsheet") } >= 2) return 0
+        if (BookGuard.seatSheet(Opener.items(screen), order.count) == null) return 0
         val tapTool = Toolbox.get("screen_tap") ?: return 0
         s.checked += "seatsheet" + s.checked.size
         var n = 0
+        // Read for real now, and make its numbers the ones the taps below go by.
         val now = runCatching { ScreenDriver.read().optString("elements") }.getOrDefault("")
+        ScreenDriver.freezeIds(s.id)
         val sheet = BookGuard.seatSheet(Opener.items(now), order.count) ?: return 0
         var after = now
         if (sheet.number != null) {
@@ -1212,9 +1221,65 @@ object Agent {
             val r = runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", sheet.number.id)), tapTool); s.steps++; n++
             if (r.isError) return n
             after = r.output.optJSONObject("screen")?.optString("elements") ?: runCatching { ScreenDriver.read().optString("elements") }.getOrDefault("")
+            ScreenDriver.freezeIds(s.id)
         } else if (!sheet.alreadySet) return n
         val go = BookGuard.seatSheet(Opener.items(after), order.count)?.go ?: return n
         runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", go.id)), tapTool); s.steps++; n++
+        return n
+    }
+
+    /**
+     * The steps of a booking that need no judgement, done by code at the top of each round, on the screen as it is now
+     * (not as the last step's result described it: a sheet that opened a second later was missed that way, and the
+     * AI was asked about it three times, 35 seconds, on a real phone):
+     * 1. the "How many seats?" sheet → the user's number, then Select Seats;
+     * 2. the seat map, with the user's day and number of tickets → handed to the user to pick seats;
+     * 3. a strip of dates → the user's day made the selected one (pressed where it shows, and checked).
+     * Each only when the screen is exactly that; anything else is left to the AI. Returns how many steps it took.
+     */
+    private suspend fun bookSteps(s: Session): Int {
+        val order = s.order ?: return 0
+        // Film bookings only: these three screens were learnt from recordings of a real one.
+        if (!ScreenDriver.available || order.kind != Preflight.Kind.MOVIE.name) return 0
+        // Only right after a step on the screen.
+        val last = lock.withLock { s.messages.lastOrNull()?.takeIf { it.role == "tool" }?.results?.lastOrNull() } ?: return 0
+        if (!usesScreen(last.name) && last.name !in setOf("open_url", "open_app", "your_turn")) return 0
+        // Looking only: the numbered list the AI was last given must keep its meaning (ScreenDriver.peek).
+        suspend fun look() = runCatching { ScreenDriver.peek() }.getOrDefault("")
+        var now = look()
+        fun loaded(t: String) = BookGuard.seatSheet(Opener.items(t), order.count.coerceIn(1, 10)) != null || BookGuard.seatMap(t)
+        // A show time was just tapped: its sheet or seat map takes a moment. Three seconds here cost less than an AI question about a page still loading.
+        if (last.name == "screen_tap" && BookGuard.isShowTime(last.output.optString("tapped")) && !loaded(now)) {
+            report("Waiting for the seats…")
+            for (i in 1..4) { delay(750); now = look(); if (loaded(now)) break }
+        }
+        var n = 0
+        // 1. How many.
+        n += setSeatCount(s, now)
+        if (n > 0) { delay(400); now = look() }
+        // 2. The seats are the user's to pick.
+        if (order.count in 1..10 && "handover" !in s.checked && BookGuard.seatMap(now) &&
+            SeatScreen.problem(now, order, java.time.LocalDateTime.now()) == null && !BookGuard.seyalPicksSeats(lock.withLock { requestWords(s) })
+        ) {
+            val turn = Toolbox.get("your_turn") ?: return n
+            s.checked += "handover"
+            runSynthetic(s, Part.Call(newId(), "your_turn", JSONObject().put("what", BookGuard.pickSeats(order.count))), turn); s.steps++; n++
+            return n
+        }
+        // 3. The day.
+        val want = runCatching { java.time.LocalDate.parse(order.date) }.getOrNull()
+        if (n == 0 && want != null && "day-ok" !in s.checked && last.name != "screen_day" && s.checked.count { it.startsWith("dayset") } < 4 && !BookGuard.seatPage(now)) {
+            // "Book tickets" was just tapped: the show list with its dates takes a moment to load.
+            var strip = ScreenDriver.hasDayStrip()
+            if (!strip && Regex("book tickets?", RegexOption.IGNORE_CASE).containsMatchIn(last.output.optString("tapped"))) for (i in 1..3) { delay(700); strip = ScreenDriver.hasDayStrip(); if (strip) break }
+            if (!strip) return n
+            val dayTool = Toolbox.get("screen_day") ?: return n
+            s.checked += "dayset" + s.checked.size
+            report("Checking the day…")
+            val r = runSynthetic(s, Part.Call(newId(), "screen_day", JSONObject().put("date", want.toString())), dayTool); s.steps++; n++
+            // Done once per visit to the show list, whether or not the highlight could be checked: the seat screen's header is read in any case.
+            if (!r.isError && r.output.optBoolean("ok")) s.checked += "day-ok"
+        }
         return n
     }
 
@@ -1438,7 +1503,7 @@ object Agent {
                 // On the seat map and its count sheet: is this the user's day and the user's number of tickets? Said at once,
                 // not after six seats are selected. (Seen: Sunday the 22nd and "6 Tickets" for a request of 2 on the 20th.)
                 if (!r.output.has("wrong_turn") && s.order != null && BookGuard.seatPage(page)) {
-                    SeatScreen.problem(page, s.order, java.time.LocalDateTime.now())?.let { r.output.put("wrong_turn", "Before anything else on this screen: $it") }
+                    SeatScreen.problem(page, s.order, java.time.LocalDateTime.now())?.let { r.output.put("wrong_turn", "Before anything else on this screen: $it"); s.checked.remove("day-ok") }
                 }
             }
         }

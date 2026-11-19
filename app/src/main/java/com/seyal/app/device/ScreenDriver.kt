@@ -202,6 +202,12 @@ object ScreenDriver {
     /** What is on screen now. Output: app, package, size, elements (one per line), scrollable. */
     suspend fun read(maxElements: Int = 110): JSONObject = lock.withLock { repeatGuard.looked(); settle(); describe(maxElements) }
 
+    /**
+     * What is on screen now, for rules that only look (is this the seat sheet? the seat map?). Unlike [read] it leaves
+     * the numbered list the AI was last shown as it is: the AI's "tap 12" must go on meaning the 12 it saw.
+     */
+    suspend fun peek(maxElements: Int = 110): String = lock.withLock { settle(); runCatching { describe(maxElements, keep = false).optString("elements") }.getOrDefault("") }
+
     /** Remembers the last tap, to stop the same thing being tapped twice in a row without a look in between. */
     internal val repeatGuard = RepeatGuard()
 
@@ -237,7 +243,8 @@ object ScreenDriver {
         }
     }
 
-    private fun describe(maxElements: Int): JSONObject {
+    /** [keep] = false: only look. The ids the AI was last given keep their meaning (see [peek]). */
+    private fun describe(maxElements: Int, keep: Boolean = true): JSONObject {
         val s = svc()
         val root = s.rootInActiveWindow ?: return JSONObject().put("app", "unknown").put("elements", "").put("note", "No window content (lock screen, or an app that blocks reading). Try screenshot.")
         val pkg = root.packageName?.toString() ?: ""
@@ -325,9 +332,11 @@ object ScreenDriver {
             // Positions on a 0-1000 scale of the screen, the same scale as screenshots and screen_tap_at.
             sb.append(" @").append(e.bounds.centerX() * 1000L / sw.coerceAtLeast(1)).append(',').append(e.bounds.centerY() * 1000L / sh.coerceAtLeast(1)).append('\n')
         }
-        lastEls = map
-        lastListing = sb.toString()
-        lastPkg = pkg
+        if (keep) {
+            lastEls = map
+            lastListing = sb.toString()
+            lastPkg = pkg
+        }
         return JSONObject().put("app", appLabel(s, pkg)).put("package", pkg)
             .put("scrollable", scrollable).put("elements", sb.toString().trimEnd())
             // A dialog, sheet or offer of the same app lies over its main window: usually the thing to deal with first.
@@ -467,7 +476,8 @@ object ScreenDriver {
      * Taps an element by id (from the screen the AI saw) or by visible text. Refuses payment buttons.
      * [pkg]: only if that app is in front. Returns the new screen.
      */
-    suspend fun tap(id: Int?, text: String?, long: Boolean = false, exactOnly: Boolean = false, returnScreen: Boolean = true, pkg: String? = null): JSONObject = lock.withLock {
+    /** [byFinger]: press the spot itself instead of sending the app a "click" (for things an app tells apart by where the finger lands). */
+    suspend fun tap(id: Int?, text: String?, long: Boolean = false, exactOnly: Boolean = false, returnScreen: Boolean = true, pkg: String? = null, byFinger: Boolean = false): JSONObject = lock.withLock {
         if (pkg != null && frontPackage() != pkg) return@withLock JSONObject().put("ok", false).put("error", "The expected app is not in front any more.")
         var byId = id != null && id > 0
         var refound = false
@@ -496,7 +506,7 @@ object ScreenDriver {
         val before = lastListing; val beforePkg = lastPkg
         val (cx, cy) = center(node)
         var byGesture = false
-        var ok = runCatching { target.performAction(if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
+        var ok = if (byFinger && !long && cx > 0 && cy > 0) false else runCatching { target.performAction(if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
         if (!ok) { ok = gestureTap(cx, cy, if (long) 700 else 60); byGesture = true }
         val o = JSONObject().put("ok", ok).put("tapped", label).also { if (!ok) it.put("error", "The tap did not register") }
         if (refound && ok) o.put("note", "The screen had changed since you looked; found \"$label\" again and tapped it.")
@@ -887,6 +897,87 @@ object ScreenDriver {
             Shot("image/jpeg", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP), small.width, small.height, sw, sh)
         } finally {
             pillHidden(false)
+        }
+    }
+
+    // ---------------------------------------------------------------- the strip of dates (see DayStrip)
+
+    /** Every piece of text on the screen with its place. Descriptions are left out on purpose: apps leave old ones behind. */
+    private fun seenNow(): List<com.seyal.app.agent.DayStrip.Seen> {
+        val root = service?.rootInActiveWindow ?: return emptyList()
+        val out = ArrayList<com.seyal.app.agent.DayStrip.Seen>()
+        fun walk(n: AccessibilityNodeInfo?, depth: Int, marked: Boolean) {
+            if (n == null || depth > 45 || out.size > 700 || !n.isVisibleToUser) return
+            val sel = marked || n.isSelected || (n.isCheckable && n.isChecked)
+            val t = n.text?.toString()?.trim().orEmpty()
+            if (t.isNotBlank() && t.length <= 40 && !n.isEditable) {
+                val r = Rect(); n.getBoundsInScreen(r)
+                if (!r.isEmpty) out += com.seyal.app.agent.DayStrip.Seen(t, r.left, r.top, r.right, r.bottom, sel)
+            }
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1, sel)
+        }
+        walk(root, 0, false)
+        return out
+    }
+
+    /** The colours at some points of the screen (real pixels), from one picture of it; null when no picture can be had. */
+    private suspend fun colorsAt(points: List<Pair<Int, Int>>): List<Int>? {
+        val s = service ?: return null
+        if (Build.VERSION.SDK_INT < 30 || shotsBroken() || points.isEmpty()) return null
+        (1100 - (System.currentTimeMillis() - lastShotAt)).takeIf { it > 0 }?.let { delay(it) }
+        var bmp = shoot(s, false) { }
+        if (bmp == null) { delay(1200); bmp = shoot(s, false) { } }
+        lastShotAt = System.currentTimeMillis()
+        val b = bmp ?: return null
+        return runCatching { points.map { (x, y) -> b.getPixel(x.coerceIn(0, b.width - 1), y.coerceIn(0, b.height - 1)) } }.getOrNull()
+    }
+
+    private suspend fun highlighted(strip: com.seyal.app.agent.DayStrip.Strip): com.seyal.app.agent.DayStrip.Chip? =
+        com.seyal.app.agent.DayStrip.selected(strip, if (strip.marked == null) colorsAt(com.seyal.app.agent.DayStrip.samplePoints(strip)) else null)
+
+    /** Whether a strip of dates is on the screen now. */
+    suspend fun hasDayStrip(): Boolean = lock.withLock { runCatching { settle(); com.seyal.app.agent.DayStrip.find(seenNow(), java.time.LocalDate.now()) != null }.getOrDefault(false) }
+
+    /**
+     * Makes [want] the selected day of the strip of dates on screen: presses the chip that SHOWS it, the way a finger
+     * does (a "click" sent by name made BookMyShow jump to another day), then looks which chip is highlighted.
+     * A day that is already selected is not tapped. Null when the screen has no strip of dates.
+     */
+    suspend fun pickDay(want: java.time.LocalDate): JSONObject? = lock.withLock {
+        val ds = com.seyal.app.agent.DayStrip
+        repeatGuard.looked()
+        val today = java.time.LocalDate.now()
+        settle()
+        var strip = ds.find(seenNow(), today) ?: return@withLock null
+        // The day is off to one side: drag the strip, as a thumb would, until it shows.
+        var drags = 0
+        while (strip.has(want) == null && drags < 3) {
+            val way = ds.drag(strip, want) ?: break
+            val y = strip.chips.first().y.toFloat()
+            val a = strip.chips.first().x.toFloat(); val b = strip.chips.last().x.toFloat()
+            if (way == "earlier") gestureSwipe(a, y, b, y, 350) else gestureSwipe(b, y, a, y, 350)
+            delay(600); settle()
+            strip = ds.find(seenNow(), today) ?: break
+            drags++
+        }
+        val o = JSONObject().put("day", want.toString())
+        fun done() = o.put("screen", runCatching { describe(90) }.getOrNull())
+        if (strip.has(want) == null) return@withLock done().put("ok", false).put("error", ds.missingSaid(want, strip))
+        var got = highlighted(strip)?.day
+        if (got == want) return@withLock done().put("ok", true).put("tapped", false).put("checked", true).put("say", ds.alreadySaid(want))
+        for (attempt in 1..2) {
+            val chip = strip.has(want) ?: break
+            if (!gestureTap(chip.x.toFloat(), chip.y.toFloat(), 60)) return@withLock done().put("ok", false).put("error", "The tap on ${ds.name(want)} did not register.")
+            // The page loads the day's shows again; the strip stays.
+            delay(900); settle(2500)
+            strip = ds.find(seenNow(), today) ?: break
+            got = highlighted(strip)?.day
+            if (got == null || got == want) break
+        }
+        when (got) {
+            want -> done().put("ok", true).put("tapped", true).put("checked", true).put("say", ds.nowSaid(want))
+            null -> done().put("ok", true).put("tapped", true).put("checked", false).put("say", ds.unsureSaid(want))
+            else -> done().put("ok", false).put("error", ds.wrongSaid(want, got))
         }
     }
 

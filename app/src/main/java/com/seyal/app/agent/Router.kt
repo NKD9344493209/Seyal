@@ -31,7 +31,7 @@ object Router {
     val groups = listOf(
         // The screen tools are the hands: always there when screen control is on.
         Group("screen", "see and operate any app", setOf(
-            "screen_read", "screenshot", "screen_tap", "screen_tap_at", "screen_long_press", "screen_type", "screen_scroll", "screen_swipe",
+            "screen_read", "screenshot", "screen_tap", "screen_day", "screen_tap_at", "screen_long_press", "screen_type", "screen_scroll", "screen_swipe",
             "screen_wait", "screen_back", "screen_home", "screen_recents", "screen_notifications", "lesson_save", "your_turn",
         ), null),
         Group("automation", "skills: things that run later, on a schedule or on a trigger; list, run or delete skills", setOf("skill_save", "skill_save_this", "skill_list", "skill_run", "skill_delete"),

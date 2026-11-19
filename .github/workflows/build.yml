@@ -105,6 +105,8 @@ jobs:
           script: bash .github/device-tests.sh "Seyal-Full-${{ github.run_number }}.apk" full
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # A push tests only what needs no AI; started by hand ("Run workflow") it tests everything. See .github/e2e.sh.
+          E2E_AI: ${{ github.event_name == 'workflow_dispatch' && 'all' || 'none' }}
 
       - name: Attach screenshots and logs to the release
         if: always()

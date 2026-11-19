@@ -90,6 +90,29 @@ object Preflight {
         else -> null
     }
 
+    /**
+     * What a film booking request does not say, as the questions to ask, when the AI could not be reached to word
+     * them: only what is really missing. Empty = everything needed was said, so nothing is asked.
+     * (Seen on a real phone: "book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets,
+     * tamil, any time.. 190 per ticket" was answered with a five-part question asking for all of it again.)
+     * 2D or 3D and the language are never asked here: 2D is taken, and the language is the one the film page offers.
+     */
+    fun missingMovie(words: List<String>, now: java.time.LocalDateTime): List<String> {
+        val o = Order.fromWords(Kind.MOVIE, words, now)
+        return buildList {
+            if (o.item.isBlank()) add("Which movie?")
+            if (o.date.isBlank()) add("Which day?")
+            if (!Order.saysTime(words)) add("What time (or 'any time')?")
+            if (!Order.saysPlace(words)) add("Which theatre (or 'any nearby')?")
+            if (o.count <= 0 && !saysHowMany(words)) add("How many tickets? (They will be seats next to each other.)")
+            if (o.maxEach <= 0 && !saysSeatOrBudget(words)) add("Which seat class, or the most to pay per ticket (or 'any')?")
+        }
+    }
+
+    /** One question out of [parts]: a single one as it is, several numbered. */
+    fun askFor(parts: List<String>): String =
+        if (parts.size == 1) parts[0] else "Before I book, tell me:\n" + parts.mapIndexed { i, q -> "${i + 1}) $q" }.joinToString("\n") + "\nAnswer in one line, or say 'you choose'."
+
     /** Whether the user left the choice to Seyal ("you choose", "unga ishtam"). */
     fun leavesChoice(texts: List<String>): Boolean = texts.any { leaves.containsMatchIn(it) }
 
