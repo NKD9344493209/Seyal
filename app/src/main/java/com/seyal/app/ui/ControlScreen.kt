@@ -89,6 +89,7 @@ fun ControlScreen(onSimple: () -> Unit = {}) {
         LessonsSection()
         PhoneSection()
         ReportSection()
+        BackupSection()
         Card {
             Text("Your data", style = MaterialTheme.typography.titleMedium)
             Text("On this phone: conversations, steps, results, skills, memory, your keys (encrypted).\nTo the AI provider you chose: each request and what a step needs (screen text or screenshots only while it works on your task).\nTo Seyal's makers: nothing. There is no Seyal server.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
@@ -427,5 +428,60 @@ private fun LessonsSection() {
                 }
             }
         }
+    }
+}
+
+
+/**
+ * Back up and restore: uninstalling Seyal deletes everything (skills, memory, interests, chats, keys). One file brings
+ * it back. The AI key goes in only when asked, locked with the user's own password.
+ */
+@Composable
+private fun BackupSection() {
+    val cs = MaterialTheme.colorScheme
+    val act = LocalContext.current as? MainActivity ?: return
+    val note by act.backupNote
+    val pending by act.restoring
+    var withKey by remember { mutableStateOf(false) }
+    var pass by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
+    var restorePass by remember { mutableStateOf("") }
+    Card {
+        Text("Back up and restore", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Uninstalling Seyal deletes everything. A backup is one file with your skills, memory, interests, chats and settings: save it to Downloads or Google Drive. After a reinstall, Restore brings it all back. (Installing a new version over Seyal keeps everything: no backup needed for that.)",
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Include my AI key and Gmail app password", style = MaterialTheme.typography.bodyMedium)
+                Text("Locked with a password you choose. Without the password nobody can read them, and Seyal cannot recover a forgotten one.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            }
+            Switch(checked = withKey, onCheckedChange = { withKey = it })
+        }
+        if (withKey) {
+            OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("Backup password (at least ${com.seyal.app.data.Backup.MIN_PASSWORD})") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = again, onValueChange = { again = it }, label = { Text("The same password again") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        }
+        val passOk = !withKey || (pass.length >= com.seyal.app.data.Backup.MIN_PASSWORD && pass == again)
+        if (withKey && pass.isNotEmpty() && !passOk) Text(if (pass.length < com.seyal.app.data.Backup.MIN_PASSWORD) "The password needs at least ${com.seyal.app.data.Backup.MIN_PASSWORD} characters." else "The two passwords are not the same.", style = MaterialTheme.typography.bodySmall, color = Ink.amber)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SmallButton("Back up now", filled = passOk) { if (passOk) act.backup(withKey, pass) }
+            SmallButton("Restore from a backup", filled = false) { act.pickBackup() }
+        }
+        pending?.let { c ->
+            Spacer(Modifier.height(10.dp))
+            Text(com.seyal.app.data.Backup.summary(c), style = MaterialTheme.typography.bodySmall)
+            Text("Restoring replaces the skills, memory, interests, chats and settings on this phone with the ones in the backup. Seyal then closes; open it again.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            if (c.hasSecrets) OutlinedTextField(value = restorePass, onValueChange = { restorePass = it }, label = { Text("Backup password (for the AI key)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SmallButton("Restore", danger = true) { act.restore(c, restorePass.ifEmpty { null }) }
+                SmallButton("Cancel", filled = false) { act.restoring.value = null; restorePass = "" }
+            }
+        }
+        if (note.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(note, style = MaterialTheme.typography.bodySmall, color = if (note.startsWith("Backed up") || note.startsWith("Restored")) Ink.green else cs.onSurfaceVariant) }
     }
 }

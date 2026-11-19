@@ -3074,8 +3074,59 @@ fun testLaterAndFood() {
     T.eq("\"20 a day\" is not a price", 0, Order.budgetIn(listOf("order 2 dosa, 20 a day")))
 }
 
+fun testBackup() {
+    println("Back up and restore (uninstalling Seyal used to lose everything)")
+    val home = java.nio.file.Files.createTempDirectory("seyalbk").toFile()
+    val dir = java.io.File(home, "seyal").apply { mkdirs() }
+    java.io.File(dir, "skills.json").writeText("""[{"id":"a","name":"Gold news"},{"id":"b","name":"Morning brief"}]""")
+    java.io.File(dir, "memory.md").writeText("- dad is Appa (+919876500001)")
+    java.io.File(dir, "sessions").mkdirs(); java.io.File(dir, "sessions/s1.json").writeText("{}")
+    java.io.File(dir, "aware.json.tmp").writeText("half written")
+    val files = com.seyal.app.data.Backup.collect(dir)
+    T.eq("every file is taken, half-written ones are not", listOf("memory.md", "sessions/s1.json", "skills.json"), files.keys.toList())
+    val prefsIn = mapOf("provider" to "gemini", "max_steps" to 30, "tokens" to 123456789012L, "deep" to true, "speed" to 1.5f, "apps" to setOf("Swiggy", "BookMyShow"))
+    val pj = com.seyal.app.data.Backup.prefsToJson(prefsIn)
+    T.eq("settings keep their types", prefsIn, com.seyal.app.data.Backup.prefsFromJson(JSONObject(pj.toString())))
+    // the AI key, locked
+    val fake = mapOf("api_key" to "TEST-KEY-not-real-123", "gmail_app_password" to "abcdabcdabcdabcd")
+    val blob = com.seyal.app.data.Backup.lock(fake, "naveen-123")
+    T.eq("the right password opens the key", fake, com.seyal.app.data.Backup.unlock(blob, "naveen-123"))
+    T.check("a wrong password opens nothing", com.seyal.app.data.Backup.unlock(blob, "naveen-124") == null)
+    T.check("the key is not readable in the locked bytes", !String(blob, Charsets.ISO_8859_1).contains("TEST-KEY"))
+    val changed = blob.copyOf().also { it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte() }
+    T.check("a changed byte is caught, not read as garbage", com.seyal.app.data.Backup.unlock(changed, "naveen-123") == null)
+    T.check("a short password is refused", runCatching { com.seyal.app.data.Backup.lock(fake, "123") }.isFailure)
+    // the whole file
+    val out = java.io.ByteArrayOutputStream()
+    com.seyal.app.data.Backup.write(out, files, pj, fake, "naveen-123", "3.28.0", 1_795_150_000_000L)
+    val c = com.seyal.app.data.Backup.read(java.io.ByteArrayInputStream(out.toByteArray()))
+    T.eq("the backup reads back: files, skills, settings, the locked key", listOf("3", "2", "true", "gemini"), listOf(c.files.size.toString(), c.skills.toString(), c.hasSecrets.toString(), com.seyal.app.data.Backup.prefsFromJson(c.prefs)["provider"].toString()))
+    T.check("…and the key in it opens with the password", com.seyal.app.data.Backup.unlock(c.secrets!!, "naveen-123")?.get("api_key") == "TEST-KEY-not-real-123")
+    T.check("the summary says what is in it", com.seyal.app.data.Backup.summary(c, java.time.ZoneId.of("Asia/Kolkata")).let { it.contains("2 skills") && it.contains("1 chat,") && it.contains("AI key (locked") && it.contains("3.28.0") })
+    val plainOut = java.io.ByteArrayOutputStream()
+    com.seyal.app.data.Backup.write(plainOut, files, pj, null, null, "3.28.0", 1L)
+    T.check("without the key, the file holds no secrets at all", !com.seyal.app.data.Backup.read(java.io.ByteArrayInputStream(plainOut.toByteArray())).hasSecrets && !String(plainOut.toByteArray(), Charsets.ISO_8859_1).contains("TEST-KEY"))
+    T.check("the key cannot go in without a password", runCatching { com.seyal.app.data.Backup.write(java.io.ByteArrayOutputStream(), files, pj, fake, null, "x", 1L) }.isFailure)
+    // restoring onto a fresh install
+    val fresh = java.io.File(java.nio.file.Files.createTempDirectory("seyalnew").toFile(), "seyal")
+    java.io.File(fresh, "brain.json").also { it.parentFile.mkdirs() }.writeText("{\"kept\":true}")
+    java.io.File(fresh, "skills.json").writeText("[]")
+    T.eq("restore writes every file", 3, com.seyal.app.data.Backup.restoreFiles(c, fresh))
+    T.check("…replacing what the new install had, and leaving the rest", java.io.File(fresh, "skills.json").readText().contains("Gold news") && java.io.File(fresh, "brain.json").exists() && java.io.File(fresh, "sessions/s1.json").exists())
+    // files that are not a backup, and tricks
+    fun zip(vararg e: Pair<String, String>): ByteArray { val b = java.io.ByteArrayOutputStream(); java.util.zip.ZipOutputStream(b).use { z -> e.forEach { (n, t) -> z.putNextEntry(java.util.zip.ZipEntry(n)); z.write(t.toByteArray()); z.closeEntry() } }; return b.toByteArray() }
+    fun why(bytes: ByteArray) = runCatching { com.seyal.app.data.Backup.read(java.io.ByteArrayInputStream(bytes)) }.exceptionOrNull()?.message.orEmpty()
+    T.check("a photo or any other file is refused in plain words", why("not a zip at all".toByteArray()).contains("not a Seyal backup") && why(zip("photo.jpg" to "x")).contains("not a Seyal backup"))
+    T.check("a backup from a newer Seyal asks for an update first", why(zip("manifest.json" to "{\"app\":\"Seyal\",\"format\":9}")).contains("newer Seyal"))
+    val evil = com.seyal.app.data.Backup.read(java.io.ByteArrayInputStream(zip("manifest.json" to "{\"app\":\"Seyal\",\"format\":1}", "files/../../evil.txt" to "x", "files//etc/x" to "x", "files/ok.json" to "{}")))
+    T.eq("a path that climbs out of Seyal's folder is dropped", listOf("ok.json"), evil.files.keys.toList())
+    T.check("…and checked again on writing", listOf("../a", "/a", "a/../b", "C:/a", "a//b", "", "sessions/x.json").map { com.seyal.app.data.Backup.safePath(it) } == listOf(null, null, null, null, null, null, "sessions/x.json"))
+    T.eq("the file's name", "Seyal-backup-2026-11-19.zip", com.seyal.app.data.Backup.fileName(java.time.LocalDate.of(2026, 11, 19)))
+    home.deleteRecursively(); fresh.parentFile.deleteRecursively()
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3084,7 +3135,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

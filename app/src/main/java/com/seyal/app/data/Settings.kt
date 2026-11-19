@@ -49,6 +49,9 @@ object Settings {
 
     val hasKey: Boolean get() = apiKey.isNotBlank()
 
+    /** A secret written to disk at once (a restore closes Seyal right after, so apply() could be lost). */
+    fun putSecretNow(key: String, value: String) { if (key in com.seyal.app.data.Backup.SECRET_KEYS) secure.edit().putString(key, value.trim()).commit() }
+
     fun defaultModel(): String = when (provider) {
         "anthropic" -> "claude-haiku-5-5"
         "openai" -> "gpt-4o-mini"

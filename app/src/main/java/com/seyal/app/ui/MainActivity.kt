@@ -62,6 +62,51 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { attachments.addAll(loaded); attaching.value = false }
         }.start()
     }
+    // ---- Control → Back up / Restore
+    /** What the last backup or restore step said. */
+    val backupNote = mutableStateOf("")
+    /** A backup that was opened and waits for "Restore" (and the password, when it holds the AI key). */
+    val restoring = mutableStateOf<com.seyal.app.data.Backup.Contents?>(null)
+    private var pendingBackup: Pair<Boolean, String>? = null
+    private val saveBackup = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val p = pendingBackup; pendingBackup = null
+        if (uri == null || p == null) { backupNote.value = "Backup cancelled."; return@registerForActivityResult }
+        backupNote.value = "Backing up…"
+        Thread { val r = com.seyal.app.device.BackupRun.save(applicationContext, uri, p.first, p.second); runOnUiThread { backupNote.value = r } }.start()
+    }
+    private val openBackup = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        backupNote.value = "Reading the backup…"
+        Thread {
+            val r = runCatching { com.seyal.app.device.BackupRun.open(applicationContext, uri) }
+            runOnUiThread { r.fold({ restoring.value = it; backupNote.value = "" }, { backupNote.value = it.message ?: "The file could not be read." }) }
+        }.start()
+    }
+    /** Asks where to save the backup, then writes it. [withKey]: the AI key goes in, locked with [password]. */
+    fun backup(withKey: Boolean, password: String) {
+        pendingBackup = withKey to password
+        runCatching { saveBackup.launch(com.seyal.app.data.Backup.fileName(java.time.LocalDate.now())) }.onFailure { backupNote.value = "Could not open the file picker." }
+    }
+    /** Lets the user pick a backup file to restore. */
+    fun pickBackup() { runCatching { openBackup.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*")) } }
+    /** Restores [c]; on success Seyal closes so every part starts again from the restored files. */
+    fun restore(c: com.seyal.app.data.Backup.Contents, password: String?) {
+        backupNote.value = "Restoring…"
+        Thread {
+            val r = com.seyal.app.device.BackupRun.restore(applicationContext, c, password)
+            runOnUiThread {
+                backupNote.value = r.text
+                if (r.ok) {
+                    restoring.value = null
+                    // Close at once, before any part of Seyal still holding the old data in memory writes it over the
+                    // restored files. The notification says what happened and opens Seyal again.
+                    runCatching { com.seyal.app.device.Notify.line(applicationContext, r.text) }
+                    android.os.Handler(mainLooper).postDelayed({ finishAffinity(); Runtime.getRuntime().exit(0) }, 700)
+                }
+            }
+        }.start()
+    }
+
     /** Opens the phone's file picker: photos, PDFs, videos, voice clips, documents. */
     fun attach() = runCatching { pickFiles.launch(arrayOf("image/*", "application/pdf", "video/*", "audio/*", "text/*", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.presentationml.presentation")) }
     var openSessionId = mutableStateOf<String?>(null)
