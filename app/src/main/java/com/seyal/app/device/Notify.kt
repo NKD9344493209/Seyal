@@ -261,10 +261,13 @@ object Notify {
 
     private fun approvalId(sessionId: String, callId: String) = ("ask$sessionId$callId").hashCode()
 
-    /** The weekly Dirghadarshi report: a tap opens it. */
-    fun foresight(ctx: Context, title: String, body: String) {
+    /**
+     * A notice from Dirghadarshi: a tap opens its tab. [tab] = "foresight" for the weekly world report,
+     * "aware" for the morning brief; each has its own notification, so one does not replace the other.
+     */
+    fun foresight(ctx: Context, title: String, body: String, tab: String = "foresight") {
         if (!allowed(ctx)) return
-        val open = PendingIntent.getActivity(ctx, "foresight".hashCode(), Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("tab", "foresight"), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(ctx, tab.hashCode(), Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("tab", tab), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val n = NotificationCompat.Builder(ctx, CH_RESULTS)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle(title.take(60))
@@ -273,7 +276,7 @@ object Notify {
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()
-        NotificationManagerCompat.from(ctx).notify("foresight".hashCode(), n)
+        NotificationManagerCompat.from(ctx).notify(tab.hashCode(), n)
     }
 
     fun cancel(ctx: Context, tag: String) { runCatching { NotificationManagerCompat.from(ctx).cancel(tag.hashCode()) } }

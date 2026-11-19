@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -70,10 +71,10 @@ class MainActivity : ComponentActivity() {
     val sharedImage = mutableStateOf<Part.Image?>(null)
     /** Goes up each time Seyal is opened as the assistant, from the tile or the shortcut: start listening. */
     val listenTick = mutableStateOf(0)
-    /** A tab a notification asked for ("brain", "foresight"); cleared once shown. */
+    /** A tab a notification asked for ("brain"; "aware" and "foresight" for the Dirghadarshi tab); cleared once shown. */
     val openTab = mutableStateOf<String?>(null)
-    /** Which page of the Brain tab to show (0 = messages, 1 = Dirghadarshi); cleared once shown. */
-    val brainPage = mutableStateOf<Int?>(null)
+    /** Which page of the Dirghadarshi tab to show (0 = for you, 1 = world signals); cleared once shown. */
+    val dirghaPage = mutableStateOf<Int?>(null)
     /** The last listen request the Chat screen acted on. */
     var listenSeen = 0
     /** Goes up on every return to the app, so permission states on screen refresh. */
@@ -156,6 +157,7 @@ class MainActivity : ComponentActivity() {
 enum class Tab(val label: String, val icon: ImageVector) {
     HOME("Chat", Icons.Outlined.Home),
     BRAIN("Brain", Icons.Outlined.Psychology),
+    DIRGHA("Dirghadarshi", Icons.Outlined.Visibility),
     SKILLS("Skills", Icons.Outlined.List),
     HISTORY("Activity", Icons.Outlined.Timeline),
     CONTROL("Control", Icons.Outlined.Shield),
@@ -171,10 +173,11 @@ fun Shell(openSessionId: String?) {
     val listen = activity?.listenTick?.value ?: 0
     val hasShared = activity?.sharedText?.value != null || activity?.sharedImage?.value != null
     LaunchedEffect(listen, hasShared) { if (listen > 0 || hasShared) tab = Tab.HOME }
-    // A tap on one of the Brain's notifications opens its tab.
+    // A tap on a notification from the Brain or from Dirghadarshi opens its tab (the morning brief: "for you"; the weekly report: "world signals").
     val wantTab = activity?.openTab?.value
     LaunchedEffect(wantTab) {
-        if (wantTab == "brain" || wantTab == "foresight") { activity?.brainPage?.value = if (wantTab == "foresight") 1 else 0; tab = Tab.BRAIN; activity?.openTab?.value = null }
+        if (wantTab == "brain") { tab = Tab.BRAIN; activity?.openTab?.value = null }
+        else if (wantTab == "aware" || wantTab == "foresight") { activity?.dirghaPage?.value = if (wantTab == "foresight") 1 else 0; tab = Tab.DIRGHA; activity?.openTab?.value = null }
     }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         // Bottom bar and composer stay above the navigation bar and the keyboard.
@@ -185,6 +188,7 @@ fun Shell(openSessionId: String?) {
                 when (tab) {
                     Tab.HOME -> ChatScreen(openSessionId) { tab = it }
                     Tab.BRAIN -> BrainScreen()
+                    Tab.DIRGHA -> DirghadarshiScreen { tab = it }
                     Tab.SKILLS -> SkillsScreen { tab = it }
                     Tab.HISTORY -> HistoryScreen(openSessionId)
                     Tab.CONTROL -> ControlScreen { simple = true }
@@ -198,18 +202,19 @@ fun Shell(openSessionId: String?) {
 @Composable
 private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 12.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Tab.values().forEach { t ->
             val selected = t == current
             val color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            // Six tabs: each gets room by the length of its name, so "Dirghadarshi" fits on one line and the short ones stay easy to tap.
             Column(
-                Modifier.weight(1f).height(48.dp).clickable { onSelect(t) },
+                Modifier.weight(com.seyal.app.agent.Aware.tabWeight(t.label)).height(48.dp).clickable { onSelect(t) },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Icon(t.icon, contentDescription = t.label, tint = color, modifier = Modifier.padding(top = 4.dp))
-                Text(t.label, color = color, style = MaterialTheme.typography.labelSmall)
+                Text(t.label, color = color, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
         }
     }

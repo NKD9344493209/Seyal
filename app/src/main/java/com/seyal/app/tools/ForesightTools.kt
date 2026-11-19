@@ -39,7 +39,7 @@ object ForesightTools {
                         if (topic.length < 2) return@Tool ToolResult.Failed("Give the topic, e.g. topic: \"AI\"")
                         com.seyal.app.agent.AwareRun.news(topic, a.optInt("days", 7).coerceIn(1, 30))
                     }
-                    "brief" -> com.seyal.app.agent.AwareRun.brief()?.first ?: com.seyal.app.agent.Aware.NO_INTERESTS
+                    "brief" -> com.seyal.app.agent.AwareRun.brief()?.text ?: com.seyal.app.agent.Aware.NO_INTERESTS
                     "interests_set" -> { com.seyal.app.agent.AwareStore.set(items); com.seyal.app.agent.Aware.interestsSaid(com.seyal.app.agent.AwareStore.interests, com.seyal.app.agent.AwareStore.daily) }
                     "interests_add" -> { com.seyal.app.agent.AwareStore.add(items); com.seyal.app.agent.Aware.interestsSaid(com.seyal.app.agent.AwareStore.interests, com.seyal.app.agent.AwareStore.daily) }
                     "interests_remove" -> { com.seyal.app.agent.AwareStore.remove(items); com.seyal.app.agent.Aware.interestsSaid(com.seyal.app.agent.AwareStore.interests, com.seyal.app.agent.AwareStore.daily) }

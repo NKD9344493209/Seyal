@@ -69,21 +69,28 @@ object Aware {
         out
     }.getOrDefault(emptyList())
 
-    private val stop = setOf("that", "this", "with", "from", "have", "will", "into", "over", "after", "about", "says", "said", "amid", "your", "their", "what", "when", "which", "report", "reports", "news", "india", "indian")
-    private fun words(title: String): Set<String> = title.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), " ").split(Regex("\\s+")).filter { it.length > 3 && it !in stop }.toSet()
+    private val stop = setOf(
+        "that", "this", "with", "from", "have", "will", "into", "over", "after", "about", "says", "said", "amid", "your", "their", "what", "when", "which", "report", "reports", "news", "india", "indian",
+        "the", "and", "for", "are", "was", "has", "had", "its", "new", "how", "why", "who", "can", "now", "not", "but", "you", "all", "out", "may", "get", "set", "his", "her", "our", "one", "two", "more", "than", "here",
+    )
+    /** The telling words of a headline: names and numbers kept ("GPT", "6"), filler dropped. */
+    private fun words(title: String): Set<String> =
+        title.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), " ").split(Regex("\\s+")).filter { w -> w.isNotEmpty() && (w.length >= 3 || w.any { it.isDigit() }) && w !in stop }.toSet()
 
     /** What a headline is remembered by, so the same story is not alerted twice. */
     fun key(title: String): String = words(title).sorted().take(8).joinToString(" ")
 
     private fun same(a: Set<String>, b: Set<String>): Boolean {
         if (a.isEmpty() || b.isEmpty()) return false
+        // Strict on purpose: two different stories shown as one would lose a headline; the same story shown twice loses nothing.
         val both = a.intersect(b).size
-        return both >= 3 && both.toDouble() / minOf(a.size, b.size) >= 0.6
+        return both >= 3 && both.toDouble() / minOf(a.size, b.size) >= 0.7
     }
 
     private val alarm = Regex(
-        "\\b(vulnerabilit\\w*|flaws?|zero[- ]day|cve-\\d+|exploit\\w*|attack(?:s|ed|ers?)?|breach\\w*|hack(?:ed|ers?|ing)?|malware|ransomware|phishing|scam\\w*|fraud\\w*|leak(?:ed|s)?|" +
-            "warn(?:s|ed|ing)?|alert|urgent|critical|recall\\w*|ban(?:s|ned)?|shut(?:s|ting)? down|outage|layoffs?|deadline|last date|crash(?:es|ed)?|plunge\\w*|lawsuit|fine[ds]?)\\b",
+        "\\b(vulnerabilit\\w*|flaws?|zero[- ]day|cve-\\d+|exploit(?:s|ed|ing)?|cyber[- ]?attacks?|attackers?|breach\\w*|hack(?:ed|ers?|ing)?|malware|ransomware|phishing|scam\\w*|fraud\\w*|" +
+            "(?:data|password|credentials?|source code) leaks?|leak(?:s|ed|ing)? (?:data|passwords?|credentials?|personal|user)|" +
+            "warn(?:s|ed|ing|ings)?|alert|urgent|recall\\w*|ban(?:s|ned)?|shut(?:s|ting)? down|outage|layoffs?|deadline|last date|crash(?:es|ed)?|plunge\\w*|lawsuit|fined|penalt(?:y|ies))\\b",
         I,
     )
     /** A headline that calls for a precaution (a flaw, a scam, a ban, a deadline). */
@@ -164,24 +171,26 @@ object Aware {
     /** The headlines in the order [text] numbers them. */
     fun numbered(heads: List<Headline>): List<Headline> = ANGLES.flatMap { a -> heads.filter { it.item.angle == a.id } }
 
-    class Brief(val text: String, val shown: List<Headline>, val rest: List<Headline>)
+    /** [shown] in the order of their numbers; the first [warned] of them are the warnings. */
+    class Brief(val text: String, val shown: List<Headline>, val rest: List<Headline>, val warned: Int = 0)
 
     /** The daily brief over every interest: the warnings first, then each interest's headlines. */
     fun brief(byTopic: List<Pair<String, List<Headline>>>, day: LocalDate, perTopic: Int, zone: ZoneId): Brief {
-        val all = byTopic.flatMap { it.second }
+        // A story that falls under two interests (a Java flaw found with AI) is one headline, under the first of them.
+        val all = byTopic.flatMap { it.second }.distinctBy { key(it.item.title) }
         if (all.isEmpty()) return Brief("Nothing new today in ${byTopic.joinToString(", ") { it.first }} from the sources I could read.", emptyList(), emptyList())
         val sb = StringBuilder("**Dirghadarshi brief, ${day.format(DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH))}**: ${all.size} headlines in ${byTopic.size} ${if (byTopic.size == 1) "interest" else "interests"}.\n")
         val shown = ArrayList<Headline>()
         val warned = all.filter { it.urgent }.sortedByDescending { it.also }.take(6)
         if (warned.isNotEmpty()) { sb.append("**Watch out**\n"); warned.forEach { shown += it; sb.append(line(shown.size, it, zone)).append('\n') } }
         for ((topic, hs) in byTopic) {
-            val mine = pick(hs.filter { it !in warned }, perTopic)
+            val mine = pick(hs.filter { it in all && it !in shown }, perTopic)
             if (mine.isEmpty()) continue
             sb.append("**$topic**\n")
             mine.forEach { shown += it; sb.append(line(shown.size, it, zone)).append('\n') }
         }
         val rest = all.filter { it !in shown }
-        return Brief(sb.append(tail(rest.size, shown.size)).toString(), shown, rest)
+        return Brief(sb.append(tail(rest.size, shown.size)).toString(), shown, rest, warned.size)
     }
 
     /** The next page of a list that did not fit: [rest] is what is left, [from] how many were shown. */
@@ -232,12 +241,36 @@ object Aware {
             "Say \"more on $other\" for another, or \"explain this\" for what it means for you."
     }
 
+    // ------------------------------------------------------------------ the Dirghadarshi tab
+
+    /** The small line under a headline: who wrote it, when, and how many others carry it. */
+    fun meta(h: Headline, zone: ZoneId): String {
+        val on = if (h.item.at > 0) Instant.ofEpochMilli(h.item.at).atZone(zone).format(dayFmt) else ""
+        return listOf(h.item.source, on, if (h.also > 0) "+${h.also} more" else "").filter { it.isNotBlank() }.joinToString(" · ")
+    }
+
+    /** The heading a brief's headline stands under: the warnings come first, the rest under their interest. */
+    fun section(index: Int, warned: Int, h: Headline): String = if (index < warned) "Watch out" else h.item.topic
+
+    /** What is asked of the thinking mode when the user taps "What does it mean for me?" on a headline. */
+    fun explainAsk(h: Headline, zone: ZoneId): String {
+        val on = if (h.item.at > 0) Instant.ofEpochMilli(h.item.at).atZone(zone).format(dayFmt) else ""
+        // It begins with "What", so a headline with "buy", "book" or "order" in it is read as a question, never as a purchase.
+        return "What does this news mean for me? \"${h.item.title}\" (" + listOf(h.item.source, on).filter { it.isNotBlank() }.joinToString(", ") + "). Find the story by its title and read it first."
+    }
+
+    /** An alert that was sent, kept so a missed notification is not lost. */
+    class Alert(val title: String, val source: String, val url: String, val topic: String, val carriers: Int, val at: Long)
+
+    /** How much of the bottom bar a tab gets: by the length of its name, so a long name fits and a short one is still easy to tap. */
+    fun tabWeight(label: String): Float = label.length.coerceIn(6, 12).toFloat()
+
     /** Whether [answer] is one of these lists or details (so "more on 2" speaks of it). */
     fun isList(answer: String?): Boolean = answer != null && answer.contains("\"more on ")
 
     /** The one line of a notification. */
     fun notice(byTopic: List<Pair<String, List<Headline>>>): String {
-        val all = byTopic.flatMap { it.second }
+        val all = byTopic.flatMap { it.second }.distinctBy { key(it.item.title) }
         val warn = all.count { it.urgent }
         val first = all.filter { it.urgent }.maxByOrNull { it.also } ?: all.maxByOrNull { it.also }
         return "${all.size} headlines" + (if (warn > 0) ", $warn to watch out for" else "") + (first?.let { ". ${it.item.title.take(90)}" } ?: "")
@@ -268,12 +301,12 @@ object Aware {
         Regex("^(?:no\\.? ?|number |headline |point |#)?(\\d{1,3}) (?:more|details?|elaborate|explain|expand|in detail|pathi sollu|pathi|vilakku|vivaram)$", I),
     )
 
-    private const val KIND = "(?:news|headlines?|updates?|trends?|developments?|happenings?)"
+    private const val KIND = "(?:news|headlines?|trends?|developments?|happenings?)"
     private val news = listOf(
         Regex("^(?:any |what(?:'s| is| are)(?: the)? |give me (?:the )?|show me (?:the )?|tell me (?:the )?|get me (?:the )?)?(?:all )?(?:the )?(?:(?:recent|latest|new|today'?s|current|top|every|full) )*$KIND(?: today)? (?:on|in|about|for|of|regarding|related to) (.{2,60})$", I),
         Regex("^what(?:'s| is) (?:new|happening|trending|going on|the latest)(?: today)? (?:in|with|on|about) (.{2,60})$", I),
         Regex("^(?:latest|recent|new)(?: things)? (?:on|in|about) (.{2,60})$", I),
-        Regex("^(.{2,40}?) (?:pathi|pathina|patri|pathiya) (?:news|seithi|update|headlines?)s?(?: sollu| solu| kaattu| kattu| venum)?$", I),
+        Regex("^(.{2,40}?) (?:pathi|pathina|patri|pathiya) (?:news|seithi|headlines?)s?(?: sollu| solu| kaattu| kattu| venum)?$", I),
         Regex("^(.{2,40}?) ?(?:la|le) enna (?:pudhusu|pudusu|puthusu|new|nadakkuthu|nadakuthu)$", I),
         Regex("^(.{2,40}?) $KIND(?: today| now| this week| please)?$", I),
     )
@@ -286,6 +319,8 @@ object Aware {
 
     private fun topicOf(raw: String): String? {
         val t = raw.trim().trimEnd('.', '!', '?').replace(Regex("\\s+(?:today|now|this week|these days|right now|please|pls)$", I), "").replace(Regex("^(?:the|field of|world of|area of)\\s+", I), "").trim()
+        // "what's new in my mail", "latest on our project", "what's new in Seyal": the user's own things and this app are not news topics.
+        if (Regex("^(?:my|our|your|his|her|their)\\b|^(?:seyal|this app|the app|this version|this update|you)$", I).containsMatchIn(t)) return null
         return t.takeIf { it.length >= 2 && !notTopic.matches(it) && !Regex("^(?:read|open|send|share|play|search for|find|google)\\b", I).containsMatchIn(it) }
     }
 
@@ -339,6 +374,35 @@ object Aware {
         return day.atTime(hour, 0).atZone(zone).toInstant().toEpochMilli()
     }
 
+    /** The brief on screen is worth reading again: none yet, from another day, or more than four hours old. */
+    fun stale(latestAt: Long, now: Long, zone: ZoneId): Boolean =
+        latestAt <= 0 || now - latestAt > 4 * 3_600_000L || Instant.ofEpochMilli(latestAt).atZone(zone).toLocalDate() != Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+
+    const val RETRY_MS = 15 * 60_000L
+    /**
+     * When the background should next wake for the brief and the watch: the morning brief (a quarter of an hour
+     * after a try that could not reach the news, never at once again), or the next three-hourly watch.
+     */
+    fun nextWake(now: Long, lastDay: String, lastWatch: Long, lastTry: Long, zone: ZoneId): Long {
+        val daily = nextDaily(now, lastDay, zone).let { if (lastTry > 0 && it < lastTry + RETRY_MS) lastTry + RETRY_MS else it }
+        return minOf(daily, nextWatch(now, lastWatch, zone))
+    }
+
+    /** When the watch for something big next runs: three hours after the last one, and never between 10 PM and 7 AM (then at 7). */
+    fun nextWatch(now: Long, lastWatch: Long, zone: ZoneId): Long {
+        val t = maxOf(now + 60_000, lastWatch + 3 * 3_600_000L)
+        val z = Instant.ofEpochMilli(t).atZone(zone)
+        if (z.hour in 7..21) return t
+        val day = if (z.hour < 7) z.toLocalDate() else z.toLocalDate().plusDays(1)
+        return day.atTime(7, 0).atZone(zone).toInstant().toEpochMilli()
+    }
+
+    const val UNREACHABLE = "I could not reach the news just now (is the internet on?). Nothing was read, so this is not \"no news\". Try again in a minute."
+    /** [text] with a line saying that some readings did not answer, so the list may be missing headlines. */
+    fun withNote(text: String, failed: Int, asked: Int): String =
+        if (failed <= 0 || asked <= 0) text
+        else text.lines().let { ls -> (listOf(ls.first(), "Note: $failed of $asked readings did not answer, so some headlines may be missing.") + ls.drop(1)).joinToString("\n") }
+
     /** The watch for urgent news runs every three hours of the day (7 AM to 10 PM), not at night. */
     fun dueWatch(now: Long, lastWatch: Long, zone: ZoneId): Boolean {
         val h = Instant.ofEpochMilli(now).atZone(zone).hour
@@ -364,17 +428,26 @@ object AwareStore {
     /** The headlines of the last list in the order they were numbered ("more on 2" means the second), and the ones that did not fit. */
     @Volatile var shown: List<Aware.Headline> = emptyList(); private set
     @Volatile var rest: List<Aware.Headline> = emptyList(); private set
+    /** The latest brief as headlines, for the Dirghadarshi tab: the first [briefWarned] are the warnings; [briefRest] did not fit. */
+    @Volatile var briefHeads: List<Aware.Headline> = emptyList(); private set
+    @Volatile var briefRest: List<Aware.Headline> = emptyList(); private set
+    @Volatile var briefWarned: Int = 0; private set
+    /** The alerts that were sent, newest first. */
+    @Volatile var alerts: List<Aware.Alert> = emptyList(); private set
     private val _version = kotlinx.coroutines.flow.MutableStateFlow(0)
     val version: kotlinx.coroutines.flow.StateFlow<Int> = _version
 
     @Synchronized fun init(dir: File) {
         file = File(dir, "seyal/aware.json"); interests = emptyList(); daily = false; lastDay = ""; lastWatch = 0; latest = ""; latestAt = 0; seen.clear(); shown = emptyList(); rest = emptyList()
+        briefHeads = emptyList(); briefRest = emptyList(); briefWarned = 0; alerts = emptyList()
         runCatching {
             val o = JSONObject(file!!.readText())
             interests = o.optJSONArray("interests")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } } ?: emptyList()
             daily = o.optBoolean("daily"); lastDay = o.optString("last_day"); lastWatch = o.optLong("last_watch"); latest = o.optString("latest"); latestAt = o.optLong("latest_at")
             o.optJSONArray("seen")?.let { a -> (0 until a.length()).forEach { seen += a.optString(it) } }
             shown = heads(o.optJSONArray("shown")); rest = heads(o.optJSONArray("rest"))
+            briefHeads = heads(o.optJSONArray("brief")); briefRest = heads(o.optJSONArray("brief_rest")); briefWarned = o.optInt("brief_warned").coerceIn(0, briefHeads.size)
+            alerts = o.optJSONArray("alerts")?.let { a -> (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { x -> Aware.Alert(x.optString("t"), x.optString("s"), x.optString("u"), x.optString("k"), x.optInt("c"), x.optLong("at")) } } } ?: emptyList()
         }
         _version.value++
     }
@@ -383,7 +456,9 @@ object AwareStore {
         runCatching {
             val f = file ?: return
             f.parentFile?.mkdirs()
-            f.writeText(JSONObject().put("interests", JSONArray(interests)).put("daily", daily).put("last_day", lastDay).put("last_watch", lastWatch).put("latest", latest).put("latest_at", latestAt).put("seen", JSONArray(seen.toList())).put("shown", json(shown)).put("rest", json(rest)).toString())
+            f.writeText(JSONObject().put("interests", JSONArray(interests)).put("daily", daily).put("last_day", lastDay).put("last_watch", lastWatch).put("latest", latest).put("latest_at", latestAt).put("seen", JSONArray(seen.toList())).put("shown", json(shown)).put("rest", json(rest))
+                .put("brief", json(briefHeads)).put("brief_rest", json(briefRest)).put("brief_warned", briefWarned)
+                .put("alerts", JSONArray(alerts.map { x -> JSONObject().put("t", x.title).put("s", x.source).put("u", x.url).put("k", x.topic).put("c", x.carriers).put("at", x.at) })).toString())
         }
         _version.value++
     }
@@ -408,7 +483,11 @@ object AwareStore {
     @Synchronized fun add(xs: List<String>) { interests = clean(interests + xs); save() }
     @Synchronized fun remove(xs: List<String>) { val gone = xs.map { it.trim().lowercase() }.toSet(); interests = interests.filter { it.lowercase() !in gone }; save() }
     @Synchronized fun setDaily(on: Boolean) { daily = on; save() }
-    @Synchronized fun briefed(text: String, now: Long, day: String) { latest = text; latestAt = now; lastDay = day; save() }
+    @Synchronized fun briefed(text: String, now: Long, day: String, heads: List<Aware.Headline> = emptyList(), left: List<Aware.Headline> = emptyList(), warned: Int = 0) {
+        latest = text; latestAt = now; lastDay = day; briefHeads = heads; briefRest = left; briefWarned = warned.coerceIn(0, heads.size); save()
+    }
+    /** Alerts that were just sent: kept newest first, thirty at most. */
+    @Synchronized fun alerted(xs: List<Aware.Alert>) { if (xs.isNotEmpty()) { alerts = (xs + alerts).take(30); save() } }
     @Synchronized fun watched(now: Long) { lastWatch = now; save() }
     @Synchronized fun seen(): Set<String> = seen.toSet()
     @Synchronized fun remember(keys: Collection<String>) { seen += keys; while (seen.size > 400) seen.remove(seen.first()); save() }

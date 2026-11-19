@@ -2445,7 +2445,7 @@ fun testSixthVideos() {
     T.check("the prompt carries the mode only while it is on", Prompts.modeSection(ds).contains("DIRGHADARSHI MODE IS ON") && Prompts.modeSection(Session("d3", 1L)).isEmpty())
     T.check("…and never for a sub-task", Prompts.modeSection(Session("d5", 1L).apply { deep = true; parentId = "deep1" }).isEmpty())
     T.check("the world-signals tool is at hand in the mode", Agent.loadedGroups(ds).contains("foresight") && !Agent.loadedGroups(Session("d4", 1L).apply { messages += Msg("user", listOf(Part.Text("should I buy a phone now?"))) }).contains("foresight"))
-    T.check("Seyal can say where the mode is", Prompts.ABOUT.let { it.contains("the switch just above the chat box") && it.contains("Brain tab → Signals") && it.contains("Payments blocked") })
+    T.check("Seyal can say where the mode is", Prompts.ABOUT.let { it.contains("the switch just above the chat box") && it.contains("Dirghadarshi tab → World signals") && it.contains("Ask before you decide") && it.contains("Payments blocked") })
     T.eq("hard thinking asks for the model's highest level", "high", Llm.thinkLevel(deep = true, level = 0))
     T.eq("…one lower each time a model refuses", listOf("medium", "low", null), listOf(Llm.thinkLevel(true, 1), Llm.thinkLevel(true, 2), Llm.thinkLevel(true, 9)))
     T.eq("everyday steps stay quick", listOf("minimal", "low", null), listOf(Llm.thinkLevel(false, 0), Llm.thinkLevel(false, 1), Llm.thinkLevel(false, 2)))
@@ -2719,8 +2719,13 @@ fun testAwareness() {
     T.check("…a story found under \"watch out\" that is no warning is simply new", heads[1].item.title == "New AI chip factory opens in Chennai" && heads[1].item.angle == "new" && !heads[1].urgent && heads[1].also == 1)
     T.eq("…the order: watch out, new, opportunities", listOf("threat", "new", "new", "chance"), heads.map { it.item.angle })
     T.eq("…with two days asked, Tuesday morning's stories are too old", 3, Aware.merge(all, nowMs, 2).size)
-    T.check("a headline that calls for a precaution", listOf("Critical Java flaw found by AI", "Bank warns of a new UPI scam", "Layoffs at a data firm", "CVE-2026-1234 fixed in Spring", "Last date to file extended", "Zero-day in Chrome exploited").all { Aware.urgent(it) })
-    T.check("…and ones that do not", listOf("New AI chip factory opens in Chennai", "Gold price rises for the third day", "Banner year for Tamil cinema", "A finer way to train models").none { Aware.urgent(it) })
+    T.check("a headline that calls for a precaution", listOf("Critical Java flaw found by AI", "Bank warns of a new UPI scam", "Layoffs at a data firm", "CVE-2026-1234 fixed in Spring", "Last date to file extended", "Zero-day in Chrome exploited", "Company fined for a data leak of 2 lakh users", "Hackers leak passwords of bank customers").all { Aware.urgent(it) })
+    T.check("…and ones that do not", listOf("New AI chip factory opens in Chennai", "Gold price rises for the third day", "Banner year for Tamil cinema", "A finer way to train models", "Fine-tuning a small model on your laptop", "Critical thinking matters more with AI", "Leaked phone design shows a new camera", "India's bowling attack shines in the first Test").none { Aware.urgent(it) })
+    val two = Aware.merge(listOf(
+        Aware.Item("OpenAI launches new model GPT-6 for developers", "A", "u1", nowMs - 3_600_000L, "new", "AI"),
+        Aware.Item("OpenAI launches new video model Sora 3 for developers", "B", "u2", nowMs - 3_600_000L, "new", "AI"),
+    ), nowMs, 7)
+    T.eq("two different stories with much the same words stay two headlines (none is lost)", 2, two.size)
     val text = Aware.text("AI", Aware.numbered(Aware.pick(heads, Aware.PAGE)), heads.size, all.size, 7, zone)
     T.eq("the list in the chat: every headline, one line each, as the publisher wrote it", listOf(
         "**AI**: 4 headlines from the last 7 days (8 stories read, the same story counted once).",
@@ -2761,6 +2766,8 @@ fun testAwareness() {
         "4. [Spring Boot 4 released with faster start-up for Java services](https://news.google.com/rss/articles/j1?oc=5) · InfoQ, 19 Nov",
         "Say \"more on 2\" for the details of one.",
     ), b.text.lines())
+    val twice = Aware.brief(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to Aware.merge(Aware.parse(threatXml, "threat", "Java"), nowMs, 2)), LocalDate.of(2026, 11, 19), 4, zone)
+    T.check("a story that falls under two interests is one headline in the brief", twice.text.lines().first() == "**Dirghadarshi brief, Thu 19 Nov**: 3 headlines in 2 interests." && twice.text.lines().count { it.contains("Java flaw") } == 1 && twice.shown.size == 3 && twice.rest.isEmpty(), twice.text)
     T.check("…its numbers are remembered in order", b.shown.map { it.item.source } == listOf("BleepingComputer", "The Hindu", "NDTV", "InfoQ") && b.rest.isEmpty())
     T.eq("…nothing new is said plainly", "Nothing new today in AI, Java from the sources I could read.", Aware.brief(listOf("AI" to emptyList(), "Java" to emptyList()), LocalDate.of(2026, 11, 19), 4, zone).text)
     T.eq("the notification's one line", "4 headlines, 1 to watch out for. AI finds critical Java flaw that lets attackers run code, patch now", Aware.notice(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to javaNews)))
@@ -2806,8 +2813,8 @@ fun testAwareness() {
     T.check("the daily brief on and off", listOf("daily brief on", "turn on the daily brief", "brief me every morning", "start my daily brief").all { (Aware.asks(it) as? Aware.Ask.Daily)?.on == true } && listOf("daily brief off", "stop the daily brief", "turn off daily brief").all { (Aware.asks(it) as? Aware.Ask.Daily)?.on == false })
     T.check("more of the list, and the details of one", Aware.asks("more headlines") is Aware.Ask.More && Aware.asks("show me the rest") is Aware.Ask.More &&
         listOf("more on 2", "More on 2.", "details of 2", "elaborate 2", "tell me more about 2", "explain no. 2", "2 details", "more on headline 2", "2 pathi sollu").all { (Aware.asks(it) as? Aware.Ask.Detail)?.n == 2 }, listOf("more on 2", "More on 2.", "details of 2", "elaborate 2", "tell me more about 2", "explain no. 2", "2 details", "more on headline 2", "2 pathi sollu").filter { (Aware.asks(it) as? Aware.Ask.Detail)?.n != 2 }.toString())
-    T.check("things that are something else stay something else", listOf("Every morning at 8, give me AI news", "send Ram the news about the meeting", "read the news", "good news", "open news", "Give me todays top AI news in 5 points", "when Amma messages, tell me", "what is new", "remind me to read the news at 9", "play news", "any update", "whatsapp update", "more", "2", "explain this", "book 2 tickets", "call 2").map { it to Aware.asks(it) }.filter { (s, a) -> a != null && !(s == "what is new" && a is Aware.Ask.Brief) && !(s == "any update" && a is Aware.Ask.Brief) }.isEmpty(),
-        listOf("Every morning at 8, give me AI news", "send Ram the news about the meeting", "read the news", "good news", "open news", "Give me todays top AI news in 5 points", "when Amma messages, tell me", "remind me to read the news at 9", "play news", "whatsapp update", "more", "2", "explain this", "book 2 tickets", "call 2").filter { Aware.asks(it) != null }.toString())
+    T.check("things that are something else stay something else", listOf("Every morning at 8, give me AI news", "send Ram the news about the meeting", "read the news", "good news", "open news", "Give me todays top AI news in 5 points", "when Amma messages, tell me", "what is new", "remind me to read the news at 9", "play news", "any update", "whatsapp update", "more", "2", "explain this", "book 2 tickets", "call 2", "any update on the project review", "what's new in my mail", "latest on my order", "what's new in Seyal", "what is happening in our group").map { it to Aware.asks(it) }.filter { (s, a) -> a != null && !(s == "what is new" && a is Aware.Ask.Brief) && !(s == "any update" && a is Aware.Ask.Brief) }.isEmpty(),
+        listOf("Every morning at 8, give me AI news", "send Ram the news about the meeting", "read the news", "good news", "open news", "Give me todays top AI news in 5 points", "when Amma messages, tell me", "remind me to read the news at 9", "play news", "whatsapp update", "more", "2", "explain this", "book 2 tickets", "call 2", "any update on the project review", "what's new in my mail", "latest on my order", "what's new in Seyal", "what is happening in our group").filter { Aware.asks(it) != null }.toString())
 
     // When.
     fun at(h: Int, m: Int, d: Int = 19) = ZonedDateTime.of(2026, 11, d, h, m, 0, 0, zone).toInstant().toEpochMilli()
@@ -2838,6 +2845,33 @@ fun testAwareness() {
     T.eq("what is watched, said back", "Watching 2: AI, Java. A brief comes every morning at 8, and an alert at once for something big.", Aware.interestsSaid(AwareStore.interests, true))
     T.eq("…with the daily brief off", "Watching 2: AI, Java. Say \"daily brief on\" for a brief every morning, or \"brief\" whenever you want one.", Aware.interestsSaid(AwareStore.interests, false))
     AwareStore.remember((1..450).map { "key$it" }); T.check("old alerts are forgotten in time", AwareStore.seen().size == 400 && "k1" !in AwareStore.seen() && "key450" in AwareStore.seen())
+    // The Dirghadarshi tab (asked for on 19 Nov: "we can have Dirghadarshi as a separate tab").
+    T.eq("a headline's small line: who, when, how many others", "BleepingComputer · 18 Nov · +2 more", Aware.meta(heads[0], zone))
+    T.eq("…with nobody else carrying it", "NDTV · 18 Nov", Aware.meta(heads[3], zone))
+    T.eq("the brief's headings: warnings first, then the interest", listOf("Watch out", "AI", "AI", "Java"), b.shown.mapIndexed { i, h -> Aware.section(i, b.warned, h) })
+    val why = Aware.explainAsk(Aware.Headline(Aware.Item("Should you buy gold now? Prices fall, order books thin as banks book profits", "Mint", "https://news.google.com/rss/articles/g1", nowMs - 86_400_000L, "rules", "gold price"), 0, false), zone)
+    T.eq("\"What it means for me\" asks the thinking mode about that story", "What does this news mean for me? \"Should you buy gold now? Prices fall, order books thin as banks book profits\" (Mint, 18 Nov). Find the story by its title and read it first.", why)
+    T.check("…and a headline with \"buy\", \"book\" or \"order\" in it is never taken as a purchase or a command", Preflight.kind(why) == null && Basics.plan(why, now, true) == null && Aware.asks(why) == null &&
+        Preflight.kind(Aware.explainAsk(Aware.Headline(Aware.Item("Book 2 tickets to Goa for the price of one: airline offer", "Mint", "", 0, "chance", "travel"), 0, false), zone)) == null)
+    T.check("the bottom bar gives a long name more room and a short one enough", Aware.tabWeight("Dirghadarshi") == 12f && Aware.tabWeight("Chat") == 6f && Aware.tabWeight("Activity") == 8f &&
+        listOf("Chat", "Brain", "Dirghadarshi", "Skills", "Activity", "Control").let { ls -> val sum = ls.sumOf { Aware.tabWeight(it).toDouble() }; 308 * 12 / sum >= 72 && 308 * 6 / sum >= 40 })
+    T.eq("no internet is not \"no news\"", "I could not reach the news just now (is the internet on?). Nothing was read, so this is not \"no news\". Try again in a minute.", Aware.UNREACHABLE)
+    T.eq("a reading that partly failed says so on its second line", listOf("**AI**: 4 headlines from the last 7 days (8 stories read, the same story counted once).", "Note: 2 of 5 readings did not answer, so some headlines may be missing.", "**Watch out**"), Aware.withNote(text, 2, 5).lines().take(3))
+    T.eq("…and one that did not fail is left as it is", text, Aware.withNote(text, 0, 5))
+    T.check("the tab reads the brief again when it is from another day or hours old, and not when it is fresh", Aware.stale(0L, at(9, 0), zone) && Aware.stale(at(21, 0, 18), at(0, 30), zone) && Aware.stale(at(8, 0), at(12, 1), zone) && !Aware.stale(at(8, 0), at(11, 59), zone))
+    T.eq("the next wake-up: the morning brief when it is due", at(9, 30), Aware.nextWake(at(9, 30), "2026-11-18", at(8, 0), 0L, zone))
+    T.eq("…a quarter of an hour after a try with no internet, not at once", at(9, 44), Aware.nextWake(at(9, 30), "2026-11-18", at(8, 0), at(9, 29), zone))
+    T.eq("…else the three-hourly watch", at(11, 0), Aware.nextWake(at(9, 30), "2026-11-19", at(8, 0), at(8, 0), zone))
+    T.eq("…and the phone is not woken at night: after the 9 PM watch the next wake-up is 7 AM", at(7, 0, 20), Aware.nextWake(at(22, 30), "2026-11-19", at(21, 0), at(8, 0), zone))
+    T.eq("…nor again and again once midnight has passed", at(7, 0, 20), Aware.nextWake(at(0, 5, 20), "2026-11-19", at(21, 0), at(8, 0), zone))
+    T.eq("…a watch due in the day is a minute away at the least", at(15, 1), Aware.nextWatch(at(15, 0), at(9, 0), zone))
+    AwareStore.briefed(b.text, 5678L, "2026-11-19", b.shown, b.rest, b.warned)
+    AwareStore.alerted(listOf(Aware.Alert("Critical Java flaw found by AI", "BleepingComputer", "https://news.google.com/rss/articles/a2?oc=5", "Java", 3, 111L)))
+    AwareStore.alerted(listOf(Aware.Alert("Bank warns of a new UPI scam", "Mint", "https://news.google.com/rss/articles/u1", "gold price", 4, 222L)))
+    AwareStore.init(dir)
+    T.check("the tab's brief survives a restart: its headlines, which are warnings, and what did not fit", AwareStore.briefHeads.map { it.item.source } == listOf("BleepingComputer", "The Hindu", "NDTV", "InfoQ") && AwareStore.briefWarned == 1 && AwareStore.briefRest.isEmpty() && AwareStore.latestAt == 5678L)
+    T.check("…and the alerts that were sent, newest first", AwareStore.alerts.map { it.source } == listOf("Mint", "BleepingComputer") && AwareStore.alerts[1].let { it.carriers == 3 && it.topic == "Java" && it.at == 111L })
+    AwareStore.alerted((1..40).map { Aware.Alert("Alert $it", "S", "", "AI", 3, it.toLong()) }); T.eq("…thirty at most", 30, AwareStore.alerts.size)
     AwareStore.init(java.nio.file.Files.createTempDirectory("aware2").toFile())
 
     // The everyday commands need no AI.
