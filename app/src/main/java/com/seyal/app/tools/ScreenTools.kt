@@ -78,9 +78,13 @@ object ScreenTools {
                 val text = a.optString("text").ifBlank { null }
                 // A date on a strip of dates is pressed where it shows, not "clicked" by name (see DayStrip).
                 val day = com.seyal.app.agent.BookGuard.dayOfLabel(text ?: id?.let { ScreenDriver.labelFor(it) }.orEmpty(), java.time.LocalDate.now())
-                if (day != null) ScreenDriver.pickDay(day)?.let { r -> return@Tool wrap(r) { dayLine(it) } }
-                // A date that is not on a strip Seyal can read is still pressed with a finger's touch, not "clicked" by name.
-                wrap(ScreenDriver.tap(id, text, byFinger = day != null)) { "Tapped ${it.optString("tapped")}" }
+                if (day != null) {
+                    // A date is pressed where the screen SHOWS it. When the dates cannot be read, nothing is tapped: the
+                    // name an app gives a date chip has pointed at another day's chip (see DayStrip.UNREADABLE).
+                    val r = ScreenDriver.pickDay(day) ?: JSONObject().put("ok", false).put("error", com.seyal.app.agent.DayStrip.UNREADABLE).also { o -> ScreenDriver.snapshotAfter(0)?.let { o.put("screen", it) } }
+                    return@Tool wrap(r) { dayLine(it) }
+                }
+                wrap(ScreenDriver.tap(id, text)) { "Tapped ${it.optString("tapped")}" }
             },
 
             Tool(
@@ -91,7 +95,7 @@ object ScreenTools {
                 available = screenOn, sideEffect = true,
             ) { a, _ ->
                 val day = runCatching { java.time.LocalDate.parse(a.optString("date").trim()) }.getOrNull() ?: return@Tool ToolResult.Failed("date must be YYYY-MM-DD, for example 2026-11-20")
-                val r = ScreenDriver.pickDay(day) ?: JSONObject().put("ok", false).put("error", com.seyal.app.agent.DayStrip.NONE).also { o -> ScreenDriver.snapshotAfter(0)?.let { o.put("screen", it) } }
+                val r = ScreenDriver.pickDay(day) ?: JSONObject().put("ok", false).put("error", com.seyal.app.agent.DayStrip.UNREADABLE).also { o -> ScreenDriver.snapshotAfter(0)?.let { o.put("screen", it) } }
                 wrap(r) { dayLine(it) }
             },
 

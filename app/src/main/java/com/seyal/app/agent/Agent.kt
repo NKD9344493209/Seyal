@@ -1216,15 +1216,24 @@ object Agent {
         ScreenDriver.freezeIds(s.id)
         val sheet = BookGuard.seatSheet(Opener.items(now), order.count) ?: return 0
         var after = now
+        var byEye: String? = null
         if (sheet.number != null) {
             report("Setting ${order.count} ticket${if (order.count == 1) "" else "s"}…")
             val r = runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", sheet.number.id)), tapTool); s.steps++; n++
             if (r.isError) return n
             after = r.output.optJSONObject("screen")?.optString("elements") ?: runCatching { ScreenDriver.read().optString("elements") }.getOrDefault("")
             ScreenDriver.freezeIds(s.id)
-        } else if (!sheet.alreadySet) return n
+        } else if (!sheet.alreadySet) {
+            // The sheet's numbers are not handed over as text (BookMyShow draws them): read the row 1 … 10 by eye and
+            // make the user's number the highlighted one. If even that cannot be done, the AI carries on as before.
+            report("Setting ${order.count} ticket${if (order.count == 1) "" else "s"}…")
+            byEye = runCatching { ScreenDriver.pickCount(order.count) }.getOrNull()?.takeIf { it == "already" || it == "set" } ?: return n
+            after = runCatching { ScreenDriver.read().optString("elements") }.getOrDefault("")
+            ScreenDriver.freezeIds(s.id)
+        }
         val go = BookGuard.seatSheet(Opener.items(after), order.count)?.go ?: return n
-        runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", go.id)), tapTool); s.steps++; n++
+        val r = runSynthetic(s, Part.Call(newId(), "screen_tap", JSONObject().put("id", go.id)), tapTool); s.steps++; n++
+        if (byEye != null) r.output.put("count", "Before this tap Seyal looked at the \"How many seats?\" row: ${order.count} was " + (if (byEye == "already") "already the highlighted number." else "pressed and is now the highlighted number."))
         return n
     }
 
@@ -1268,17 +1277,19 @@ object Agent {
         }
         // 3. The day.
         val want = runCatching { java.time.LocalDate.parse(order.date) }.getOrNull()
-        if (n == 0 && want != null && "day-ok" !in s.checked && last.name != "screen_day" && s.checked.count { it.startsWith("dayset") } < 4 && !BookGuard.seatPage(now)) {
+        // Only on a show list (two or more show times on the screen), once per visit to it.
+        val showList = Regex("\\b\\d{1,2}:\\d{2}\\s?(?:AM|PM)\\b", RegexOption.IGNORE_CASE).findAll(now).count() >= 2
+        val justOpened = Regex("book tickets?", RegexOption.IGNORE_CASE).containsMatchIn(last.output.optString("tapped"))
+        if (n == 0 && want != null && "day-ok" !in s.checked && "day-na" !in s.checked && last.name != "screen_day" && s.checked.count { it.startsWith("dayset") } < 4 && !BookGuard.seatPage(now) && (showList || justOpened)) {
             // "Book tickets" was just tapped: the show list with its dates takes a moment to load.
-            var strip = ScreenDriver.hasDayStrip()
-            if (!strip && Regex("book tickets?", RegexOption.IGNORE_CASE).containsMatchIn(last.output.optString("tapped"))) for (i in 1..3) { delay(700); strip = ScreenDriver.hasDayStrip(); if (strip) break }
-            if (!strip) return n
+            if (!showList && justOpened) delay(1500)
             val dayTool = Toolbox.get("screen_day") ?: return n
             s.checked += "dayset" + s.checked.size
             report("Checking the day…")
             val r = runSynthetic(s, Part.Call(newId(), "screen_day", JSONObject().put("date", want.toString())), dayTool); s.steps++; n++
-            // Done once per visit to the show list, whether or not the highlight could be checked: the seat screen's header is read in any case.
-            if (!r.isError && r.output.optBoolean("ok")) s.checked += "day-ok"
+            // Once per visit to the show list: the day was set or found right ("day-ok"), or the dates cannot be read
+            // here ("day-na": the AI was told to leave them alone). The seat screen's header is read in any case.
+            s.checked += if (!r.isError && r.output.optBoolean("ok")) "day-ok" else "day-na"
         }
         return n
     }
@@ -1503,7 +1514,7 @@ object Agent {
                 // On the seat map and its count sheet: is this the user's day and the user's number of tickets? Said at once,
                 // not after six seats are selected. (Seen: Sunday the 22nd and "6 Tickets" for a request of 2 on the 20th.)
                 if (!r.output.has("wrong_turn") && s.order != null && BookGuard.seatPage(page)) {
-                    SeatScreen.problem(page, s.order, java.time.LocalDateTime.now())?.let { r.output.put("wrong_turn", "Before anything else on this screen: $it"); s.checked.remove("day-ok") }
+                    SeatScreen.problem(page, s.order, java.time.LocalDateTime.now())?.let { r.output.put("wrong_turn", "Before anything else on this screen: $it"); s.checked.remove("day-ok"); s.checked.remove("day-na") }
                 }
             }
         }

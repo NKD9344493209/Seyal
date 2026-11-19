@@ -136,12 +136,101 @@ object Aware {
         return out.sortedWith(compareBy<Headline> { order(it.item.angle) }.thenByDescending { it.also }.thenByDescending { it.item.at })
     }
 
+    // ------------------------------------------------------------------ what an early adopter needs first
+    //
+    // Naveen, 19 Nov 2026, looking at a brief of 700 headlines: "make sure only these types of news makes me more like
+    // early adopter". Most headlines are talk: someone warns, someone says, a stock moves. The few that change what a
+    // person can do are of five kinds, and those are picked; the rest stays one tap away, never thrown out.
+
+    class Kind(val id: String, val label: String, val weight: Int)
+    val KINDS = listOf(
+        Kind("act", "Act now", 6),            // a flaw to patch, a breach, a recall, a scam aimed at people like the user
+        Kind("chance", "Opportunity", 5),     // free access, a course, an internship, hiring, a hackathon, a price cut
+        Kind("try", "New to try", 5),         // something launched, released, opened up
+        Kind("break", "Breakthrough", 4),     // a result: found, shown, beaten, first
+        Kind("rule", "Rule change", 4),       // a ban, a law, a deadline, a tax
+    )
+    private val kindRx = mapOf(
+        "act" to Regex("\\b(vulnerabilit\\w*|zero[- ]day|cve-\\d+|flaws?|exploit(?:ed|s)?|attackers?|malware|ransomware|patch(?:es|ed|ing)?|update now|urgent updates?|security (?:bug|hole|fix|update)|data breach|breach(?:ed|es)?|recall(?:s|ed)?|outage)\\b", I),
+        "chance" to Regex("\\b(free (?:access|tier|course|courses|credits?|training|certification|for (?:students|developers|all|everyone))|opens? it free|scholarships?|internships?|hackathons?|early access|waitlist|fellowships?|applications? (?:open|invited)|registrations? open|stipend|price cuts?|cheaper|now free|hiring (?:freshers|drive|\\d))\\b", I),
+        "try" to Regex("\\b(launch(?:es|ed)?|releas(?:es|ed)|unveil(?:s|ed)?|introduc(?:es|ed)|roll(?:s|ed|ing)? out|now available|generally available|open[- ]sourc(?:es|ed)|debuts?|goes live|opens? (?:it|up)|new (?:model|tool|feature|app|version|api|framework|library|sdk|plugin))\\b", I),
+        "break" to Regex("\\b(breakthrough|first[- ]ever|world'?s first|record[- ]breaking|study (?:finds|shows)|researchers? (?:find|found|show|develop|build|discover)\\w*|new (?:method|technique|approach|algorithm|architecture|material)|outperforms?|beats|state[- ]of[- ]the[- ]art|discover(?:s|ed|y)|uncovers?|finds? \\d+)\\b", I),
+        "rule" to Regex("\\b(bans?|banned|new (?:law|rules?|policy|regulations?)|bill (?:passed|introduced|cleared)|mandator\\w+|deadline|last date|comes? into (?:force|effect)|effective (?:from|today)|rbi|sebi|import duty|gst|tax (?:cut|hike|change)s?)\\b", I),
+    )
+    private val scamRx = Regex("\\b(scams?|fraud\\w*|phishing)\\b|மோசடி", I)
+    /** Words that put a story near the user (India, Tamil Nadu, the things they pay with). */
+    private val nearRx = Regex("\\b(india|indian|tamil ?nadu|chennai|coimbatore|bengaluru|bangalore|mumbai|delhi|upi|rbi|sebi|rupees?|aadhaar|irctc|upsc|tnpsc|csat|isro|iit|nit|tcs|infosys|wipro|zoho)\\b|₹|[\\u0B80-\\u0BFF]", I)
+
+    /** Whether a story is near the user (says India or a place or thing there, or is written in Tamil). */
+    fun near(title: String): Boolean = nearRx.containsMatchIn(title)
+
+    /** Which of the five kinds a headline is, or null when it is none (most are none). A scam counts only when it is near the user. */
+    fun kind(title: String): Kind? {
+        val id = KINDS.firstOrNull { kindRx[it.id]!!.containsMatchIn(title) }?.id ?: if (scamRx.containsMatchIn(title) && near(title)) "act" else return null
+        return KINDS.first { it.id == id }
+    }
+
+    private val talkRx = Regex(
+        "\\b(warnings?|warns?|warned|says?|said|calls|urges?|weighs?|claims?|blamed|fears?|worr(?:y|ies|ied)|concerns?|opinion|podcast|explained|explainer|what we know|here'?s (?:what|why|how)|" +
+            "why|how to|top \\d+|these \\d+|\\d+ (?:things|ways|jobs|stocks|points|reasons)|should you|bubble|billionaires?|decabillionaires?|déjà vu|asked if|bets its future)\\b|\\?\\s*$",
+        I,
+    )
+    private val strongRx = Regex("\\b(vulnerabilit\\w*|zero[- ]day|cve-\\d+|patch(?:es|ed|ing)?|update now|urgent updates?|recall(?:s|ed)?)\\b", I)
+    private val moneyRx = Regex("\\b(stock picks?|stocks?|shares|nasdaq|nyse|qqq|etfs?|investors?|wall street|price target|analysts?|earnings|valuation|ipo|debt financing|market cap|trading)\\b|\\((?:[A-Z]{2,5}|(?:NASDAQ|NYSE|NYSEARCA|BSE|NSE)\\s*:\\s*[A-Z.]+)\\)", I)
+    private val moneyTopic = Regex("\\b(gold|silver|stocks?|shares?|market|invest\\w*|crypto\\w*|bitcoin|mutual funds?|sip|nifty|sensex|price|rate|forex|rupee)\\b", I)
+    /** Publishers that mostly carry press releases or stock chatter: one of these alone is not enough for a pick. */
+    private val weak = listOf("biggo", "kalkine", "24/7 wall st", "trade brains", "linkedin", "youtube", "tradingview", "marketbeat", "benzinga", "seeking alpha", "motley fool", "zacks",
+        "globenewswire", "pr newswire", "prnewswire", "business wire", "businesswire", "openpr", "ein presswire", "einpresswire", "dev.ua", "fourweekmba", "money talks news", "ad-hoc-news", "proactive", "citybiz", "investing.com", "stocktwits", "msn")
+    /** Publishers with an editor behind them: a story from one of these stands on its own. */
+    private val known = listOf("reuters", "associated press", "ap news", "bbc", "the hindu", "times of india", "economic times", "indian express", "hindustan times", "ndtv", "mint", "moneycontrol", "business standard",
+        "bloomberg", "cnbc", "financial times", "wall street journal", "new york times", "washington post", "guardian", "the verge", "techcrunch", "ars technica", "wired", "mit technology review", "the register",
+        "bleepingcomputer", "hacker news", "securityweek", "cyberscoop", "dark reading", "infoq", "zdnet", "venturebeat", "engadget", "nature", "science", "ieee", "github", "google", "microsoft", "openai", "anthropic",
+        "hugging face", "deccan herald", "india today", "news minute", "dt next", "dinamalar", "dinamani", "vikatan", "pti", "ani", "cnn", "fortune", "forbes", "business insider", "independent", "los angeles times",
+        "south china morning post", "techradar", "9to5", "android authority", "xda", "gsmarena", "analytics india", "yourstory", "inc42", "medianama", "livemint", "firstpost", "the print", "scroll", "news18", "dailyhunt")
+    fun isWeak(source: String): Boolean = source.lowercase().let { s -> weak.any { s.contains(it) } }
+    fun isKnown(source: String): Boolean = source.lowercase().let { s -> known.any { s.contains(it) } }
+
+    /**
+     * Talk, not news to act on: someone warns, says or asks; a stock moves (unless money is the interest itself);
+     * a headline in a script the user does not read. A plain fix to make ("patch released") is never talk.
+     */
+    fun noise(title: String, topic: String): Boolean {
+        if (title.any { it.isLetter() && it.code > 0x24F && it.code !in 0x0B80..0x0BFF && it.code !in 0x2000..0x206F }) return true
+        if (strongRx.containsMatchIn(title)) return false
+        if (talkRx.containsMatchIn(title)) return true
+        return moneyRx.containsMatchIn(title) && !moneyTopic.containsMatchIn(topic)
+    }
+
+    /** How much a headline deserves a place among the picks; null = it is not one (no kind, talk, or one weak source alone). */
+    fun score(h: Headline, nowMs: Long): Int? {
+        val k = kind(h.item.title) ?: return null
+        if (noise(h.item.title, h.item.topic) || lone(h)) return null
+        return k.weight + minOf(h.also, 4) + (if (isKnown(h.item.source)) 2 else 0) + (if (near(h.item.title)) 2 else 0) + (if (h.item.at > 0 && nowMs - h.item.at < 36 * 3_600_000L) 1 else 0)
+    }
+
+    /** The headlines an early adopter should see first, best first, [max] at most. */
+    fun picks(heads: List<Headline>, max: Int, nowMs: Long): List<Headline> =
+        heads.mapNotNull { h -> score(h, nowMs)?.let { h to it } }.sortedWith(compareByDescending<Pair<Headline, Int>> { it.second }.thenByDescending { it.first.item.at }).map { it.first }.take(max)
+
+    /** The word shown with a picked headline ("New to try"); "" for the others. */
+    fun tag(h: Headline): String = if (noise(h.item.title, h.item.topic) || lone(h)) "" else kind(h.item.title)?.label.orEmpty()
+
+    /** One weak publisher alone carries it. Not enough for a pick, unless it names a plain fix to make (shown then with "one source"). */
+    private fun lone(h: Headline): Boolean = isWeak(h.item.source) && h.also == 0 && !strongRx.containsMatchIn(h.item.title)
+
+    /** Something to act on now (a red dot in the list). */
+    fun actNow(h: Headline): Boolean = tag(h) == "Act now"
+
+    /** How far a headline can be trusted as it stands: "" (a known publisher, or two or more carry it) or the caution to show. */
+    fun caution(h: Headline): String = if (h.also > 0 || isKnown(h.item.source)) "" else "one source"
+
     private val dayFmt = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
     private fun line(n: Int, h: Headline, zone: ZoneId): String {
         val on = if (h.item.at > 0) Instant.ofEpochMilli(h.item.at).atZone(zone).format(dayFmt) else ""
         val by = listOf(h.item.source, on).filter { it.isNotBlank() }.joinToString(", ")
         val name = h.item.title.replace("[", "(").replace("]", ")")
-        return "$n. " + (if (h.item.url.startsWith("http")) "[$name](${h.item.url})" else name) + (if (by.isNotBlank()) " · $by" else "") + (if (h.also > 0) " · +${h.also} more" else "")
+        val t = tag(h)
+        return "$n. " + (if (h.item.url.startsWith("http")) "[$name](${h.item.url})" else name) + (if (t.isNotBlank()) " · $t" else "") + (if (by.isNotBlank()) " · $by" else "") + (if (h.also > 0) " · +${h.also} more" else "")
     }
 
     const val PAGE = 30
@@ -175,22 +264,28 @@ object Aware {
     class Brief(val text: String, val shown: List<Headline>, val rest: List<Headline>, val warned: Int = 0)
 
     /** The daily brief over every interest: the warnings first, then each interest's headlines. */
-    fun brief(byTopic: List<Pair<String, List<Headline>>>, day: LocalDate, perTopic: Int, zone: ZoneId): Brief {
+    fun brief(byTopic: List<Pair<String, List<Headline>>>, day: LocalDate, perTopic: Int, zone: ZoneId, nowMs: Long = System.currentTimeMillis()): Brief {
         // A story that falls under two interests (a Java flaw found with AI) is one headline, under the first of them.
         val all = byTopic.flatMap { it.second }.distinctBy { key(it.item.title) }
-        if (all.isEmpty()) return Brief("Nothing new today in ${byTopic.joinToString(", ") { it.first }} from the sources I could read.", emptyList(), emptyList())
-        val sb = StringBuilder("**Dirghadarshi brief, ${day.format(DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH))}**: ${all.size} headlines in ${byTopic.size} ${if (byTopic.size == 1) "interest" else "interests"}.\n")
+        val names = byTopic.joinToString(", ") { it.first }
+        if (all.isEmpty()) return Brief("Nothing new today in $names from the sources I could read.", emptyList(), emptyList())
         val shown = ArrayList<Headline>()
-        val warned = all.filter { it.urgent }.sortedByDescending { it.also }.take(6)
-        if (warned.isNotEmpty()) { sb.append("**Watch out**\n"); warned.forEach { shown += it; sb.append(line(shown.size, it, zone)).append('\n') } }
+        // What to act on comes first, whatever interest it is under; then each interest's best few.
+        val act = picks(all.filter { actNow(it) }, 5, nowMs)
+        shown += act
+        val body = StringBuilder()
+        if (act.isNotEmpty()) { body.append("**Act now**\n"); act.forEachIndexed { i, h -> body.append(line(i + 1, h, zone)).append('\n') } }
         for ((topic, hs) in byTopic) {
-            val mine = pick(hs.filter { it in all && it !in shown }, perTopic)
+            val mine = picks(hs.filter { it in all && it !in shown }, perTopic, nowMs)
             if (mine.isEmpty()) continue
-            sb.append("**$topic**\n")
-            mine.forEach { shown += it; sb.append(line(shown.size, it, zone)).append('\n') }
+            body.append("**$topic**\n")
+            mine.forEach { shown += it; body.append(line(shown.size, it, zone)).append('\n') }
         }
         val rest = all.filter { it !in shown }
-        return Brief(sb.append(tail(rest.size, shown.size)).toString(), shown, rest, warned.size)
+        val on = day.format(DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH))
+        val of = "${all.size} ${if (all.size == 1) "headline" else "headlines"} in ${byTopic.size} ${if (byTopic.size == 1) "interest" else "interests"}"
+        if (shown.isEmpty()) return Brief("**Dirghadarshi brief, $on**: nothing today to act on or to try, out of $of.\nSay \"more headlines\" to see them all.", emptyList(), rest)
+        return Brief("**Dirghadarshi brief, $on**: ${shown.size} picked for an early adopter, out of $of.\n" + body + tail(rest.size, shown.size), shown, rest, act.size)
     }
 
     /** The next page of a list that did not fit: [rest] is what is left, [from] how many were shown. */
@@ -250,7 +345,7 @@ object Aware {
     }
 
     /** The heading a brief's headline stands under: the warnings come first, the rest under their interest. */
-    fun section(index: Int, warned: Int, h: Headline): String = if (index < warned) "Watch out" else h.item.topic
+    fun section(index: Int, warned: Int, h: Headline): String = if (index < warned) "Act now" else h.item.topic
 
     /** What is asked of the thinking mode when the user taps "What does it mean for me?" on a headline. */
     fun explainAsk(h: Headline, zone: ZoneId): String {
@@ -269,16 +364,17 @@ object Aware {
     fun isList(answer: String?): Boolean = answer != null && answer.contains("\"more on ")
 
     /** The one line of a notification. */
-    fun notice(byTopic: List<Pair<String, List<Headline>>>): String {
+    fun notice(byTopic: List<Pair<String, List<Headline>>>, nowMs: Long = System.currentTimeMillis()): String {
         val all = byTopic.flatMap { it.second }.distinctBy { key(it.item.title) }
-        val warn = all.count { it.urgent }
-        val first = all.filter { it.urgent }.maxByOrNull { it.also } ?: all.maxByOrNull { it.also }
-        return "${all.size} headlines" + (if (warn > 0) ", $warn to watch out for" else "") + (first?.let { ". ${it.item.title.take(90)}" } ?: "")
+        val best = picks(all, 60, nowMs)
+        val act = best.count { actNow(it) }
+        val first = best.firstOrNull { actNow(it) } ?: best.firstOrNull()
+        return (if (best.isEmpty()) "Nothing to act on or to try today, out of ${all.size} headlines" else "${best.size} picked for you out of ${all.size}" + (if (act > 0) ", $act to act on" else "")) + (first?.let { ". ${it.item.title.take(90)}" } ?: "")
     }
 
-    /** Headlines worth an alert at once: a warning carried by at least [carriers] publishers that was not alerted before. */
+    /** Headlines worth an alert at once: something to act on, carried by at least [carriers] publishers, not alerted before. */
     fun alerts(heads: List<Headline>, seen: Set<String>, carriers: Int = 3): List<Headline> =
-        heads.filter { it.urgent && it.also + 1 >= carriers && key(it.item.title) !in seen }.sortedByDescending { it.also }
+        heads.filter { actNow(it) && it.also + 1 >= carriers && key(it.item.title) !in seen }.sortedByDescending { it.also }
 
     // ------------------------------------------------------------------ what the user says
 

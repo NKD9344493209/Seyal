@@ -92,11 +92,11 @@ object AwareRun {
         if (swept.all { it.second.unreachable }) return@withLock Briefed(Aware.UNREACHABLE, "", false)
         val by = swept.map { it.first to it.second.heads }
         val zone = ZoneId.systemDefault()
-        val b = Aware.brief(by, LocalDate.now(zone), 4, zone)
+        val b = Aware.brief(by, LocalDate.now(zone), 5, zone)
         val text = Aware.withNote(b.text, swept.sumOf { it.second.failed }, swept.sumOf { it.second.asked })
         AwareStore.listed(b.shown, b.rest)
         AwareStore.briefed(text, System.currentTimeMillis(), if (morning) LocalDate.now(zone).toString() else AwareStore.lastDay, b.shown, b.rest, b.warned)
-        AwareStore.remember(by.flatMap { it.second }.filter { it.urgent }.map { Aware.key(it.item.title) })
+        AwareStore.remember(by.flatMap { it.second }.filter { Aware.actNow(it) }.map { Aware.key(it.item.title) })
         Briefed(text, Aware.notice(by), true)
     }
 

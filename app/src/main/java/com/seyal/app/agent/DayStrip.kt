@@ -14,8 +14,11 @@ import java.util.Locale
  * landed then picks whatever it likes. So a date is chosen here as a person does it: find the chip that SHOWS the
  * number, press that spot, and look which chip is highlighted afterwards.
  *
- * Everything here goes by the words on the screen and where they are, never by descriptions (BookMyShow leaves old
- * ones on its chips), so it is tested without a phone.
+ * Second lesson (the same evening, v3.25.0): BookMyShow gives its date chips no readable text at all, and the one name
+ * it does give ("Thu, 20 Nov") sat on the chip showing MON 23. So the words are taken from a picture of the screen,
+ * read on the phone (device/Eyes), and when even that fails no date is touched.
+ *
+ * Everything here goes by words and where they are, never by descriptions, so it is tested without a phone.
  */
 object DayStrip {
     private val I = RegexOption.IGNORE_CASE
@@ -34,17 +37,75 @@ object DayStrip {
         val h get() = bottom - top
     }
 
-    /** One date of the strip: the day it shows and the spot to press (the middle of its number). */
+    /** One date as it was read: the day it shows and the middle of its number. */
     class Chip(val day: LocalDate, val x: Int, val y: Int, val selected: Boolean) {
         fun label(): String = day.format(fmt)
     }
 
-    /** The strip: its dates from left to right, and how far apart they stand. */
-    class Strip(val chips: List<Chip>, val pitch: Int) {
+    /**
+     * Things that stand in a row at a steady distance, each one more than the one before: the dates of a strip
+     * (FRI 20 · SAT 21 · SUN 22), the numbers of a "how many" row (1 2 3 … 10). A few of them read for certain are
+     * enough to know where each of the others is, also one whose text could not be read.
+     * [firstValue] stands at [firstX]; each next value is [pitch] pixels further right; all at height [y].
+     */
+    class Row(val firstValue: Long, val firstX: Double, val pitch: Double, val y: Int, val read: Int) {
+        fun xOf(v: Long): Int = Math.round(firstX + (v - firstValue) * pitch).toInt()
+        /** The values that stand fully on a screen [width] pixels wide. */
+        fun onScreen(width: Int): List<Long> {
+            val edge = pitch * 0.34
+            val lo = Math.ceil((edge - firstX) / pitch).toLong() + firstValue
+            val hi = Math.floor((width - 1 - edge - firstX) / pitch).toLong() + firstValue
+            return if (hi < lo) emptyList() else (lo..hi).toList()
+        }
+        /** Two spots beside each value on the screen, inside its chip and clear of its text: where its background is looked at. */
+        fun samplePoints(width: Int): List<Pair<Int, Int>> = onScreen(width).flatMap { v ->
+            val dx = (pitch * 0.3).toInt().coerceAtLeast(6)
+            listOf((xOf(v) - dx).coerceAtLeast(0) to y, (xOf(v) + dx).coerceAtMost(width - 1) to y)
+        }
+        /**
+         * The highlighted value, told from the [colors] at [samplePoints] (same order): the one whose background
+         * differs from what most of the row stands on. Null when none or several differ.
+         */
+        fun byColor(width: Int, colors: List<Int>): Long? {
+            val vs = onScreen(width)
+            if (vs.isEmpty() || colors.size != vs.size * 2) return null
+            val page = colors.maxByOrNull { c -> colors.count { far(it, c) <= 30 } } ?: return null
+            return vs.filterIndexed { i, _ -> far(colors[i * 2], page) > 90 && far(colors[i * 2 + 1], page) > 90 }.singleOrNull()
+        }
+
+        companion object {
+            /**
+             * The row through [points] (value, x), all at about height [y]. Needs three or more; values must grow to the
+             * right; every point must sit where the row says (within a quarter of a step), else it is not such a row.
+             */
+            fun fit(points: List<Pair<Long, Int>>, y: Int): Row? {
+                val ps = points.distinctBy { it.first }.sortedBy { it.second }
+                if (ps.size < 3) return null
+                if (ps.zipWithNext().any { (a, b) -> b.first <= a.first || b.second - a.second < 8 }) return null
+                val steps = ps.zipWithNext().map { (a, b) -> (b.second - a.second).toDouble() / (b.first - a.first) }.sorted()
+                val pitch = steps[steps.size / 2]
+                if (pitch < 8) return null
+                // The row is laid through the middle one, so one sloppy reading at an end does not tilt it.
+                val mid = ps[ps.size / 2]
+                val row = Row(ps.first().first, mid.second - (mid.first - ps.first().first) * pitch, pitch, y, ps.size)
+                if (ps.any { (v, x) -> kotlin.math.abs(x - row.xOf(v)) > pitch * 0.25 }) return null
+                return row
+            }
+        }
+    }
+
+    private fun far(a: Int, b: Int): Int =
+        kotlin.math.abs((a shr 16 and 0xFF) - (b shr 16 and 0xFF)) + kotlin.math.abs((a shr 8 and 0xFF) - (b shr 8 and 0xFF)) + kotlin.math.abs((a and 0xFF) - (b and 0xFF))
+
+    /** The strip: the dates that were read, and the row they stand in (which also places the dates that were not read). */
+    class Strip(val chips: List<Chip>, val row: Row) {
+        val pitch: Int get() = Math.round(row.pitch).toInt()
         /** The date the app itself marks as selected, when it marks exactly one. */
         val marked: Chip? get() = chips.filter { it.selected }.singleOrNull()
-        fun has(day: LocalDate): Chip? = chips.firstOrNull { it.day == day }
-        fun span(): String = "${chips.first().label()} to ${chips.last().label()}"
+        /** Where [day] stands on a screen [width] wide (the middle of its number), or null when it is off the screen. */
+        fun where(day: LocalDate, width: Int): Pair<Int, Int>? = if (day.toEpochDay() in row.onScreen(width)) row.xOf(day.toEpochDay()) to row.y else null
+        fun days(width: Int): List<LocalDate> = row.onScreen(width).map { LocalDate.ofEpochDay(it) }
+        fun span(width: Int): String = days(width).let { if (it.isEmpty()) "" else "${it.first().format(fmt)} to ${it.last().format(fmt)}" }
     }
 
     private fun wd(s: String): Int = dayRx.find(s.trim())?.groupValues?.get(1)?.lowercase()?.take(3)?.let { weekdays.indexOf(it) } ?: -1
@@ -98,51 +159,46 @@ object DayStrip {
         if (chips.size < 3) return null
         // One line of them: the line with the most dates. Their numbers are small text, so "one line" is a narrow band.
         val band = (words.filter { numRx.matches(it.text.trim()) }.map { it.h }.sorted().let { it.getOrNull(it.size / 2) } ?: 40).coerceAtLeast(16)
-        val row = chips.map { c -> chips.filter { kotlin.math.abs(it.y - c.y) <= band } }.maxByOrNull { it.size } ?: return null
-        val line = row.distinctBy { it.day }.sortedBy { it.x }
+        val line = (chips.map { c -> chips.filter { kotlin.math.abs(it.y - c.y) <= band } }.maxByOrNull { it.size } ?: return null).distinctBy { it.day }.sortedBy { it.x }
         if (line.size < 3) return null
-        // Left to right the dates must run forward; anything else is not a strip of dates (a calendar grid, a table).
-        if (line.zipWithNext().any { (a, b) -> !b.day.isAfter(a.day) || b.x - a.x < 8 }) return null
-        val gaps = line.zipWithNext().map { (a, b) -> b.x - a.x }.sorted()
-        return Strip(line, gaps[gaps.size / 2])
+        // Left to right the dates must run forward, a day a step: anything else is not a strip of dates (a table, a calendar grid).
+        val row = Row.fit(line.map { it.day.toEpochDay() to it.x }, line.map { it.y }.sorted()[line.size / 2]) ?: return null
+        return Strip(line, row)
     }
 
-    /**
-     * Where to look at each date's background: two spots beside its number, inside its chip and clear of the text.
-     * (The chosen date is drawn on a filled chip; the others on the page's own colour.)
-     */
-    fun samplePoints(strip: Strip): List<Pair<Int, Int>> = strip.chips.flatMap { c ->
-        val dx = (strip.pitch * 0.32).toInt().coerceAtLeast(6)
-        listOf((c.x - dx).coerceAtLeast(0) to c.y, (c.x + dx) to c.y)
-    }
+    /** Where each date's background is looked at, on a screen [width] wide. */
+    fun samplePoints(strip: Strip, width: Int): List<Pair<Int, Int>> = strip.row.samplePoints(width)
 
-    private fun far(a: Int, b: Int): Int =
-        kotlin.math.abs((a shr 16 and 0xFF) - (b shr 16 and 0xFF)) + kotlin.math.abs((a shr 8 and 0xFF) - (b shr 8 and 0xFF)) + kotlin.math.abs((a and 0xFF) - (b and 0xFF))
-
-    /**
-     * The highlighted date, told from the [colors] at [samplePoints] (two for each date, in the same order): the one
-     * date whose background differs from what most of the strip stands on. Null when none or several differ.
-     */
-    fun byColor(strip: Strip, colors: List<Int>): Chip? {
-        if (colors.size != strip.chips.size * 2) return null
-        // The page's own colour: the one most samples are close to.
-        val page = colors.maxByOrNull { c -> colors.count { far(it, c) <= 30 } } ?: return null
-        val odd = strip.chips.filterIndexed { i, _ -> far(colors[i * 2], page) > 90 && far(colors[i * 2 + 1], page) > 90 }
-        return odd.singleOrNull()
-    }
+    /** The highlighted date, told from the [colors] at [samplePoints]: the one date on a filled chip. */
+    fun byColor(strip: Strip, width: Int, colors: List<Int>): LocalDate? = strip.row.byColor(width, colors)?.let { LocalDate.ofEpochDay(it) }
 
     /** The highlighted date: the one the app marks, else the one the picture shows. */
-    fun selected(strip: Strip, colors: List<Int>?): Chip? = strip.marked ?: colors?.let { byColor(strip, it) }
+    fun selected(strip: Strip, width: Int, colors: List<Int>?): LocalDate? = strip.marked?.day ?: colors?.let { byColor(strip, width, it) }
 
     /**
-     * [want] is not among the dates on show: which way to drag the strip to bring it in ("earlier": finger moves right;
-     * "later": finger moves left), or null when dragging cannot help (it lies between two dates that are both shown).
+     * [want] is not on the screen: which way to drag the strip to bring it in ("earlier": finger moves right;
+     * "later": finger moves left), or null when it is on the screen already.
      */
-    fun drag(strip: Strip, want: LocalDate): String? = when {
-        strip.has(want) != null -> null
-        want.isBefore(strip.chips.first().day) -> "earlier"
-        want.isAfter(strip.chips.last().day) -> "later"
-        else -> null
+    fun drag(strip: Strip, want: LocalDate, width: Int): String? {
+        val days = strip.days(width)
+        return when {
+            days.isEmpty() || want in days -> null
+            want.isBefore(days.first()) -> "earlier"
+            else -> "later"
+        }
+    }
+
+    /**
+     * The numbers of a "How many seats?" row (1 2 3 … 10) among words read off the screen: where each stands.
+     * Six or more of them must be read, on one line, a step apart.
+     */
+    fun countRow(nodes: List<Seen>): Row? {
+        val nums = nodes.filter { Regex("^(?:10|[1-9])$").matches(it.text.trim()) && it.w > 0 && it.h > 0 }
+        if (nums.size < 6) return null
+        val band = nums.map { it.h }.sorted()[nums.size / 2].coerceAtLeast(14)
+        val line = nums.map { n -> nums.filter { kotlin.math.abs(it.cy - n.cy) <= band } }.maxByOrNull { it.size } ?: return null
+        if (line.distinctBy { it.text.trim() }.size < 6) return null
+        return Row.fit(line.map { it.text.trim().toLong() to it.cx }, line.map { it.cy }.sorted()[line.size / 2])
     }
 
     // ------------------------------------------------------------------ what is said about it
@@ -153,6 +209,14 @@ object DayStrip {
     fun nowSaid(day: LocalDate) = "${name(day)} is now the selected day: the chip that shows ${day.dayOfMonth} was pressed and it is the highlighted one. Go on to the show times."
     fun unsureSaid(day: LocalDate) = "The chip that shows ${day.dayOfMonth} (${name(day)}) was pressed. Which chip is highlighted could not be checked (no picture of the screen), so make sure of the day on the next screen before anything else."
     fun wrongSaid(day: LocalDate, got: LocalDate) = "Not done: the chip that shows ${day.dayOfMonth} was pressed twice, but the highlighted day is ${name(got)}. Do not go on to a show: tell the user that the app will not select ${name(day)}, or use your_turn (\"Tap ${name(day)} in the dates\")."
-    fun missingSaid(day: LocalDate, strip: Strip) = "Not done: this page has no chip for ${name(day)}. Its dates run from ${strip.span()}. If the film has no show that day, tell the user which days it has and ask."
+    fun missingSaid(day: LocalDate, span: String) = "Not done: this page has no chip for ${name(day)}. Its dates run from $span. If the film has no show that day, tell the user which days it has and ask."
     const val NONE = "There is no strip of dates on this screen."
+    /**
+     * Said when a date was to be tapped but the dates on the page could not be read. Nothing is tapped then: on a real
+     * phone the thing BookMyShow names "Thu, 20 Nov" sat on the chip that showed MON 23, and a press on it changed a
+     * right day into a wrong one, three times.
+     */
+    const val UNREADABLE = "Not done, and nothing was tapped: Seyal could not read the dates on this page, and what this page names its date chips cannot be trusted " +
+        "(a chip named \"Thu, 20 Nov\" has shown MON 23). Leave the dates alone: the day that is selected now is usually the right one, and the seat screen's header names the day, where it is checked. " +
+        "Only if that header shows another day: come back, take a screenshot, and use screen_tap_at on the chip that SHOWS the day's number."
 }

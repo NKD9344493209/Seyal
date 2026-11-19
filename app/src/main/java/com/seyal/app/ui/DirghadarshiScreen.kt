@@ -150,7 +150,8 @@ private fun ForYou(goTo: (Tab) -> Unit) {
             Text(
                 when {
                     busy -> "Reading the news on each interest… a few seconds, no AI."
-                    latestAt > 0 -> "Read ${Times.format(latestAt)} · ${heads.size + rest.size} headlines from the last two days. Tap one to see what it says."
+                    latestAt > 0 && heads.isNotEmpty() -> "Read ${Times.format(latestAt)} · ${heads.size} picked for an early adopter out of ${heads.size + rest.size} headlines of the last two days: what to act on, what is new to try, openings, results and rule changes. Tap one to see what it says."
+                    latestAt > 0 -> "Read ${Times.format(latestAt)} · ${rest.size} headlines from the last two days."
                     else -> "Not read yet. Tap Read now."
                 },
                 style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
@@ -266,13 +267,16 @@ private fun ForYou(goTo: (Tab) -> Unit) {
             style = MaterialTheme.typography.bodySmall, color = if (!loading && (s == null || s.unreachable)) Ink.red else cs.onSurfaceVariant,
         )
         if (!loading && s != null && s.heads.isNotEmpty()) {
-            val page = remember(s, showing) { Aware.numbered(Aware.pick(s.heads, showing)) }
+            // First what an early adopter needs; then everything else, by angle.
+            val best = remember(s) { Aware.picks(s.heads, 8, System.currentTimeMillis()) }
+            if (best.isNotEmpty()) { Spacer(Modifier.height(10.dp)); SectionLabel("Picked for an early adopter"); best.forEach { h -> HeadlineRow(h, zone, goTo) } }
+            val page = remember(s, showing) { Aware.numbered(Aware.pick(s.heads.filter { it !in best }, showing)) }
             Aware.ANGLES.forEach { a ->
                 val mine = page.filter { it.item.angle == a.id }
                 if (mine.isNotEmpty()) { Spacer(Modifier.height(10.dp)); SectionLabel(a.label); mine.forEach { h -> HeadlineRow(h, zone, goTo) } }
             }
-            if (page.size < s.heads.size) Text(
-                "Show ${minOf(Aware.PAGE, s.heads.size - page.size)} more (${s.heads.size - page.size} left)",
+            if (page.size + best.size < s.heads.size) Text(
+                "Show ${minOf(Aware.PAGE, s.heads.size - best.size - page.size)} more (${s.heads.size - best.size - page.size} left)",
                 style = MaterialTheme.typography.labelMedium, color = cs.primary, modifier = Modifier.clickable { showing += Aware.PAGE }.padding(vertical = 8.dp),
             )
         }
@@ -299,7 +303,7 @@ private fun ForYou(goTo: (Tab) -> Unit) {
     }
 
     Text(
-        "The headlines are the publishers' own words, read from Google News: no AI writes or picks them. Only \"What it means for me\" and \"Ask before you decide\" use your AI.",
+        "The headlines are the publishers' own words, read from Google News. They are real headlines, not checked facts: one carried by several publishers (+N more) or by a known one is the safer to believe, and \"one source\" marks the rest. The picks are made by fixed rules, not by an AI. Only \"What it means for me\" and \"Ask before you decide\" use your AI.",
         style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp),
     )
 }
@@ -327,10 +331,13 @@ private fun HeadlineRow(h: Aware.Headline, zone: ZoneId, goTo: (Tab) -> Unit, to
         }.padding(vertical = 6.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            if (h.urgent) { Box(Modifier.padding(top = 6.dp, end = 8.dp)) { Dot(Ink.red) } }
+            if (Aware.actNow(h)) { Box(Modifier.padding(top = 6.dp, end = 8.dp)) { Dot(Ink.red) } }
             Text(h.item.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         }
-        Text((if (topic && h.item.topic.isNotBlank()) h.item.topic + " · " else "") + Aware.meta(h, zone), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+        Text(
+            listOf(if (topic) h.item.topic else "", Aware.tag(h), Aware.meta(h, zone), Aware.caution(h)).filter { it.isNotBlank() }.joinToString(" · "),
+            style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant,
+        )
         if (open) {
             Spacer(Modifier.height(6.dp))
             if (loading) Text("Reading the story…", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)

@@ -920,58 +920,84 @@ object ScreenDriver {
         return out
     }
 
-    /** The colours at some points of the screen (real pixels), from one picture of it; null when no picture can be had. */
-    private suspend fun colorsAt(points: List<Pair<Int, Int>>): List<Int>? {
+    /** One picture of the whole screen in real pixels, or null when none can be had (old Android, or the phone refuses). */
+    private suspend fun picture(): Bitmap? {
         val s = service ?: return null
-        if (Build.VERSION.SDK_INT < 30 || shotsBroken() || points.isEmpty()) return null
+        if (Build.VERSION.SDK_INT < 30 || shotsBroken()) return null
         (1100 - (System.currentTimeMillis() - lastShotAt)).takeIf { it > 0 }?.let { delay(it) }
         var bmp = shoot(s, false) { }
         if (bmp == null) { delay(1200); bmp = shoot(s, false) { } }
         lastShotAt = System.currentTimeMillis()
-        val b = bmp ?: return null
-        return runCatching { points.map { (x, y) -> b.getPixel(x.coerceIn(0, b.width - 1), y.coerceIn(0, b.height - 1)) } }.getOrNull()
+        return bmp
     }
 
-    private suspend fun highlighted(strip: com.seyal.app.agent.DayStrip.Strip): com.seyal.app.agent.DayStrip.Chip? =
-        com.seyal.app.agent.DayStrip.selected(strip, if (strip.marked == null) colorsAt(com.seyal.app.agent.DayStrip.samplePoints(strip)) else null)
+    private fun colors(bmp: Bitmap, points: List<Pair<Int, Int>>): List<Int>? =
+        runCatching { points.map { (x, y) -> bmp.getPixel(x.coerceIn(0, bmp.width - 1), y.coerceIn(0, bmp.height - 1)) } }.getOrNull()
 
-    /** Whether a strip of dates is on the screen now. */
-    suspend fun hasDayStrip(): Boolean = lock.withLock { runCatching { settle(); com.seyal.app.agent.DayStrip.find(seenNow(), java.time.LocalDate.now()) != null }.getOrDefault(false) }
+    /** The words Seyal can read with its own eyes in a band of the picture, from [top] to [bottom] (0-1 of its height), placed in screen pixels. */
+    private suspend fun readBand(bmp: Bitmap, top: Float, bottom: Float): List<com.seyal.app.agent.DayStrip.Seen> {
+        val y0 = (bmp.height * top).toInt().coerceIn(0, bmp.height - 2)
+        val h = ((bmp.height * bottom).toInt() - y0).coerceIn(1, bmp.height - y0)
+        val part = runCatching { Bitmap.createBitmap(bmp, 0, y0, bmp.width, h) }.getOrNull() ?: return emptyList()
+        return Eyes.read(part).orEmpty().map { com.seyal.app.agent.DayStrip.Seen(it.text, it.left, it.top + y0, it.right, it.bottom + y0) }
+    }
+
+    /** What was made of the strip of dates at one look: the strip, which day is highlighted (null = not known), the screen's width. */
+    private class DayLook(val strip: com.seyal.app.agent.DayStrip.Strip, val selected: java.time.LocalDate?, val width: Int)
 
     /**
-     * Makes [want] the selected day of the strip of dates on screen: presses the chip that SHOWS it, the way a finger
-     * does (a "click" sent by name made BookMyShow jump to another day), then looks which chip is highlighted.
-     * A day that is already selected is not tapped. Null when the screen has no strip of dates.
+     * Looks for the strip of dates: first in the text the app hands over, and when that has none (BookMyShow), in a
+     * picture of the top half of the screen read by [Eyes]. The highlighted day is what the app marks, else the one
+     * date on a filled chip in the picture.
+     */
+    private suspend fun lookAtDays(today: java.time.LocalDate): DayLook? {
+        val ds = com.seyal.app.agent.DayStrip
+        val (sw, _) = screenSize(svc())
+        val byText = ds.find(seenNow(), today)
+        if (byText?.marked != null) return DayLook(byText, byText.marked!!.day, sw)
+        val bmp = picture() ?: return byText?.let { DayLook(it, null, sw) }
+        // From just under Seyal's own status pill (its words, "The day: Fri 20 Nov", must not be read as a date) to mid-screen.
+        val strip = byText ?: ds.find(readBand(bmp, 0.09f, 0.5f), today) ?: return null
+        return DayLook(strip, colors(bmp, ds.samplePoints(strip, bmp.width))?.let { ds.byColor(strip, bmp.width, it) }, bmp.width)
+    }
+
+    /** Whether Seyal can see a strip of dates on the screen now (by text, or by eye). */
+    suspend fun hasDayStrip(): Boolean = lock.withLock { runCatching { settle(); lookAtDays(java.time.LocalDate.now()) != null }.getOrDefault(false) }
+
+    /**
+     * Makes [want] the selected day of the strip of dates on screen: finds the chip that SHOWS it, presses that spot
+     * as a finger does, then looks which chip is highlighted. A day that is already selected is not tapped.
+     * Null when no strip of dates can be read on this screen (then nothing was touched).
      */
     suspend fun pickDay(want: java.time.LocalDate): JSONObject? = lock.withLock {
         val ds = com.seyal.app.agent.DayStrip
         repeatGuard.looked()
         val today = java.time.LocalDate.now()
         settle()
-        var strip = ds.find(seenNow(), today) ?: return@withLock null
+        var look = lookAtDays(today) ?: return@withLock null
         // The day is off to one side: drag the strip, as a thumb would, until it shows.
         var drags = 0
-        while (strip.has(want) == null && drags < 3) {
-            val way = ds.drag(strip, want) ?: break
-            val y = strip.chips.first().y.toFloat()
-            val a = strip.chips.first().x.toFloat(); val b = strip.chips.last().x.toFloat()
+        while (look.strip.where(want, look.width) == null && drags < 3) {
+            val way = ds.drag(look.strip, want, look.width) ?: break
+            val y = look.strip.row.y.toFloat()
+            val a = look.width * 0.2f; val b = look.width * 0.8f
             if (way == "earlier") gestureSwipe(a, y, b, y, 350) else gestureSwipe(b, y, a, y, 350)
-            delay(600); settle()
-            strip = ds.find(seenNow(), today) ?: break
+            delay(700); settle()
+            look = lookAtDays(today) ?: break
             drags++
         }
         val o = JSONObject().put("day", want.toString())
         fun done() = o.put("screen", runCatching { describe(90) }.getOrNull())
-        if (strip.has(want) == null) return@withLock done().put("ok", false).put("error", ds.missingSaid(want, strip))
-        var got = highlighted(strip)?.day
+        if (look.strip.where(want, look.width) == null) return@withLock done().put("ok", false).put("error", ds.missingSaid(want, look.strip.span(look.width)))
+        var got = look.selected
         if (got == want) return@withLock done().put("ok", true).put("tapped", false).put("checked", true).put("say", ds.alreadySaid(want))
         for (attempt in 1..2) {
-            val chip = strip.has(want) ?: break
-            if (!gestureTap(chip.x.toFloat(), chip.y.toFloat(), 60)) return@withLock done().put("ok", false).put("error", "The tap on ${ds.name(want)} did not register.")
+            val (x, y) = look.strip.where(want, look.width) ?: break
+            if (!gestureTap(x.toFloat(), y.toFloat(), 60)) return@withLock done().put("ok", false).put("error", "The tap on ${ds.name(want)} did not register.")
             // The page loads the day's shows again; the strip stays.
             delay(900); settle(2500)
-            strip = ds.find(seenNow(), today) ?: break
-            got = highlighted(strip)?.day
+            look = lookAtDays(today) ?: break
+            got = look.selected
             if (got == null || got == want) break
         }
         when (got) {
@@ -979,6 +1005,29 @@ object ScreenDriver {
             null -> done().put("ok", true).put("tapped", true).put("checked", false).put("say", ds.unsureSaid(want))
             else -> done().put("ok", false).put("error", ds.wrongSaid(want, got))
         }
+    }
+
+    /**
+     * On a "How many seats?" sheet whose numbers the app does not hand over as text: reads the row 1 … 10 by eye,
+     * and makes [count] the highlighted one (pressing it only when another is). Returns "already", "set",
+     * "unsure" (pressed, but the highlight could not be checked), or null when the row could not be read.
+     */
+    suspend fun pickCount(count: Int): String? = lock.withLock {
+        val ds = com.seyal.app.agent.DayStrip
+        settle()
+        suspend fun look(): Pair<com.seyal.app.agent.DayStrip.Row, Long?>? {
+            val bmp = picture() ?: return null
+            val row = ds.countRow(readBand(bmp, 0.25f, 0.98f)) ?: return null
+            return row to colors(bmp, row.samplePoints(bmp.width))?.let { row.byColor(bmp.width, it) }
+        }
+        val (sw, _) = screenSize(svc())
+        var seen = look() ?: return@withLock null
+        if (seen.second == count.toLong()) return@withLock "already"
+        if (count.toLong() !in seen.first.onScreen(sw)) return@withLock null
+        if (!gestureTap(seen.first.xOf(count.toLong()).toFloat(), seen.first.y.toFloat(), 60)) return@withLock null
+        delay(500); settle()
+        seen = look() ?: return@withLock "unsure"
+        when (seen.second) { count.toLong() -> "set"; null -> "unsure"; else -> null }
     }
 
     // ---------------------------------------------------------------- gestures

@@ -2731,12 +2731,12 @@ fun testAwareness() {
     T.eq("the list in the chat: every headline, one line each, as the publisher wrote it", listOf(
         "**AI**: 4 headlines from the last 7 days (8 stories read, the same story counted once).",
         "**Watch out**",
-        "1. [AI finds critical Java flaw that lets attackers run code, patch now](https://news.google.com/rss/articles/a2?oc=5) · BleepingComputer, 18 Nov · +2 more",
+        "1. [AI finds critical Java flaw that lets attackers run code, patch now](https://news.google.com/rss/articles/a2?oc=5) · Act now · BleepingComputer, 18 Nov · +2 more",
         "**New**",
         "2. [New AI chip factory opens in Chennai](https://news.google.com/rss/articles/a5?oc=5) · The Hindu, 18 Nov · +1 more",
-        "3. [Open model beats larger rivals on coding tests & costs less](https://news.google.com/rss/articles/b1?oc=5) · Ars Technica, 17 Nov",
+        "3. [Open model beats larger rivals on coding tests & costs less](https://news.google.com/rss/articles/b1?oc=5) · Breakthrough · Ars Technica, 17 Nov",
         "**Opportunities**",
-        "4. [Free AI course with internship for students launched by IIT Madras](https://news.google.com/rss/articles/c1?oc=5) · NDTV, 18 Nov",
+        "4. [Free AI course with internship for students launched by IIT Madras](https://news.google.com/rss/articles/c1?oc=5) · Opportunity · NDTV, 18 Nov",
         "Say \"more on 2\" for the details of one.",
     ), text.lines())
     T.eq("…its links open on a tap", listOf("https://news.google.com/rss/articles/a2?oc=5", "https://news.google.com/rss/articles/a5?oc=5", "https://news.google.com/rss/articles/b1?oc=5", "https://news.google.com/rss/articles/c1?oc=5"), text.lines().mapNotNull { com.seyal.app.util.RichText.firstLink(it) })
@@ -2755,23 +2755,44 @@ fun testAwareness() {
 
     // The brief over the interests.
     val javaNews = Aware.merge(Aware.parse(feed(item("Spring Boot 4 released with faster start-up for Java services", "InfoQ", "j1", "Thu, 19 Nov 2026 03:00:00 GMT")), "new", "Java"), nowMs, 2)
-    val b = Aware.brief(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to javaNews, "gold price" to emptyList()), LocalDate.of(2026, 11, 19), 4, zone)
-    T.eq("the daily brief: warnings first, then each interest", listOf(
-        "**Dirghadarshi brief, Thu 19 Nov**: 4 headlines in 3 interests.",
-        "**Watch out**",
-        "1. [AI finds critical Java flaw that lets attackers run code, patch now](https://news.google.com/rss/articles/a2?oc=5) · BleepingComputer, 18 Nov · +2 more",
+    val b = Aware.brief(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to javaNews, "gold price" to emptyList()), LocalDate.of(2026, 11, 19), 5, zone, nowMs)
+    T.eq("the daily brief: only what an early adopter needs, what to act on first, then each interest", listOf(
+        "**Dirghadarshi brief, Thu 19 Nov**: 3 picked for an early adopter, out of 4 headlines in 3 interests.",
+        "**Act now**",
+        "1. [AI finds critical Java flaw that lets attackers run code, patch now](https://news.google.com/rss/articles/a2?oc=5) · Act now · BleepingComputer, 18 Nov · +2 more",
         "**AI**",
-        "2. [New AI chip factory opens in Chennai](https://news.google.com/rss/articles/a5?oc=5) · The Hindu, 18 Nov · +1 more",
-        "3. [Free AI course with internship for students launched by IIT Madras](https://news.google.com/rss/articles/c1?oc=5) · NDTV, 18 Nov",
+        "2. [Free AI course with internship for students launched by IIT Madras](https://news.google.com/rss/articles/c1?oc=5) · Opportunity · NDTV, 18 Nov",
         "**Java**",
-        "4. [Spring Boot 4 released with faster start-up for Java services](https://news.google.com/rss/articles/j1?oc=5) · InfoQ, 19 Nov",
-        "Say \"more on 2\" for the details of one.",
+        "3. [Spring Boot 4 released with faster start-up for Java services](https://news.google.com/rss/articles/j1?oc=5) · New to try · InfoQ, 19 Nov",
+        "Say \"more headlines\" for the other 1, or \"more on 2\" for the details of one.",
     ), b.text.lines())
-    val twice = Aware.brief(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to Aware.merge(Aware.parse(threatXml, "threat", "Java"), nowMs, 2)), LocalDate.of(2026, 11, 19), 4, zone)
-    T.check("a story that falls under two interests is one headline in the brief", twice.text.lines().first() == "**Dirghadarshi brief, Thu 19 Nov**: 3 headlines in 2 interests." && twice.text.lines().count { it.contains("Java flaw") } == 1 && twice.shown.size == 3 && twice.rest.isEmpty(), twice.text)
-    T.check("…its numbers are remembered in order", b.shown.map { it.item.source } == listOf("BleepingComputer", "The Hindu", "NDTV", "InfoQ") && b.rest.isEmpty())
-    T.eq("…nothing new is said plainly", "Nothing new today in AI, Java from the sources I could read.", Aware.brief(listOf("AI" to emptyList(), "Java" to emptyList()), LocalDate.of(2026, 11, 19), 4, zone).text)
-    T.eq("the notification's one line", "4 headlines, 1 to watch out for. AI finds critical Java flaw that lets attackers run code, patch now", Aware.notice(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to javaNews)))
+    val twice = Aware.brief(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to Aware.merge(Aware.parse(threatXml, "threat", "Java"), nowMs, 2)), LocalDate.of(2026, 11, 19), 5, zone, nowMs)
+    T.check("a story that falls under two interests is one headline in the brief", twice.text.lines().first() == "**Dirghadarshi brief, Thu 19 Nov**: 2 picked for an early adopter, out of 3 headlines in 2 interests." && twice.text.lines().count { it.contains("Java flaw") } == 1 && twice.shown.size == 2 && twice.rest.size == 1, twice.text)
+    T.check("…its numbers are remembered in order, and the headline that was not picked is kept for \"more headlines\"", b.shown.map { it.item.source } == listOf("BleepingComputer", "NDTV", "InfoQ") && b.rest.map { it.item.source } == listOf("The Hindu") && b.warned == 1)
+    T.eq("…nothing new is said plainly", "Nothing new today in AI, Java from the sources I could read.", Aware.brief(listOf("AI" to emptyList(), "Java" to emptyList()), LocalDate.of(2026, 11, 19), 5, zone, nowMs).text)
+    T.eq("…and so is a day with headlines but nothing to act on or try", listOf("**Dirghadarshi brief, Thu 19 Nov**: nothing today to act on or to try, out of 1 headline in 1 interest.", "Say \"more headlines\" to see them all."),
+        Aware.brief(listOf("AI" to Aware.merge(all, nowMs, 2).filter { it.item.source == "The Hindu" }), LocalDate.of(2026, 11, 19), 5, zone, nowMs).text.lines())
+    T.eq("the notification's one line", "3 picked for you out of 4, 1 to act on. AI finds critical Java flaw that lets attackers run code, patch now", Aware.notice(listOf("AI" to Aware.merge(all, nowMs, 2), "Java" to javaNews), nowMs))
+
+    // The picks (his words on 19 Nov: "make sure only these types of news makes me more like early adopter"), on headlines from his own screen.
+    fun hl(title: String, source: String = "Reuters", also: Int = 0, topic: String = "AI") = Aware.Headline(Aware.Item(title, source, "https://news.google.com/rss/articles/x", nowMs - 3_600_000L, "new", topic), also, false)
+    T.eq("five kinds of news change what a person can do", listOf("Act now", "Act now", "Act now", "Opportunity", "New to try", "Breakthrough", "Rule change", "Act now"), listOf(
+        "Vulnerability Hidden in nginx for 11 Years: AI Finds 4 in 90 Minutes; Patches Released, Urgent Updates Needed", "US cybersecurity agency urges immediate patching of critical Oracle Java vulnerability",
+        "AI model uncovers critical security vulnerability in Java: Report", "Google Renames Spark Agent to Tasks and Opens It Free, Five-Hour Usage Cap Taps \$30 Trillion Market",
+        "Spring Boot 4 released with faster start-up for Java services", "Open model beats larger rivals on coding tests & costs less", "Government notifies new rules for AI labels, deadline 1 January",
+        "தங்கத்தில் rhenium - உலோகத்தை கலந்து புதிய மோசடி | Rhenium Gold Scam").map { Aware.tag(hl(it)) })
+    T.eq("talk is not news to act on: someone warns, says, asks; a stock moves", emptyList<String>(), listOf(
+        "Another Anthropic researcher sends 'AI warning', says the technology can soon bully humans", "Microsoft CEO Satya Nadella has a warning about what happens when AI replaces human workers",
+        "Billionaire Stanley Druckenmiller's New AI Warning and Top 5 Stock Picks", "Black Friday warning: AI shopping agents and a new wave of cyber scams", "FBI Warns: AI Hackers Can Breach Systems in Under Three Hours",
+        "Does a Fed Warning on Disappointing AI Returns Matter for Invesco QQQ Trust (NASDAQ:QQQ)?", "Broadcom (AVGO) Named In ECB Warning On AI Debt Financing", "Are AI-driven changes to the graduate jobs market a concern?",
+        "CSAT Student's YouTube AI Fraud Claim Investigated", "Asked if 60,000 exit offers mean AI layoffs at Microsoft, Satya Nadella said: I wish I could just sit here", "AI Was Blamed for More Than 120,000 Layoffs in 2026. These 10 Jobs Are Still Growing Fast",
+        "Payment Fraud in the Age of AI", "New AI chip factory opens in Chennai", "조선일보: AI 사기 launches").filter { Aware.tag(hl(it)) != "" })
+    T.check("a share moving is talk, except when money is the interest itself", Aware.tag(hl("Chipmaker shares jump as it launches a new model")) == "" && Aware.tag(hl("Gold ETF launches with lower fees for small investors", topic = "gold price")) == "New to try")
+    T.check("one weak publisher alone is not a pick, unless it names a plain fix to make (shown with \"one source\")", Aware.tag(hl("New agent tool launches for developers", "BigGo Finance")) == "" && Aware.tag(hl("New agent tool launches for developers", "BigGo Finance", also = 1)) == "New to try" &&
+        Aware.tag(hl("Vulnerability Hidden in nginx for 11 Years: Patches Released", "BigGo Finance")) == "Act now" && Aware.caution(hl("Vulnerability Hidden in nginx for 11 Years: Patches Released", "BigGo Finance")) == "one source")
+    T.eq("how far a headline can be trusted as it stands", listOf("", "", "one source"), listOf(hl("x", "The Hindu"), hl("x", "Some Blog", also = 2), hl("x", "Some Blog")).map { Aware.caution(it) })
+    val ranked = Aware.picks(listOf(hl("Spring Boot 4 released with faster start-up", "Some Blog"), hl("Critical nginx vulnerability: patches released", "BleepingComputer", also = 3), hl("Free AI course for students in Tamil Nadu, applications open", "The Hindu"), hl("Someone says AI will change jobs", "Reuters")), 10, nowMs)
+    T.eq("the picks, best first: what to act on, then what is near and well carried", listOf("BleepingComputer", "The Hindu", "Some Blog"), ranked.map { it.item.source })
     T.eq("an alert at once: a warning carried by three publishers", listOf("BleepingComputer"), Aware.alerts(heads, emptySet()).map { it.item.source })
     T.eq("…not twice for the same story", 0, Aware.alerts(heads, setOf(Aware.key(heads[0].item.title))).size)
     T.eq("…and not for a warning only one publisher carries", 0, Aware.alerts(listOf(Aware.Headline(heads[0].item, 0, true)), emptySet()).size)
@@ -2849,7 +2870,7 @@ fun testAwareness() {
     // The Dirghadarshi tab (asked for on 19 Nov: "we can have Dirghadarshi as a separate tab").
     T.eq("a headline's small line: who, when, how many others", "BleepingComputer · 18 Nov · +2 more", Aware.meta(heads[0], zone))
     T.eq("…with nobody else carrying it", "NDTV · 18 Nov", Aware.meta(heads[3], zone))
-    T.eq("the brief's headings: warnings first, then the interest", listOf("Watch out", "AI", "AI", "Java"), b.shown.mapIndexed { i, h -> Aware.section(i, b.warned, h) })
+    T.eq("the brief's headings: what to act on first, then the interest", listOf("Act now", "AI", "Java"), b.shown.mapIndexed { i, h -> Aware.section(i, b.warned, h) })
     val why = Aware.explainAsk(Aware.Headline(Aware.Item("Should you buy gold now? Prices fall, order books thin as banks book profits", "Mint", "https://news.google.com/rss/articles/g1", nowMs - 86_400_000L, "rules", "gold price"), 0, false), zone)
     T.eq("\"What it means for me\" asks the thinking mode about that story", "What does this news mean for me? \"Should you buy gold now? Prices fall, order books thin as banks book profits\" (Mint, 18 Nov). Find the story by its title and read it first.", why)
     T.check("…and a headline with \"buy\", \"book\" or \"order\" in it is never taken as a purchase or a command", Preflight.kind(why) == null && Basics.plan(why, now, true) == null && Aware.asks(why) == null &&
@@ -2870,7 +2891,7 @@ fun testAwareness() {
     AwareStore.alerted(listOf(Aware.Alert("Critical Java flaw found by AI", "BleepingComputer", "https://news.google.com/rss/articles/a2?oc=5", "Java", 3, 111L)))
     AwareStore.alerted(listOf(Aware.Alert("Bank warns of a new UPI scam", "Mint", "https://news.google.com/rss/articles/u1", "gold price", 4, 222L)))
     AwareStore.init(dir)
-    T.check("the tab's brief survives a restart: its headlines, which are warnings, and what did not fit", AwareStore.briefHeads.map { it.item.source } == listOf("BleepingComputer", "The Hindu", "NDTV", "InfoQ") && AwareStore.briefWarned == 1 && AwareStore.briefRest.isEmpty() && AwareStore.latestAt == 5678L)
+    T.check("the tab's brief survives a restart: its headlines, which are warnings, and what did not fit", AwareStore.briefHeads.map { it.item.source } == listOf("BleepingComputer", "NDTV", "InfoQ") && AwareStore.briefWarned == 1 && AwareStore.briefRest.map { it.item.source } == listOf("The Hindu") && AwareStore.latestAt == 5678L)
     T.check("…and the alerts that were sent, newest first", AwareStore.alerts.map { it.source } == listOf("Mint", "BleepingComputer") && AwareStore.alerts[1].let { it.carriers == 3 && it.topic == "Java" && it.at == 111L })
     AwareStore.alerted((1..40).map { Aware.Alert("Alert $it", "S", "", "AI", 3, it.toLong()) }); T.eq("…thirty at most", 30, AwareStore.alerts.size)
     AwareStore.init(java.nio.file.Files.createTempDirectory("aware2").toFile())
@@ -2914,6 +2935,7 @@ fun testBookingByCode() {
     T.eq("the strip of dates is read from the words on the screen and where they are", listOf("2026-11-20", "2026-11-21", "2026-11-22", "2026-11-23", "2026-11-24", "2026-11-25"), strip?.chips?.map { it.day.toString() })
     T.eq("…each date's spot to press is the middle of its number", listOf(80 to 330, 788 to 330), listOf(strip!!.chips[0], strip.chips[4]).map { it.x to it.y })
     T.eq("…and how far apart they stand", 177, strip.pitch)
+    T.eq("…every date on the screen has its place, read or not", listOf(80 to 330, 965 to 330, null), listOf(LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 25), LocalDate.of(2026, 11, 26)).map { strip.where(it, 1080) })
     T.check("a show list with no dates has no strip", DayStrip.find(other, today) == null)
     T.check("two dates are not a strip; a weekday that does not fit its number is not a date", DayStrip.find(other + chip(80, "FRI", 20) + chip(257, "SAT", 21), today) == null &&
         DayStrip.find(other + chip(80, "MON", 20) + chip(257, "SAT", 21) + chip(434, "SUN", 22), today) == null)
@@ -2929,21 +2951,45 @@ fun testBookingByCode() {
 
     // Which one is highlighted: by what the app marks, else by the colour behind each number.
     val white = 0xFFFFFFFF.toInt(); val crimson = 0xFFDC3558.toInt(); val dark = 0xFF121212.toInt()
-    T.eq("where the colour is looked at: beside each number, inside its chip", listOf(24 to 330, 136 to 330, 201 to 330, 313 to 330), DayStrip.samplePoints(strip).take(4))
+    T.eq("where the colour is looked at: beside each number, inside its chip", listOf(27 to 330, 133 to 330, 204 to 330, 310 to 330), DayStrip.samplePoints(strip, 1080).take(4))
     fun cols(sel: Int, page: Int = white, fill: Int = crimson) = strip.chips.indices.flatMap { if (it == sel) listOf(fill, fill) else listOf(page, page) }
-    T.eq("the highlighted date is the one on a filled chip", "2026-11-20", DayStrip.byColor(strip, cols(0))?.day.toString())
-    T.eq("…wherever it stands, in dark mode too", "2026-11-24", DayStrip.byColor(strip, cols(4, dark))?.day.toString())
-    T.check("…none or two filled, or a picture that does not fit, tell nothing", DayStrip.byColor(strip, cols(-1)) == null && DayStrip.byColor(strip, cols(0).toMutableList().also { it[4] = crimson; it[5] = crimson }) == null && DayStrip.byColor(strip, cols(0).drop(1)) == null)
-    T.check("…a number's own ink under one of the two spots is not a filled chip", DayStrip.byColor(strip, cols(2).toMutableList().also { it[0] = 0xFF333333.toInt() })?.day.toString() == "2026-11-22")
+    T.eq("the highlighted date is the one on a filled chip", "2026-11-20", DayStrip.byColor(strip, 1080, cols(0)).toString())
+    T.eq("…wherever it stands, in dark mode too", "2026-11-24", DayStrip.byColor(strip, 1080, cols(4, dark)).toString())
+    T.check("…none or two filled, or a picture that does not fit, tell nothing", DayStrip.byColor(strip, 1080, cols(-1)) == null && DayStrip.byColor(strip, 1080, cols(0).toMutableList().also { it[4] = crimson; it[5] = crimson }) == null && DayStrip.byColor(strip, 1080, cols(0).drop(1)) == null)
+    T.check("…a number's own ink under one of the two spots is not a filled chip", DayStrip.byColor(strip, 1080, cols(2).toMutableList().also { it[0] = 0xFF333333.toInt() }).toString() == "2026-11-22")
     val marked = DayStrip.find(other + week.flatMapIndexed { i, (wd, n) -> chip(xs[i], wd, n, sel = i == 1) }, today)!!
-    T.eq("what the app marks is believed before any picture", "2026-11-21", DayStrip.selected(marked, cols(4))?.day.toString())
-    T.check("with no mark and no picture the highlighted date is not known", DayStrip.selected(strip, null) == null)
+    T.eq("what the app marks is believed before any picture", "2026-11-21", DayStrip.selected(marked, 1080, cols(4)).toString())
+    T.check("with no mark and no picture the highlighted date is not known", DayStrip.selected(strip, 1080, null) == null)
     val later = DayStrip.find(week.drop(1).flatMapIndexed { i, (wd, n) -> chip(xs[i], wd, n) } + chip(xs[5], "THU", 26), today)!!
-    T.eq("a day off the left edge: the strip is dragged for earlier days", listOf("earlier", "later", null), listOf(DayStrip.drag(later, LocalDate.of(2026, 11, 20)), DayStrip.drag(later, LocalDate.of(2026, 11, 29)), DayStrip.drag(later, LocalDate.of(2026, 11, 24))))
+    T.eq("a day off the left edge: the strip is dragged for earlier days", listOf("earlier", "later", null), listOf(DayStrip.drag(later, LocalDate.of(2026, 11, 20), 1080), DayStrip.drag(later, LocalDate.of(2026, 11, 29), 1080), DayStrip.drag(later, LocalDate.of(2026, 11, 24), 1080)))
     T.eq("what the AI is told: already selected", "Fri 20 Nov is already the selected day (its chip is the highlighted one), so nothing was tapped. Go on to the show times.", DayStrip.alreadySaid(LocalDate.of(2026, 11, 20)))
     T.check("…pressed and checked; pressed but not checkable; pressed and still wrong; not on the page", DayStrip.nowSaid(LocalDate.of(2026, 11, 20)).startsWith("Fri 20 Nov is now the selected day") && DayStrip.unsureSaid(LocalDate.of(2026, 11, 20)).contains("could not be checked") &&
         DayStrip.wrongSaid(LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 24)).startsWith("Not done:") && DayStrip.wrongSaid(LocalDate.of(2026, 11, 20), LocalDate.of(2026, 11, 24)).contains("Tue 24 Nov") &&
-        DayStrip.missingSaid(LocalDate.of(2026, 11, 20), later) == "Not done: this page has no chip for Fri 20 Nov. Its dates run from Sat 21 Nov to Thu 26 Nov. If the film has no show that day, tell the user which days it has and ask.")
+        DayStrip.missingSaid(LocalDate.of(2026, 11, 20), later.span(1080)) == "Not done: this page has no chip for Fri 20 Nov. Its dates run from Sat 21 Nov to Thu 26 Nov. If the film has no show that day, tell the user which days it has and ask.")
+
+    // Read by eye (recording of 19 Nov, 9:53 PM, v3.25.0: BookMyShow hands over no text for its dates, and the chip it
+    // names "Thu, 20 Nov" showed MON 23). The words then come from a picture; some may be misread or missed.
+    fun word(t: String, cx: Int, cy: Int, w: Int = 60, h: Int = 40) = DayStrip.Seen(t, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+    val eye = listOf(word("FRI", 80, 270), word("2O", 80, 330), word("NOV", 80, 390),                       // "20" misread: no date there
+        word("SAT", 257, 270), word("21", 257, 330), word("NOV", 257, 390), word("SUN", 434, 270), word("22", 434, 330), word("NOV", 434, 390),
+        word("MON", 611, 270), word("23", 611, 330), word("N0V", 611, 390),                                   // month misread: weekday is enough
+        word("TUE", 788, 270), word("24", 788, 330), word("NOV", 788, 390), word("25", 965, 330),             // weekday and month missed: no date there
+        word("Seyal", 300, 120), word("The", 380, 120), word("day:", 440, 120), word("Fri", 500, 120), word("20", 550, 120), word("Nov", 600, 120),   // Seyal's own status line
+        word("06:00", 150, 940, 110), word("AM", 240, 940), word("Tamil", 60, 480), word("2D", 150, 480))
+    val seenStrip = DayStrip.find(eye, today)
+    T.eq("dates read off a picture: the ones read for certain", listOf("2026-11-21", "2026-11-22", "2026-11-23", "2026-11-24"), seenStrip?.chips?.map { it.day.toString() })
+    T.eq("…place the ones that were misread or missed", listOf(80 to 330, 965 to 330), listOf(seenStrip!!.where(LocalDate.of(2026, 11, 20), 1080), seenStrip.where(LocalDate.of(2026, 11, 25), 1080)))
+    T.eq("…and every date on the screen is looked at for the highlight", "2026-11-20", DayStrip.byColor(seenStrip, 1080, (0..5).flatMap { if (it == 0) listOf(crimson, crimson) else listOf(white, white) }).toString())
+    T.check("…a reading that does not hang together is no strip (one date a chip too far)", DayStrip.find(listOf(word("SAT", 257, 270), word("21", 257, 330), word("SUN", 434, 270), word("22", 434, 330), word("TUE", 611, 270), word("24", 611, 330)), today) == null)
+    T.check("Dirghadarshi answers: which reading of the question, whose word counts, rupees and Indian units", Deep.system(false).let { it.contains("which reading you took") && it.contains("Whose word counts") && it.contains("The user lives in India") })
+    T.check("when the dates cannot be read, nothing is tapped and the AI is told why", DayStrip.UNREADABLE.startsWith("Not done, and nothing was tapped") && DayStrip.UNREADABLE.contains("screen_tap_at"))
+
+    // The "How many seats?" row, read the same way.
+    val nums = (1..10).map { word(if (it == 2) "Z" else it.toString(), 90 + (it - 1) * 100, 1640, 40, 50) } + listOf(word("How", 400, 1130), word("many", 520, 1130), word("seats?", 660, 1130), word("₹183.8", 520, 1900, 120), word("2", 900, 60), word("Tickets", 980, 60, 120))
+    val crow = DayStrip.countRow(nums)
+    T.eq("the row 1 … 10 is placed even when one number is misread", listOf(90, 190, 990), listOf(1L, 2L, 10L).map { crow?.xOf(it) })
+    T.eq("…and the number on the filled circle is the chosen one", 2L, crow?.byColor(1080, (1..10).flatMap { if (it == 2) listOf(crimson, crimson) else listOf(white, white) }))
+    T.check("…a few stray numbers are not such a row", DayStrip.countRow(listOf(word("1", 100, 500), word("2", 200, 500), word("3", 300, 500), word("7", 400, 900))) == null)
 
     // A tap on a date chip, however it is named, goes through the strip.
     T.eq("a date chip is known by any of its names", listOf("2026-11-20", "2026-11-20", "2026-11-20", "2026-11-22"),

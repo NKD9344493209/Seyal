@@ -12,8 +12,8 @@ android {
         applicationId = "com.seyal.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "3.25.0"
+        versionCode = 29
+        versionName = "3.26.0"
     }
 
     // Same debug key on every build, so a new APK installs over the old one (settings kept).
@@ -95,6 +95,9 @@ dependencies {
     // Reading Gmail over IMAP (app password).
     implementation("com.sun.mail:android-mail:1.6.7")
     implementation("com.sun.mail:android-activation:1.6.7")
+    // Reading text off a picture of the screen, on the phone itself (device/Eyes.kt): for apps that draw words they do
+    // not hand to accessibility, such as BookMyShow's dates. The Latin model is inside the app: no download, no internet.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
