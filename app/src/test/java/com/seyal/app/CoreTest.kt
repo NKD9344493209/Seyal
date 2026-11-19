@@ -2427,7 +2427,7 @@ fun testSixthVideos() {
     val shaped = "**Answer**: Wait two weeks.\n\n**Look ahead**: Prices drop in the sale.\n**Watch out**:\n- Fake sellers → buy from the brand store.\n**You may not know**: Exchange bonus.\n**Do now**: Set a price alert.\n**How sure**: Medium.\n**Sources**: https://example.com"
     T.eq("a shaped answer has its seven parts", listOf("Answer", "Look ahead", "Watch out", "You may not know", "Do now", "How sure", "Sources"), Deep.parts(shaped))
     T.eq("a plain answer has none", emptyList<String>(), Deep.parts("Wait two weeks: the answer to your question is that prices drop."))
-    T.check("the mode's rules reach the AI", Deep.SYSTEM.let { it.contains("DIRGHADARSHI MODE IS ON") && it.contains("Never answer such things from memory") && it.contains("**Watch out**") && it.contains("Never name a share") && it.contains("Check before you pay") })
+    T.check("the mode's rules reach the AI", Deep.system(full = true).let { it.contains("DIRGHADARSHI MODE IS ON") && it.contains("Never answer such things from memory") && it.contains("**Watch out**") && it.contains("Never name a share") && it.contains("Check before you pay") })
     T.check("the review asks for a critic's reading and only the final answer", Deep.REVIEW_NUDGE.let { it.contains("careful critic") && it.contains("not verified") && it.contains("do not mention the draft") })
     T.check("the look-up reminder forbids guessing", Deep.LOOKUP_NUDGE.contains("instead of guessing"))
     T.eq("the status says what it is doing", "Thinking far ahead…", Deep.status(0, reviewing = false))
@@ -2482,7 +2482,7 @@ fun testSeventhVideos() {
     T.check("a follow-up in a Dirghadarshi chat stays in it", !Agent.newTask(deepChat(2), "do gold price reduce") && !Agent.newTask(deepChat(3), "when it will decrease which month"))
     T.check("…also when the switch was turned on just now", !Agent.newTask(Session("pl", 1L).apply { repeat(2) { messages += Msg("user", listOf(Part.Text("q$it"))); messages += Msg("assistant", listOf(Part.Text("a$it"))) }; status = SessionStatus.DONE }, "is it a good time to buy gold", deep = true))
     T.check("…a booking still gets its own chat", Agent.newTask(deepChat(2), "book 2 tickets for OM tomorrow evening"))
-    T.check("the mode is told to choose", Deep.SYSTEM.let { it.contains("CHOOSE") && it.contains("the first word is Yes or No") && it.contains("are not answers") })
+    T.check("the mode is told to choose", Deep.system(full = false).let { it.contains("CHOOSE") && it.contains("the first word is the choice") && it.contains("are not answers") } && Deep.system(full = true).contains("CHOOSE"))
     T.check("…to give a lean on money questions without naming shares", Deep.SYSTEM.let { it.contains("Never name a share") && it.contains("do give your lean") && it.contains("general information") })
     T.check("…and to keep the world scan for technology questions", Deep.SYSTEM.contains("never for other subjects such as gold"))
     val src = com.seyal.app.util.RichText.pieces("[Gold Price Forecast 2026 - GoldPriceData.com](https://www.goldpricedata.com/en/gold-price-forecast/)")
@@ -2497,8 +2497,88 @@ fun testSeventhVideos() {
     T.eq("a short address is shown whole", "irctc.co.in", com.seyal.app.util.RichText.short("https://www.irctc.co.in/"))
 }
 
+fun testEighthVideos() {
+    println("Recordings of 19 Nov, 10:23 to 10:34 (v3.20.0): the booking works but takes four minutes; an old film is searched for without end")
+    val web = listOf(
+        "O.M Operation Mole (2026) - Movie | Reviews, Cast & Release Date in coimbatore - BookMyShow" to "https://in.bookmyshow.com/movies/coimbatore/o-m-operation-mole/ET00451234",
+        "O.M Operation Mole - Wikipedia" to "https://en.wikipedia.org/wiki/O.M_Operation_Mole",
+        "Movies in Coimbatore - BookMyShow" to "https://in.bookmyshow.com/explore/movies-coimbatore",
+        "Ramayana (2026) - BookMyShow" to "https://in.bookmyshow.com/coimbatore/movies/ramayana/ET00401111",
+    )
+    T.eq("the film's own page is found among web results", "https://in.bookmyshow.com/movies/coimbatore/o-m-operation-mole/ET00451234", Opener.filmLink(web, "OM", "Coimbatore"))
+    T.eq("…in the older address shape too", "https://in.bookmyshow.com/coimbatore/movies/ramayana/ET00401111", Opener.filmLink(web, "Ramayana", "coimbatore"))
+    T.eq("…a page that is not a film's is never taken", null, Opener.filmLink(web, "Movies", "Coimbatore"))
+    T.eq("…nor a film that is not among the results", null, Opener.filmLink(web, "Bairavaa", "Coimbatore"))
+    val twoFilms = listOf("a" to "https://in.bookmyshow.com/movies/chennai/valmiki-ramayana/ET00400001", "b" to "https://in.bookmyshow.com/movies/chennai/ramayana/ET00401111", "c" to "https://in.bookmyshow.com/movies/coimbatore/ramayana/ET00401111", "d" to "https://in.bookmyshow.com/movies/coimbatore/valmiki-ramayana/ET00400001")
+    T.eq("two films match: the one with exactly that name, for the user's city", "https://in.bookmyshow.com/movies/coimbatore/ramayana/ET00401111", Opener.filmLink(twoFilms, "Ramayana", "Coimbatore"))
+    T.eq("a link made for another city is never taken", null, Opener.filmLink(twoFilms.take(2), "Ramayana", "Coimbatore"))
+    T.eq("…nor any city's link when the home city is not known", null, Opener.filmLink(twoFilms, "Ramayana", ""))
+    T.eq("a link for no city is fine either way", "https://in.bookmyshow.com/movies/scene/ET00409999", Opener.filmLink(listOf("x" to "https://in.bookmyshow.com/movies/scene/ET00409999"), "Scene", ""))
+    T.eq("the city's own link is preferred to the one for no city", "https://in.bookmyshow.com/movies/new-delhi/scene/ET00409999", Opener.filmLink(listOf("x" to "https://in.bookmyshow.com/movies/scene/ET00409999", "y" to "https://in.bookmyshow.com/movies/new-delhi/scene/ET00409999"), "Scene", "New Delhi"))
+    T.eq("two films match and neither is exactly it: left to the app's search", null, Opener.filmLink(listOf("a" to "https://in.bookmyshow.com/movies/valmiki-ramayana/ET00400001", "b" to "https://in.bookmyshow.com/movies/ramayana-the-legend/ET00400002"), "Ramayana"))
+    T.eq("a link with tracking after it is cut to the film's page", "https://in.bookmyshow.com/movies/coimbatore/scene/ET00409999", Opener.filmLink(listOf("x" to "https://in.bookmyshow.com/movies/coimbatore/scene/ET00409999?utm_source=x"), "scene", "Coimbatore"))
+    T.eq("a look-alike site is not BookMyShow", null, Opener.filmLink(listOf("x" to "https://in.bookmyshow.com.tickets-free.example.com/movies/scene/ET00409999"), "scene"))
+    T.eq("what is searched for", "OM movie bookmyshow Coimbatore", Opener.filmSearch("OM", "Coimbatore"))
+    T.eq("…with no home city", "OM movie bookmyshow", Opener.filmSearch("OM", " "))
+    val filmPage = Opener.items("1 [button] Back @40,60\n2 [text] O.M Operation Mole @300,60\n3 [text] Releasing on 20 Nov, 2026 @300,400\n4 [button] Book tickets @300,1900")
+    T.check("the page that opened is the film asked for", Opener.pageIsAbout(filmPage, "OM") && !Opener.pageIsAbout(filmPage, "Ramayana"))
+    T.check("a film releasing tomorrow with Book tickets is bookable", Detour.note("Releasing on 20 Nov, 2026\nBook tickets") == null && Opener.bookButton(filmPage)?.id == 4)
+    val ad = Opener.items("1 [button] Dismiss @900,150\n2 [image] RuPay AURA INDIA TOUR @500,900\n3 [button] Book Now @500,1800")
+    T.check("a full-screen advert at launch is seen", Opener.advert(ad) && Opener.closeButton(ad)?.id == 1)
+    T.check("…a normal page is not one", !Opener.advert(Opener.items("1 [tap] Movies @100,300\n2 [tap] Search @900,2300")))
+
+    val none = "1 [field] Bairavaa @500,60\n2 [tap] All (selected) @60,150\n3 [text] Showing 0 results @100,200\n4 [text] No Search Results for \"bairavaa\" @300,300\n5 [text] Check out trending movies and events near you @300,380\n6 [heading] Popular/Trending Results @300,500\n7 [tap] Avengers: Doomsday @150,900"
+    T.check("the app's search has nothing by that name", Detour.nothingFound(none))
+    T.check("…a page with results does not say so", !Detour.nothingFound("1 [field] OM @500,60\n2 [tap] O.M Operation Mole @300,300"))
+    T.check("the AI is told it is a dead end, not to keep looking", Detour.note(none).orEmpty().let { it.startsWith("DEAD END") && it.contains("Do NOT retype") && it.contains("re-release") })
+    T.check("the user is told at once", Detour.notRunning("Bairavaa", "none").let { it.startsWith("\"Bairavaa\" is not in cinemas now") && it.contains("re-released") })
+    T.check("…a film whose run is over", Detour.notRunning("Sikandar", "ended").contains("not in cinemas any more"))
+    T.check("…a film not yet open for booking", Detour.notRunning("Jailer 2", "upcoming").contains("not open for booking yet"))
+    T.check("…with no name known", Detour.notRunning("", "none").startsWith("That film is not in cinemas now"))
+
+    val sheet = "1 [text] How many seats? @500,400\n2 [tap] 2 (selected) @180,560\n3 [text] GOLD @300,620\n4 [text] ₹190 @300,650\n5 [text] FILLING FAST @300,670\n6 [text] SILVER @700,620\n7 [text] ₹190 @700,650\n8 [text] SOLD OUT @700,670\n9 [button] Select Seats @500,700"
+    T.eq("the prices on the seat sheet", listOf(190, 190), SeatScreen.prices(sheet))
+    T.eq("…written the other ways", listOf(190, 1200, 250), SeatScreen.prices("Rs.190 GOLD · Rs. 1,200 RECLINER · INR 250"))
+    T.check("every class is over the limit: asked before the seats are picked", SeatScreen.overBudget(sheet, Order("MOVIE", item = "OM", count = 2, maxEach = 170)).orEmpty().let { it.contains("cheapest is ₹190") && it.contains("limit of ₹170") && it.contains("before any seat is picked") && it.contains("do not ask about the price a second time") })
+    T.eq("within the limit: nothing to ask", null, SeatScreen.overBudget(sheet, Order("MOVIE", item = "OM", count = 2, maxEach = 200)))
+    T.eq("one class within the limit is enough", null, SeatScreen.overBudget("GOLD ₹190 · SILVER ₹150", Order("MOVIE", maxEach = 170)))
+    T.eq("no limit given: nothing to ask", null, SeatScreen.overBudget(sheet, Order("MOVIE", item = "OM", count = 2)))
+    T.eq("no price on the screen: nothing to ask", null, SeatScreen.overBudget("Pick your seats", Order("MOVIE", maxEach = 170)))
+
+    println("\"give the results in shorter words; extend only when I ask; accurate and precise, major decisions rest on it\"")
+    val short = Deep.system(full = false); val full = Deep.system(full = true)
+    T.check("the answer is short unless more is asked for", short.contains("ANSWER SHAPE: SHORT") && short.contains("About 80 words") && short.contains("Say \"more\" for the full view") && !short.contains("**Look ahead**"))
+    T.check("…with why, the risk and how sure", short.contains("**Why**") && short.contains("**Risk**") && short.contains("**How sure**") && short.contains("**Sources**"))
+    T.check("the full view has every part", full.contains("ANSWER SHAPE: FULL") && listOf("**Look ahead**", "**Watch out**", "**You may not know**", "**Do now**").all { full.contains(it) } && !full.contains("About 80 words"))
+    T.check("neither leaves the placeholder in", !short.contains("%SHAPE%") && !full.contains("%SHAPE%"))
+    T.check("precision is demanded in both", listOf(short, full).all { it.contains("Exact figures, with unit and date") && it.contains("two independent sources") && it.contains("I could not verify enough to say") && it.contains("Never fill the gap with a guess") })
+    for (w in listOf("more", "More.", "tell me more", "explain", "explain in detail", "elaborate", "extend it", "full view", "why?", "give me the full analysis", "can you explain more about the risk", "innum sollu", "விரிவாக"))
+        T.check("asks for the long answer: $w", Deep.wantsMore(w))
+    for (w in listOf("is it a good time to buy gold", "which month does it fall", "yes or no", "more than 5 lakh or less?", "what about silver", "should I extend my loan"))
+        T.check("a new question keeps the short answer: $w", !Deep.wantsMore(w))
+    val shortChat = Session("sh1", 1L).apply { deep = true; messages += Msg("user", listOf(Part.Text("is it a good time to buy gold"))) }
+    val moreChat = Session("sh2", 1L).apply { deep = true; messages += Msg("user", listOf(Part.Text("is it a good time to buy gold"))); messages += Msg("assistant", listOf(Part.Text("**Answer**: Wait."))); messages += Msg("user", listOf(Part.Text("more"))) }
+    T.check("the prompt follows what was last asked", Prompts.modeSection(shortChat).contains("ANSWER SHAPE: SHORT") && Prompts.modeSection(moreChat).contains("ANSWER SHAPE: FULL"))
+    T.eq("a short answer has its five parts", listOf("Answer", "Why", "Risk", "How sure", "Sources"), Deep.parts("**Answer**: Wait.\n**Why**:\n- Price is ₹1,35,400.\n**Risk**: It may rise → buy a part now.\n**How sure**: Medium.\n**Sources**:\n[Times of India](https://example.com)"))
+    T.check("the review checks every figure one by one", Deep.REVIEW_NUDGE.let { it.contains("EVERY number, date, price and name") && it.contains("two independent sources") && it.contains("short unless the user asked for more") })
+
+    val read = "{\"results\":[{\"title\":\"Gold rate today\",\"snippet\":\"24K gold is Rs 1,35,400 per 10 grams on 18 Nov 2026, down from Rs 1,44,000 on 3 Nov.\"}],\"pages\":[{\"text\":\"Gold fell 5.9% in two weeks. Making charges are 8 to 12 per cent. GST is 3%. Imports rose to 2.1 billion dollars.\"}]}\nis it good time buy the gold or wait, I have 2 lakh"
+    T.eq("figures that were read are accepted", emptyList<String>(), Deep.unverified("**Answer**: Wait. Gold is ₹1,35,400 per 10 g (18 Nov 2026), down 5.9% from ₹1,44,000.\n**Why**:\n1. GST is 3% and making charges 8 to 12%.\n2. Your ₹2 lakh buys less today.", read))
+    T.eq("…across spellings: lakh and digits", emptyList<String>(), Deep.unverified("Gold is about ₹1.35 lakh per 10 g, was ₹1.44 lakh.", read))
+    T.eq("…digits in the answer, lakh in what was read", emptyList<String>(), Deep.unverified("The flat costs ₹45,00,000 and the loan is 2,10,00,000.", "Price: 45 lakh. Loan sanctioned: 2.1 crore."))
+    T.eq("…billion and million", emptyList<String>(), Deep.unverified("Imports were $2.1 billion.", read))
+    T.eq("a figure that is in nothing that was read is caught", listOf("₹1,29,000", "7.5%"), Deep.unverified("**Answer**: Wait. It should fall to ₹1,29,000 by January, a 7.5% drop from ₹1,35,400.", read))
+    T.eq("…unless it is shown as the AI's own sum", emptyList<String>(), Deep.unverified("The fall is ₹8,600 by my sum: 1,44,000 − 1,35,400.", read))
+    T.eq("…or marked not verified", emptyList<String>(), Deep.unverified("Some dealers quote ₹1,31,000 (not verified).", read))
+    T.eq("list numbers, days, years and small counts are not figures", emptyList<String>(), Deep.unverified("1. Buy in 3 parts over 6 months.\n2. Review on 15 January 2027.\n3. Keep 2 sources.", read))
+    T.eq("a link is not a claim", emptyList<String>(), Deep.unverified("**Sources**:\n[Gold rate 2026](https://example.com/gold/135999/rates?id=4821)\nhttps://example.com/7731", read))
+    T.eq("a wrong decimal is caught", listOf("6.4%"), Deep.unverified("Gold fell 6.4% in two weeks.", read))
+    T.check("at most six are listed", Deep.unverified("111, 222, 333, 444, 555, 666, 777, 888", "").size == 6)
+    T.check("the correction names them", Deep.factsNudge(listOf("₹1,29,000", "7.5%")).let { it.contains("₹1,29,000, 7.5%") && it.contains("by my sum") && it.contains("Do not mention this check") })
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -2507,7 +2587,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

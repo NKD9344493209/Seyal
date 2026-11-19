@@ -227,6 +227,25 @@ class Order(
 
 /** Checks made on the seat-picking screen, before the user is handed the seats. */
 object SeatScreen {
+    private val price = Regex("(?:₹|\\bRs\\.?|\\bINR)\\s?(\\d{2,5})(?:\\.\\d{1,2})?(?![\\d,])", RegexOption.IGNORE_CASE)
+
+    /** Every price on the screen, in rupees ("₹190", "Rs.190", "Rs. 1,200" → 190, 190, 1200). */
+    fun prices(screen: String): List<Int> = price.findAll(screen.replace(Regex("(?<=\\d),(?=\\d{3})"), "")).mapNotNull { it.groupValues[1].toIntOrNull() }.filter { it in 20..20000 }.toList()
+
+    /**
+     * Before the user is asked to pick seats: is every seat class on this screen dearer than the most they said they
+     * would pay? Then they are asked first. (On a real phone the user picked two seats, and only then was told that
+     * ₹190 was over their ₹170.) Null when the limit is met, not given, or no price is on the screen.
+     */
+    fun overBudget(screen: String, order: Order?): String? {
+        val max = order?.maxEach ?: 0
+        val cheapest = prices(screen).minOrNull() ?: return null
+        if (max <= 0 || cheapest <= max) return null
+        return "Every seat here costs more than the user's limit of ₹$max each: the cheapest is ₹$cheapest. ask_user now, before any seat is picked: " +
+            "\"Tickets here are ₹$cheapest each, above your ₹$max. Go ahead at ₹$cheapest, or look for another show?\" with those two options. " +
+            "If they say go ahead, call your_turn again and do not ask about the price a second time."
+    }
+
     private val written = Regex("\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\b|\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s+\\d{1,2}\\b|\\b(?:today|tomorrow)\\b", RegexOption.IGNORE_CASE)
     private val tickets = Regex("\\b(\\d{1,2})\\s*(?:tickets?|seats?(?!\\s*(?:left|available|remaining|only)))\\b", RegexOption.IGNORE_CASE)
 

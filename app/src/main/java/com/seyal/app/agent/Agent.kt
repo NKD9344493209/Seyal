@@ -518,6 +518,8 @@ object Agent {
         try {
             while (coroutineContext.isActive) {
                 pauseGate.await()
+                // A dead end met during the last step (the app's search has nothing by that name, twice over): stop here.
+                deadEnds.remove(s.id)?.let { end -> finish(s, SessionStatus.DONE, end); return }
                 // The words of a new request (first round only).
                 val said = if (!firstRound) "" else lock.withLock { s.messages.lastOrNull() }?.takeIf { it.role == "user" && it.parts.none { p -> p is Part.Image } }?.text?.removePrefix(MIDTASK).orEmpty()
                 // Screen control may be resting (payment apps refuse to pay while it is on): it is switched on, or asked
@@ -646,6 +648,12 @@ object Agent {
                             if (question != null) { runSynthetic(s, question, ask); s.steps++; stepsThisRun++ }
                             // 3. Write the order down once, in the user's terms. Every later step is held to it.
                             var written = pre?.calls?.firstOrNull { it.name == "details_complete" }?.args?.takeIf { question == null }
+                            // Meanwhile the film's own page is looked for on the web (two seconds, in the background):
+                            // opening it skips the app's splash, adverts and search box.
+                            if (kind == Preflight.Kind.MOVIE && ScreenDriver.available) {
+                                val title = Opener.movieQuery(Order.itemFromWords(lock.withLock { requestWords(s) }))
+                                if (title.isNotBlank()) filmLinks[s.id] = scope.async { title to findFilmLink(title) }
+                            }
                             if (written == null && question != null) {
                                 report("Noting your details…")
                                 written = try {
@@ -672,7 +680,10 @@ object Agent {
                             // done by code, at once, instead of one AI question per tap.
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                             stepsThisRun += runCatching { runOpener(s, kind, byName) }.getOrElse { e -> if (e is kotlinx.coroutines.CancellationException) throw e; 0 }
+                            filmLinks.remove(s.id)?.cancel()
                             if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
+                            // The film is not running: said at once, with no AI steps spent looking further.
+                            deadEnds.remove(s.id)?.let { end -> finish(s, SessionStatus.DONE, end); return }
                         }
                     }
                 }
@@ -745,6 +756,20 @@ object Agent {
                         s.checked += "deep-review"
                         lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Deep.REVIEW_NUDGE))); touch(s) }
                         continue
+                    }
+                    // …and every figure in it must be in something that was read (or in the user's own words).
+                    if (s.deep && s.parentId == null && "deep-facts" !in s.checked && !usedScreen && s.order == null) {
+                        val evidence = lock.withLock {
+                            s.messages.filter { it.role == "tool" }.flatMap { it.results }.filter { it.name in Deep.lookups }.joinToString("\n") { it.output.toString() } + "\n" + userWords(s).joinToString("\n")
+                        }
+                        val looked = lock.withLock { didSince(s).any { it.name in Deep.lookups } } || lock.withLock { s.messages.any { m -> m.role == "tool" && m.results.any { it.name in Deep.lookups } } }
+                        val loose = if (looked) Deep.unverified(resp.text, evidence) else emptyList()
+                        if (loose.isNotEmpty()) {
+                            s.checked += "deep-facts"
+                            report("Checking the figures…")
+                            lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + Deep.factsNudge(loose)))); touch(s) }
+                            continue
+                        }
                     }
                     // "Done" has to mean done: compare what was asked with what happened, and send the AI back once per gap.
                     val gap = if (s.source == "user" && s.parentId == null && s.checked.size < 5) lock.withLock {
@@ -877,14 +902,15 @@ object Agent {
                     screen = look(1200); looks = 0
                     continue
                 }
-                if (items.any { it.isField }) { trace += "the search box is open"; return true }
-                val close = if (closed < 2 && screen?.optBoolean("popup") == true) Opener.closeButton(items) else null
+                // A full-screen advert at launch ("Dismiss", "Skip") is closed first: typing over it went nowhere.
+                val close = if (closed < 2 && (screen?.optBoolean("popup") == true || Opener.advert(items))) Opener.closeButton(items) else null
                 if (close != null) {
                     closed++
                     trace += "closed a popup (\"${close.label}\")"
                     screen = (step("screen_tap", tap(close)) ?: return false).optJSONObject("screen")
                     continue
                 }
+                if (items.any { it.isField }) { trace += "the search box is open"; return true }
                 if (searchTaps < 2) {
                     val entry = Opener.searchEntry(items)
                     val bar = if (food) "Search for" else "Search"
@@ -903,8 +929,8 @@ object Agent {
                         continue
                     }
                 }
-                // Still drawing? Look again before trying anything else.
-                if (looks < 3) { looks++; screen = look(800); continue }
+                // Still drawing (a splash screen takes four or five seconds)? Look again before trying anything else.
+                if (looks < 6) { looks++; screen = look(800); continue }
                 if (backed) { trace += "found no search on this page"; return false }
                 backed = true
                 trace += "pressed Back"
@@ -932,6 +958,25 @@ object Agent {
         when (plan) {
             is Opener.Plan.Link -> { step("open_url", JSONObject().put("url", plan.url)) }
             is Opener.Plan.Movie -> {
+                // 1. The film's own page, found on the web and opened in the app: one step, past the splash, the adverts and the search.
+                val early = filmLinks.remove(s.id)?.let { job -> withTimeoutOrNull(5000) { runCatching { job.await() }.getOrNull() } }
+                val link = if (early != null && early.first.equals(plan.title, true)) early.second else { report("Finding the film's page…"); withTimeoutOrNull(8000) { findFilmLink(plan.title) } }
+                if (link != null && step("open_url", JSONObject().put("url", link)) != null) {
+                    var page = look(1500); var tries = 0
+                    fun text() = page?.optString("elements").orEmpty()
+                    while (tries < 5 && Opener.bookButton(els(page)) == null && Detour.note(text()) == null) { tries++; page = look(900) }
+                    if (ScreenDriver.frontPackage() == Opener.BMS && Opener.pageIsAbout(els(page), plan.title)) {
+                        trace += "opened the film's own page from the web"
+                        when {
+                            Detour.ended(text()) -> { deadEnds[s.id] = Detour.notRunning(plan.title, "ended"); return n }
+                            Detour.upcoming(text()) -> { deadEnds[s.id] = Detour.notRunning(plan.title, "upcoming"); return n }
+                        }
+                        val book = Opener.bookButton(els(page))
+                        if (book != null) { trace += "tapped \"${book.label}\""; step("screen_tap", tap(book)); leaveTrace(); return n }
+                        trace += "no Book tickets button on it"
+                    } else trace += "the web link did not open the film in the app"
+                }
+                // 2. Otherwise through the app's own search.
                 var o = step("open_app", JSONObject().put("name", plan.app)) ?: return n
                 trace += "opened ${plan.app}"
                 val open = toSearch(o.optString("package"), o.optJSONObject("screen"), food = false, film = plan.title)
@@ -952,6 +997,12 @@ object Agent {
                         waits = 0
                         while (results.none { it.showing == Opener.Showing.NOW } && waits < 3) { waits++; results = Opener.movieResults(els(look(700)), plan.title) }
                     }
+                }
+                // The app itself says it has nothing by that name: the film is not running. Said at once.
+                if (results.isEmpty() && Detour.nothingFound(runCatching { ScreenDriver.read().optString("elements") }.getOrDefault(""))) {
+                    trace += "the app's search has no results"
+                    deadEnds[s.id] = Detour.notRunning(plan.title, "none")
+                    return n
                 }
                 when (val c = Opener.chooseMovie(results, plan.title)) {
                     is Opener.Choice.Tap -> {
@@ -1137,6 +1188,14 @@ object Agent {
         // The reason goes first: the one-line result shown in lists is cut short.
         else SessionStatus.FAILED to "Not finished. $why Done so far: $did. Say \"continue\" to carry on."
     }
+
+    /** A request that code has found cannot go on (the film is not running): the words to finish with, by chat id. */
+    private val deadEnds = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** The film's own page, looked for on the web while the booking details are still being noted: chat id → (title, link). */
+    private val filmLinks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Pair<String, String?>>>()
+
+    private suspend fun findFilmLink(title: String): String? =
+        runCatching { Opener.filmLink(com.seyal.app.tools.WebTools.links(Opener.filmSearch(title, Settings.homeCity)), title, Settings.homeCity) }.getOrNull()
 
     /** What Seyal is doing this moment, in words ("Noting your details…", "Waiting 20 s for the AI's limit"): shown under the chat. */
     private val _progress = MutableStateFlow("")
@@ -1335,7 +1394,11 @@ object Agent {
                 screen?.let { r.output.put("screen", it) }
             } else if (s.order?.kind == Preflight.Kind.MOVIE.name) {
                 // 2. the page of a film that is not out yet, or no longer running: nothing to book there, however far it is scrolled.
-                Detour.note(r.output.optJSONObject("screen")?.optString("elements").orEmpty())?.let { r.output.put("wrong_turn", it) }
+                val page = r.output.optJSONObject("screen")?.optString("elements").orEmpty()
+                Detour.note(page)?.let { r.output.put("wrong_turn", it) }
+                // The app's search has nothing by that name. Told once; if the AI keeps looking, the request ends here.
+                // (On a real phone it retyped, switched tabs and scrolled for 18 steps for a film from years ago.)
+                if (Detour.nothingFound(page) && !s.checked.add("nofind")) deadEnds[s.id] = Detour.notRunning(s.order?.item.orEmpty(), "none")
             }
         }
         if (usesScreen(tool.name)) ScreenDriver.workAppNow()?.let { s.workApp = it }

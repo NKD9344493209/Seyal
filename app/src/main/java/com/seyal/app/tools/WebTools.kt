@@ -45,6 +45,13 @@ object WebTools {
         )
     }
 
+    /** The top results for [query] as (title, link), for code that only needs to find a page. Empty when the search site does not answer. */
+    suspend fun links(query: String, count: Int = 8): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+        val found = runCatching { Parsers.searchResults(http("https://html.duckduckgo.com/html/?q=${URLEncoder.encode(query, "UTF-8")}", timeoutMs = 7_000), count.coerceIn(1, 10)) }.getOrNull()
+            ?: return@withContext emptyList()
+        (0 until found.length()).mapNotNull { i -> found.optJSONObject(i)?.let { it.optString("title") to it.optString("url") } }.filter { it.second.startsWith("http") }
+    }
+
     private suspend fun search(query: String, count: Int, read: Int): ToolResult = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext ToolResult.Failed("Empty search")
         fun find(q: String): JSONArray? = runCatching { Parsers.searchResults(http("https://html.duckduckgo.com/html/?q=${URLEncoder.encode(q, "UTF-8")}"), count.coerceIn(1, 10)) }.getOrNull()

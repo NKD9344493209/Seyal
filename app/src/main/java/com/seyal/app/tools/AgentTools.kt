@@ -17,6 +17,8 @@ import org.json.JSONObject
 object AgentTools {
     /** How many times a chat's seat hand-over was held back for a wrong day or count (twice at most, then it goes through). */
     private val seatBlocks = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** Chats whose seat hand-over has already been checked against the user's price limit. */
+    private val priceAsked: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
 
     val all: List<Tool> by lazy {
@@ -43,6 +45,8 @@ object AgentTools {
                 if (Regex("seat|berth", RegexOption.IGNORE_CASE).containsMatchIn(what) && (seatBlocks[ctx.sessionId] ?: 0) < 2) {
                     val order = com.seyal.app.agent.Agent.session(ctx.sessionId)?.order
                     val text = runCatching { com.seyal.app.device.ScreenDriver.read().optString("elements") }.getOrDefault("")
+                    // The price is asked about before the seats are picked, once.
+                    if (priceAsked.add(ctx.sessionId)) com.seyal.app.agent.SeatScreen.overBudget(text, order)?.let { dear -> return@Tool ToolResult.Failed("Not yet: $dear") }
                     com.seyal.app.agent.SeatScreen.problem(text, order, java.time.LocalDateTime.now())?.let { wrong ->
                         seatBlocks[ctx.sessionId] = (seatBlocks[ctx.sessionId] ?: 0) + 1
                         return@Tool ToolResult.Failed("Not yet: $wrong Then call your_turn again.")

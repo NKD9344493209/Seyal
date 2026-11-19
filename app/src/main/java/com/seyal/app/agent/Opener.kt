@@ -194,7 +194,50 @@ object Opener {
         )
     }
 
+    const val BMS = "com.bt.bms"
+    private val filmUrl = Regex("^https?://in\\.bookmyshow\\.com/(?:([a-z-]+)/)?movies/(?:([a-z-]+)/)?([a-z0-9-]+)/(ET\\d{6,})", I)
+
+    /** What to search the web for to find a film's own BookMyShow page. */
+    fun filmSearch(title: String, city: String): String = listOf(title, "movie", "bookmyshow", city.trim()).filter { it.isNotBlank() }.joinToString(" ")
+
+    /**
+     * The film's own BookMyShow page among web [results] (title to link). Opening that link lands on the film in
+     * the app, past the splash, the adverts and the search box: on a real phone the code-driven search never got
+     * through those, while a link found this way did, twice. Only a link whose name IS the film is taken; when
+     * the results hold different films that match ("Ramayana", "Valmiki Ramayana"), the exact name wins, and
+     * with no exact name nothing is taken (the app's own search decides). A link made for another city is never
+     * taken (it could show that city's theatres): it must be for the user's [city] or for no city at all.
+     */
+    fun filmLink(results: List<Pair<String, String>>, title: String, city: String = ""): String? {
+        val w = core(title)
+        if (w.isEmpty()) return null
+        val home = city.trim().lowercase().replace(Regex("\\s+"), "-")
+        class Hit(val link: String, val words: List<String>, val forHome: Boolean)
+        val found = LinkedHashMap<String, Hit>()   // film code → its best link
+        for ((_, url) in results) {
+            val m = filmUrl.find(url.trim()) ?: continue
+            val place = m.groupValues[1].ifBlank { m.groupValues[2] }.lowercase()
+            if (place.isNotBlank() && place != home) continue
+            val words = toks(m.groupValues[3].replace('-', ' '))
+            if (!w.all { it in words }) continue
+            val code = m.groupValues[4].uppercase()
+            val hit = Hit(m.value, words, place.isNotBlank())
+            val had = found[code]
+            if (had == null || (hit.forHome && !had.forHome)) found[code] = hit
+        }
+        if (found.isEmpty()) return null
+        found.values.firstOrNull { it.words == w }?.let { return it.link }
+        return found.values.singleOrNull()?.link
+    }
+
+    /** The page now on the screen is about [title] (its name is somewhere on it). */
+    fun pageIsAbout(items: List<Item>, title: String): Boolean = items.any { !it.isField && it.label.length <= 80 && about(it.label, title) }
+
     private val closeRx = Regex("^(close|dismiss|✕|×|x|not now|skip|maybe later|later|no,? thanks)$", I)
+    private val adRx = Regex("^(dismiss|skip|skip ad|close ad)$", I)
+    /** A full-screen advert is lying over the app: it has its own "Dismiss" or "Skip". */
+    fun advert(items: List<Item>): Boolean = items.any { !it.isField && adRx.matches(it.label.trim()) }
+
     /** The button that closes an offer or a notice lying over the app. */
     fun closeButton(items: List<Item>): Item? = items.firstOrNull { !it.isField && closeRx.matches(it.label.trim()) }
 
@@ -248,8 +291,25 @@ object Detour {
     const val ENDED = "WRONG TURN: this film is NOT in cinemas any more (\"Out of cinemas\", \"No watch options\"). Nothing can be booked here. Press Back now. " +
         "Only a search result marked \"In cinemas now\" whose name is the film the user asked for can be booked. If there is none, ask_user: say their film is not running and what the search shows. Never book a different film."
 
+    private val none = Regex("\\bno search results? for\\b|\\bno results? found for\\b", I)
+    /** The app's own search says it has nothing by that name. */
+    fun nothingFound(screen: String): Boolean = none.containsMatchIn(screen)
+
+    const val NOT_FOUND = "DEAD END: the app's own search has NO RESULTS for this name. That is final: the film is not in cinemas now (an old film returns only on a re-release). " +
+        "Do NOT retype it, switch tabs, scroll, tap the trending films or search the web. Answer the user now, with no more steps: say it is not running at present and that you can book it when it is re-released, and offer to show what is running."
+
     /** What to tell the AI about the page it has landed on, or null when the page is fine. */
-    fun note(screen: String): String? = when { upcoming(screen) -> UPCOMING; ended(screen) -> ENDED; else -> null }
+    fun note(screen: String): String? = when { nothingFound(screen) -> NOT_FOUND; upcoming(screen) -> UPCOMING; ended(screen) -> ENDED; else -> null }
+
+    /** Said to the user, by code, when a film cannot be booked: no AI steps are spent looking further. */
+    fun notRunning(title: String, why: String): String {
+        val t = title.trim().ifBlank { "That film" }.let { if (it == "That film") it else "\"$it\"" }
+        return when (why) {
+            "none" -> "$t is not in cinemas now: BookMyShow's search has no results for it. An old film can be booked only when it is re-released. Tell me another film, or ask \"what is running near me\"."
+            "ended" -> "$t is not in cinemas any more: its BookMyShow page has no shows to book. If it is re-released, ask me again and I will book it."
+            else -> "$t is not open for booking yet: its BookMyShow page only says when it releases. Ask me again closer to the date."
+        }
+    }
 
     const val UPCOMING = "WRONG TURN: this page is a film that is NOT in cinemas yet (\"Releasing…\", \"I'm interested\"). Nothing can be booked here and scrolling will not change that. " +
         "Press Back now and open the search result whose name is the film AND says \"In cinemas now\". If no result says that, the film is not running: ask_user, telling them what the search shows. Do not look it up on the web."
