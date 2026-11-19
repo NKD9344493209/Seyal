@@ -630,6 +630,9 @@ object Agent {
                             // A question with several numbered parts is answered in one typed line. Tap-buttons for its first
                             // part only (seen on a real phone: "Any nearby · Kgam Cinemas · Cinepolis") answer a fifth of it.
                             question?.let { q -> if (manyParts(q.args.optString("question"))) q.args.remove("options") }
+                            // Food: when the user's own words already say the dish, how many and where from, no question is
+                            // asked, whatever the AI wanted to ask ("already told u", seen on a real phone).
+                            if (kind == Preflight.Kind.FOOD && question != null && Preflight.missingFood(lock.withLock { requestWords(s) }).isEmpty()) question = null
                             if (question == null) {
                                 // The AI did not ask. That is only right when the user really gave the details: check the one
                                 // that costs most when guessed (how many), and ask it ourselves if nobody said it.
@@ -643,7 +646,11 @@ object Agent {
                                     leaves -> null
                                     // The AI did not answer in time. For a film, what the user's own words say is read by code and
                                     // only what is missing is asked (nothing, when it was all said). Other kinds: the full question.
-                                    !saidComplete -> (if (kind == Preflight.Kind.MOVIE) Preflight.missingMovie(words, java.time.LocalDateTime.now()).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it) } else Preflight.fallbackQuestion(kind, onlyCount = false))
+                                    !saidComplete -> (when (kind) {
+                                        Preflight.Kind.MOVIE -> Preflight.missingMovie(words, java.time.LocalDateTime.now()).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it) }
+                                        Preflight.Kind.FOOD -> Preflight.missingFood(words).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it, "order") }
+                                        else -> Preflight.fallbackQuestion(kind, onlyCount = false)
+                                    })
                                         ?.let { q -> Part.Call(newId(), "ask_user", JSONObject().put("question", q)) }
                                     else -> Preflight.missingQuestion(kind, needCount, needSeat)?.let { q ->
                                         val args = JSONObject().put("question", q)
@@ -681,7 +688,10 @@ object Agent {
                                 // So does a day they wrote out ("20th November") when the AI noted none.
                                 if (byAi.date.isBlank() && byWords.date.isNotBlank()) put("date", byWords.date)
                                 // The thing itself must be the user's own word. The AI once wrote "Sikandar" for "scene".
-                                if (!Order.grounded(byAi.item, words)) put("item", if (kind == Preflight.Kind.MOVIE) Order.titleIn(words) else Order.itemFromWords(words))
+                                if (!Order.grounded(byAi.item, words)) put("item", when (kind) { Preflight.Kind.MOVIE -> Order.titleIn(words); Preflight.Kind.FOOD -> byWords.item; else -> Order.itemFromWords(words) })
+                                // The food the user named, when the AI noted none.
+                                if (kind == Preflight.Kind.FOOD && byAi.item.isBlank() && byWords.item.isNotBlank()) put("item", byWords.item)
+                                if (kind == Preflight.Kind.FOOD && byAi.place.isBlank() && byWords.place.isNotBlank()) put("place", byWords.place)
                             })
                             // "Same as last time": what they left out comes from the last order of this kind that went through.
                             s.order = if (words.any { Usual.asksForSame(it) }) Usual.fill(noted ?: Order(kind.name)).takeIf { !it.isEmpty } else noted
@@ -1708,6 +1718,16 @@ object Agent {
                     }
                 }
                 if (!go) return@launch
+                // A scheduled news read ("gold news at 11:09 PM"): the headlines as read ARE the answer. An AI turn would
+                // squeeze them into two lines.
+                val told = if (!ok) null else lock.withLock {
+                    s.messages.lastOrNull { it.role == "tool" }?.results?.lastOrNull()?.takeIf { it.name == "awareness" && !it.isError }?.output?.optString("say")?.takeIf { it.isNotBlank() }
+                }
+                if (told != null) {
+                    lock.withLock { if (s.messages.lastOrNull()?.role == "user") s.messages.removeAt(s.messages.size - 1) }
+                    finish(s, SessionStatus.DONE, told)
+                    return@launch
+                }
                 // The recorded steps did the whole job: finish at once, without the AI (instant, works offline,
                 // costs nothing). Only a skill whose goal is to tell the user something needs the AI to word it.
                 if (ok && (!Settings.hasKey || !wantsAnswer(goal))) {

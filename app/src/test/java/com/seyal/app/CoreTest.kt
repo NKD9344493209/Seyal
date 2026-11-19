@@ -30,6 +30,7 @@ import com.seyal.app.agent.BookGuard
 import com.seyal.app.agent.AlarmPick
 import com.seyal.app.agent.DayStrip
 import com.seyal.app.agent.Aware
+import com.seyal.app.agent.Later
 import com.seyal.app.agent.AwareStore
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -3023,12 +3024,58 @@ fun testBookingByCode() {
     T.check("…and none is made up when the request names none", Order.titleIn(listOf("book 2 tickets for tomorrow")) == "" && Order.titleIn(listOf("book movie tickets")) == "")
     val two = Order.fromWords(Preflight.Kind.MOVIE, listOf("2 tickets for Jailer 2 at Broadway Cinemas tomorrow 6 pm"), now)
     T.eq("a named theatre, a time and \"tomorrow\"", listOf("Jailer 2", "Broadway Cinemas", "2026-11-20", "6 pm", "2"), listOf(two.item, two.place, two.date, two.time, two.count.toString()))
-    T.check("other kinds are noted as before (how many and the limit)", Order.fromWords(Preflight.Kind.FOOD, listOf("order 2 plates of biryani under 300"), now).let { it.count == 2 && it.maxEach == 300 && it.item == "" && it.date == "" })
+    T.check("food is read in full too (the dish, how many and the limit)", Order.fromWords(Preflight.Kind.FOOD, listOf("order 2 plates of biryani under 300"), now).let { it.count == 2 && it.maxEach == 300 && it.item == "biryani" && it.date == "" })
     T.check("the tool is named in the chat and offered to the AI with the other screen tools", Prompts.friendly(Part.Call("d", "screen_day", JSONObject().put("date", "2026-11-20"))) == "The day: Fri 20 Nov" && Router.groups.first { it.name == "screen" }.tools.contains("screen_day"))
 }
 
+fun testLaterAndFood() {
+    println("A time later today is for later; food said in one line is not asked again (phone, 19 Nov 2026, 11:08 PM, v3.26.0)")
+    val now = LocalDateTime.of(2026, 11, 19, 23, 8)
+    // ---- "give the news about gold trend at today 11:09 pm" was answered at once, at 11:08
+    val w = Later.find("give the news about gold trend at today 11:09 pm", now)
+    T.eq("the time is found and taken out of the request", listOf("2026-11-19T23:09", "give the news about gold trend"), listOf(w?.at.toString(), w?.rest))
+    val p = Basics.plan("give the news about gold trend at today 11:09 pm", now, true)
+    T.eq("…and it is scheduled, not answered now", "skill_save", p?.tool)
+    val trig = JSONObject(p!!.args.optString("trigger_json"))
+    T.eq("…once, today, at 23:09", listOf("time", "once", "23:09", "2026-11-19"), listOf(trig.optString("type"), trig.optString("repeat"), trig.optString("time"), trig.optString("day")))
+    val step = p.args.optJSONArray("steps")!!.getJSONObject(0)
+    T.eq("…with the news read as its one step (no AI needed at 11:09)", "awareness" to "news", step.optString("tool") to JSONObject(step.optString("args_json")).optString("action"))
+    T.check("…and the answer says when", p.answer!!.invoke(JSONObject().put("id", "x")).contains("11:09 PM today"))
+    T.check("the news shortcut alone never answers a request that names a time", Aware.asks("give the news about gold trend at today 11:09 pm") == null && Aware.asks("gold news 9 pm") == null && Aware.asks("AI news in 10 minutes") == null)
+    T.check("…but still answers one without a time", Aware.asks("give the news about gold trend") is Aware.Ask.News)
+    // other ways of saying it
+    fun at(text: String) = Later.find(text, now)?.let { (it.at?.toString() ?: ("daily " + it.daily)) + " | " + it.rest }
+    T.eq("tomorrow 8 am", "2026-11-20T08:00 | brief me", at("brief me tomorrow 8 am"))
+    T.eq("tonight at 11:30", "2026-11-19T23:30 | AI news", at("AI news tonight at 11:30"))
+    T.eq("a time without a day that has passed is tomorrow's", "2026-11-20T07:00 | gold news", at("gold news at 7 am"))
+    T.eq("in 10 minutes", "2026-11-19T23:18 | give me the gold news", at("in 10 minutes give me the gold news"))
+    T.eq("every day at 7 pm", "daily 19:00 | gold news", at("every day at 7 pm gold news"))
+    T.check("\"today\" at a time already gone is said, not moved to tomorrow", Later.find("gold news today 10 pm", now)?.past == true &&
+        Basics.plan("gold news today 10 pm", now, true)?.say?.contains("already passed") == true)
+    T.check("a daily one is a daily skill", Basics.plan("every day at 7 pm gold news", now, true)?.let { JSONObject(it.args.optString("trigger_json")).optString("repeat") == "daily" } == true)
+    T.check("alarms, reminders, bookings and orders keep their own times (not scheduled here)",
+        listOf("set alarm at 7 am", "remind me at 9 pm to call amma", "book 2 tickets for Leo at 6 pm", "order biryani at 8 pm", "wake me up at 6:30 am", "meeting at 5 pm").all { Later.find(it, now) == null })
+    T.check("a plain \"10:30\" without \"at\" is not a time (a score, a ratio)", Later.find("india won 10:30 news", now) == null)
+    T.check("a send or a call at a time is left to the AI to schedule, never done now", Basics.plan("call amma at 8 pm", now, true) == null && Basics.plan("message dad at 9 pm saying good night", now, true) == null)
+
+    // ---- "order dosa from nearby restaurant 2 dosa... 100 per dosa": asked all four again
+    val said = listOf("order dosa from nearby restaurant 2 dosa... 100 per dosa")
+    val o = Order.fromWords(Preflight.Kind.FOOD, said)
+    T.eq("the dish, how many, where and the limit are read", listOf("dosa", "2", "", "100"), listOf(o.item, o.count.toString(), o.place, o.maxEach.toString()))
+    T.eq("…so nothing is asked", emptyList<String>(), Preflight.missingFood(said))
+    T.eq("…and Swiggy is searched for the dish", "dosa", Opener.plan(Preflight.Kind.FOOD, "Swiggy", o).let { (it as? Opener.Plan.Food)?.query })
+    T.eq("a named restaurant is searched for itself", listOf("chicken biryani", "A2B", "1"), Order.fromWords(Preflight.Kind.FOOD, listOf("order 1 chicken biryani from A2B")).let { listOf(it.item, it.place, it.count.toString()) })
+    T.eq("only what is missing is asked", listOf("How many?", "Which restaurant (or 'best rated nearby')?"), Preflight.missingFood(listOf("order masala dosa")))
+    T.check("…as one question for food", Preflight.askFor(Preflight.missingFood(listOf("order food"))).let { it.contains("Which dish") } && Preflight.askFor(listOf("a", "b"), "order").startsWith("Before I order"))
+    T.eq("\"order food\" names no dish", "", Order.dishIn(listOf("order food from swiggy")))
+    T.eq("dosa x 2", 2, Order.dishCountIn(listOf("masala dosa x 2"), "masala dosa"))
+    T.eq("two plates of idli", 2, Order.fromWords(Preflight.Kind.FOOD, listOf("order two plates of idli from Annapoorna")).count)
+    T.eq("a film's limit is read as before", 190, Order.budgetIn(listOf("book o. m movie ticket on 20th November, 2 tickets, 190 per ticket")))
+    T.eq("\"20 a day\" is not a price", 0, Order.budgetIn(listOf("order 2 dosa, 20 a day")))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3037,7 +3084,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

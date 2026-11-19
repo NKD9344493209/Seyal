@@ -399,7 +399,7 @@ object Aware {
 
     private const val KIND = "(?:news|headlines?|trends?|developments?|happenings?)"
     private val news = listOf(
-        Regex("^(?:any |what(?:'s| is| are)(?: the)? |give me (?:the )?|show me (?:the )?|tell me (?:the )?|get me (?:the )?)?(?:all )?(?:the )?(?:(?:recent|latest|new|today'?s|current|top|every|full) )*$KIND(?: today)? (?:on|in|about|for|of|regarding|related to) (.{2,60})$", I),
+        Regex("^(?:any |what(?:'s| is| are)(?: the)? |give(?: me)? (?:the )?|show(?: me)? (?:the )?|tell(?: me)? (?:the )?|get(?: me)? (?:the )?)?(?:all )?(?:the )?(?:(?:recent|latest|new|today'?s|current|top|every|full) )*$KIND(?: today)? (?:on|in|about|for|of|regarding|related to) (.{2,60})$", I),
         Regex("^what(?:'s| is) (?:new|happening|trending|going on|the latest)(?: today)? (?:in|with|on|about) (.{2,60})$", I),
         Regex("^(?:latest|recent|new)(?: things)? (?:on|in|about) (.{2,60})$", I),
         Regex("^(.{2,40}?) (?:pathi|pathina|patri|pathiya) (?:news|seithi|headlines?)s?(?: sollu| solu| kaattu| kattu| venum)?$", I),
@@ -443,7 +443,7 @@ object Aware {
         if (moreRx.matches(t)) return Ask.More
         for (rx in detailRx) rx.find(t)?.let { m -> m.groupValues[1].toIntOrNull()?.takeIf { it >= 1 }?.let { return Ask.Detail(it) } }
         // "Every morning at 8, give me AI news", "when Amma messages…", "send Ram the news": an automation or an errand, not a question.
-        if (Regex("\\b(?:every|each|daily|tomorrow|tonight|whenever|when|remind|schedule|send|share|forward|mail|whatsapp|at \\d)\\b|,", I).containsMatchIn(t)) return null
+        if (Regex("\\b(?:every|each|daily|tomorrow|tonight|whenever|when|remind|schedule|send|share|forward|mail|whatsapp|at \\d)\\b|,|\\b\\d{1,2}(?:[:.]\\d{2})?\\s?(?:am|pm)\\b|\\b\\d{1,2}[:.]\\d{2}\\b|\\b(?:in|after) \\d+ ?(?:min|mins|minutes?|hours?|hrs?)\\b", I).containsMatchIn(t)) return null
         for ((i, rx) in news.withIndex()) rx.find(t)?.let { m ->
             val topic = topicOf(m.groupValues[1]) ?: return@let
             // The bare "X news" shape only for a short name ("AI news", "tamil cinema news").

@@ -109,9 +109,24 @@ object Preflight {
         }
     }
 
-    /** One question out of [parts]: a single one as it is, several numbered. */
-    fun askFor(parts: List<String>): String =
-        if (parts.size == 1) parts[0] else "Before I book, tell me:\n" + parts.mapIndexed { i, q -> "${i + 1}) $q" }.joinToString("\n") + "\nAnswer in one line, or say 'you choose'."
+    /**
+     * What a food order does not say, as the questions to ask: only what is really missing. Empty = all of it was said.
+     * (Seen on a real phone: "order dosa from nearby restaurant 2 dosa... 100 per dosa" got the four-part question
+     * asking for the dish, how many, the restaurant and the budget again.) The budget is not required: without one,
+     * the cheapest good match is taken and the total is shown before paying.
+     */
+    fun missingFood(words: List<String>): List<String> {
+        val o = Order.fromWords(Kind.FOOD, words)
+        return buildList {
+            if (o.item.isBlank()) add("Which dish (veg / chicken / mutton, size)?")
+            if (o.count <= 0 && !saysHowMany(words)) add("How many?")
+            if (!Order.saysRestaurant(words)) add("Which restaurant (or 'best rated nearby')?")
+        }
+    }
+
+    /** One question out of [parts]: a single one as it is, several numbered. [order]: "order" for food, else "book". */
+    fun askFor(parts: List<String>, verb: String = "book"): String =
+        if (parts.size == 1) parts[0] else "Before I $verb, tell me:\n" + parts.mapIndexed { i, q -> "${i + 1}) $q" }.joinToString("\n") + "\nAnswer in one line, or say 'you choose'."
 
     /** Whether the user left the choice to Seyal ("you choose", "unga ishtam"). */
     fun leavesChoice(texts: List<String>): Boolean = texts.any { leaves.containsMatchIn(it) }

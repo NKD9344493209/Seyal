@@ -134,6 +134,12 @@ class Order(
          */
         fun fromWords(kind: Preflight.Kind, words: List<String>, now: java.time.LocalDateTime = java.time.LocalDateTime.now()): Order {
             val count = countIn(words); val max = budgetIn(words)
+            // Food said in one line ("order dosa from nearby restaurant 2 dosa... 100 per dosa") is read in full too:
+            // seen on a real phone, all four parts were asked again and Swiggy was searched for nothing.
+            if (kind == Preflight.Kind.FOOD) {
+                val dish = dishIn(words)
+                return Order(kind = kind.name, item = dish, place = restaurantIn(words), count = count.takeIf { it > 0 } ?: dishCountIn(words, dish), maxEach = max)
+            }
             if (kind != Preflight.Kind.MOVIE) return Order(kind = kind.name, count = count, maxEach = max)
             // A film booking said in one line ("book o. m movie ticket on 20th November, any nearby theatre, 2 tickets,
             // tamil, any time, 190 per ticket") is read here in full, so a slow AI does not make Seyal ask it all again.
@@ -142,6 +148,51 @@ class Order(
                 date = dayIn(words, now), time = timeIn(words), count = count, maxEach = max,
             )
         }
+
+        // ---- food
+
+        private const val FOOD_STOP = "from|at|in|near|nearby|for|under|below|within|max|budget|with|and|delivered|delivery|to|by|on|each|per|today|tonight|now|please|pls|da|bro"
+        /** Words that name a meal or an app, not a dish: "order food", "order lunch from Swiggy". */
+        private val notADish = setOf("food", "something", "anything", "lunch", "dinner", "breakfast", "tiffin", "snacks", "snack", "meal", "it", "this", "that", "same", "usual", "swiggy", "zomato", "online", "some")
+        private val dishRx = listOf(
+            // "order dosa from …", "order 2 masala dosa under 100", "order me a chicken biryani"
+            Regex("\\b(?:order|get|buy|send)(?:\\s+(?:me|us))?(?:\\s+(?:a|an|some|one|two|three|four|five|\\d{1,2}))?(?:\\s+(?:plates?|portions?|nos?|pieces?|pcs|packs?|x)(?:\\s+of)?)?\\s+(.{2,40}?)(?=\\s+(?:$FOOD_STOP)\\b|\\s*[,;]|\\s*\\.\\.|\\s+\\d|\\s*$)", RegexOption.IGNORE_CASE),
+            // "2 dosa from A2B", "two plates of idli"
+            Regex("\\b(?:\\d{1,2}|one|two|three|four|five|six)\\s+(?:(?:plates?|portions?|nos?|pieces?|pcs|packs?)\\s+(?:of\\s+)?)?([a-z][a-z ]{1,30}?)(?=\\s+(?:$FOOD_STOP)\\b|\\s*[,;]|\\s*\\.\\.|\\s*$)", RegexOption.IGNORE_CASE),
+        )
+
+        /** The dish the user named ("dosa", "chicken biryani"); "" when none can be told for sure. */
+        fun dishIn(words: List<String>): String {
+            for (w in words) for (rx in dishRx) {
+                val raw = rx.find(w)?.groupValues?.get(1)?.trim()?.trim(',', '.', '!', '?')?.trim() ?: continue
+                val left = raw.split(Regex("\\s+")).filter { it.isNotBlank() }
+                if (left.isEmpty() || left.size > 4) continue
+                if (left.all { it.lowercase() in notADish || it.lowercase() in notTheThing || Regex("^\\d+$").matches(it) }) continue
+                if (Regex("\\b(?:ticket|tickets|movie|cab|taxi|restaurant|hotel|shop)\\b", RegexOption.IGNORE_CASE).containsMatchIn(raw)) continue
+                return raw.take(40)
+            }
+            return ""
+        }
+
+        /** "2 dosa", "dosa x 2", "two plates of idli": how many of [dish]; 0 when not said. */
+        fun dishCountIn(words: List<String>, dish: String): Int {
+            if (dish.isBlank()) return 0
+            val d = Regex.escape(dish.split(' ').last())
+            for (w in words.reversed()) {
+                Regex("\\b(\\d{1,2})\\s+(?:(?:plates?|nos?|pieces?|pcs)\\s+(?:of\\s+)?)?(?:[a-z]+\\s+){0,2}$d", RegexOption.IGNORE_CASE).find(w)?.let { return it.groupValues[1].toInt() }
+                Regex("\\b(${numberWords.keys.joinToString("|")})\\s+(?:(?:plates?|nos?|pieces?|pcs)\\s+(?:of\\s+)?)?(?:[a-z]+\\s+){0,2}$d", RegexOption.IGNORE_CASE).find(w)?.let { return numberWords[it.groupValues[1].lowercase()] ?: 0 }
+                Regex("$d\\s*[x×*]\\s*(\\d{1,2})\\b", RegexOption.IGNORE_CASE).find(w)?.let { return it.groupValues[1].toInt() }
+            }
+            return 0
+        }
+
+        private val anyRestaurantRx = Regex("\\b(?:nearby|near me|near by|nearest|close by|best rated|top rated|highest rated|any (?:restaurant|hotel|shop|place)|anywhere|pakkath\\w*|arugil)\\b", RegexOption.IGNORE_CASE)
+        private val namedRestaurantRx = Regex("\\bfrom\\s+(?!(?:a|an|the|any|some|nearby|near|nearest|best|top|swiggy|zomato)\\b)([A-Za-z0-9][\\w&'.-]*(?:\\s+[A-Za-z0-9][\\w&'.-]*){0,3}?)(?=\\s+(?:restaurant|hotel|mess|cafe|bhavan)\\b|\\s+(?:under|below|for|with|and|at|on|in|on swiggy|on zomato)\\b|\\s*[,;]|\\s*\\.\\.|\\s+\\d|\\s*$)", RegexOption.IGNORE_CASE)
+        /** The restaurant the user named ("from A2B", "from Sree Annapoorna"); "" when none, or left open ("nearby"). */
+        fun restaurantIn(words: List<String>): String =
+            words.asReversed().firstNotNullOfOrNull { w -> namedRestaurantRx.find(w)?.groupValues?.get(1)?.trim()?.takeIf { it.length >= 2 && !anyRestaurantRx.containsMatchIn(it) } }.orEmpty().take(40)
+        /** Whether the user spoke of where to order from (a name, or "nearby" / "best rated"). */
+        fun saysRestaurant(words: List<String>): Boolean = words.any { anyRestaurantRx.containsMatchIn(it) } || restaurantIn(words).isNotBlank()
 
         private const val STOP_AT = "on|at|in|for|from|by|tomorrow|today|tonight|tmrw|tmrw|naalaikku|innaiku|this|next|coming|releasing|release|released|any|near|nearby|nearest|with|and|under|below|within|max"
         private val titleRx = listOf(
@@ -218,6 +269,8 @@ class Order(
                 Regex("\\b(under|below|within|max|maximum|upto|up to|budget|at most|not more than|less than)\\D{0,14}(\\d{2,6})", RegexOption.IGNORE_CASE).find(w)?.let { return it.groupValues[2].toInt() }
                 Regex("(₹|rs\\.?|inr)\\s*(\\d{2,6})\\s*(each|per|a ticket|per ticket|per head|max)", RegexOption.IGNORE_CASE).find(w)?.let { return it.groupValues[2].toInt() }
                 Regex("\\b(\\d{2,6})\\s*(rs|rupees?|ரூ)?\\s*(each|per (ticket|seat|head|person)|max(imum)?)\\b", RegexOption.IGNORE_CASE).find(w)?.let { return it.groupValues[1].toInt() }
+                // "100 per dosa", "₹150 a plate"
+                Regex("(?:₹|\\brs\\.?\\s*)?\\b(\\d{2,6})\\s*(?:rs|rupees?|ரூ)?\\s*(?:per|a|for one|for each)\\s+(?:plate|piece|pc|dosa|item|one|[a-z]{3,15})\\b", RegexOption.IGNORE_CASE).find(w)?.takeIf { !Regex("\\b(?:km|kms|min|mins|minutes|hours?|days?|percent)\\b", RegexOption.IGNORE_CASE).containsMatchIn(it.value) }?.let { return it.groupValues[1].toInt() }
             }
             return 0
         }

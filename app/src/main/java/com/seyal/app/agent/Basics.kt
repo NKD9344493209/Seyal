@@ -88,6 +88,34 @@ object Basics {
         return if (tomorrow) at.plusDays(1) else if (at.isAfter(now.plusSeconds(30))) at else at.plusDays(1)
     }
 
+    /** What a scheduled request may fetch by itself when its time comes: reading, not doing. */
+    private val fetchLater = setOf("awareness", "notifications_read")
+
+    /** The plan for a request with a later time ([w]): a one-time (or daily) skill holding the fetch, or null for the AI. */
+    private fun later(w: Later.When, now: LocalDateTime, whatsApp: Boolean): Plan? {
+        val inner = plan(w.rest, now, whatsApp) ?: return null
+        if (inner.tool !in fetchLater || inner.who != null) return null
+        val at = w.at
+        if (w.past && at != null) return Plan("", say = "${Later.say(at, now).replaceFirstChar { it.uppercase() }} has already passed. Tell me another time, or ask again without a time to get it now.")
+        val hhmm = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+        val trigger = JSONObject().put("type", "time")
+        val whenSaid = if (w.daily != null) {
+            trigger.put("repeat", "daily").put("time", w.daily.format(hhmm)); "every day at ${Later.sayClock(w.daily)}"
+        } else {
+            at ?: return null
+            trigger.put("repeat", "once").put("time", at.format(hhmm)).put("day", at.toLocalDate().toString()); "at ${Later.say(at, now)}"
+        }
+        val what = w.rest.trim().trimEnd('.', '?', '!').replaceFirstChar { it.uppercase() }
+        val steps = org.json.JSONArray().put(JSONObject().put("tool", inner.tool).put("args_json", inner.args.toString()))
+        return Plan(
+            "skill_save",
+            args("name" to what.take(40), "description" to "Asked in the chat for $whenSaid", "goal" to what, "steps" to steps, "trigger_json" to trigger.toString()),
+        ) { o ->
+            if (o.optString("id").isBlank()) "I couldn't schedule that. Try again, or ask without a time to get it now."
+            else "Okay. \"$what\" $whenSaid: it comes as a notification then. To change or cancel it: Skills tab."
+        }
+    }
+
     /**
      * The plan for [raw], or null when it is not plainly one of the everyday commands.
      * [whatsApp]: WhatsApp is on the phone (a plain "message" then goes there, otherwise by SMS).
@@ -109,6 +137,11 @@ object Basics {
         /** The same match on the text as typed (the message keeps its capitals). */
         val asTyped = original.replace(Regex("\\s+"), " ").trimEnd('?').trim()
         fun typed(m: MatchResult, group: Int): String = m.groups[group]?.range?.takeIf { asTyped.length == t.length }?.let { r -> asTyped.substring(r) } ?: m.groupValues[group]
+
+        // ---- for later: "give the news about gold at today 11:09 pm", "brief me tomorrow 8 am", "in 10 minutes AI news".
+        // What can be fetched then is scheduled now, by code; anything else with a later time goes to the AI, which
+        // plans it (skill_save). Nothing with a later time is done now.
+        Later.find(original, now)?.let { w -> return later(w, now, whatsApp) }
 
         // ---- in Tamil, for those who would rather speak than type (the answers come back in Tamil and are read aloud)
         if (Regex("^(இப்போ |இப்போது )?(நேரம்|மணி) (என்ன|எத்தனை|எவ்வளவு)( ஆச்சு)?$|^(இப்போ )?மணி என்ன ஆச்சு$").matches(t))
