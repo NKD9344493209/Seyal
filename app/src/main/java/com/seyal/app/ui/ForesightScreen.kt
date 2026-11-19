@@ -30,6 +30,7 @@ import com.seyal.app.agent.Scheduler
 import com.seyal.app.data.Settings
 import com.seyal.app.ui.theme.Ink
 import com.seyal.app.util.Times
+import kotlinx.coroutines.launch
 
 internal fun stageLabel(stage: String) = when (stage) { "early" -> "Early"; "mainstream" -> "Already mainstream"; else -> "Rising" }
 internal fun verdictLabel(v: String) = when (v) { "right" -> "Right"; "wrong" -> "Wrong"; "unclear" -> "Unclear"; else -> "Open" }
@@ -50,6 +51,8 @@ fun ForesightSection() {
     var topics by remember(version) { mutableStateOf(ForesightStore.topics.joinToString(", ")) }
     var editing by remember { mutableStateOf(false) }
     val error = remember(version) { ForesightStore.lastError }
+
+    AwareCard()
 
     Card {
         Text("World signals", style = MaterialTheme.typography.titleMedium)
@@ -144,4 +147,65 @@ private fun TrendCard(t: Foresight.Trend) {
             }
         }
     }
+}
+
+/**
+ * Dirghadarshi's awareness: the user's own interests, the brief over them, and the switch for a brief every morning
+ * with an alert at once for something big. (In the chat: "my interests are …", "brief", "any recent news on AI".)
+ */
+@Composable
+fun AwareCard() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    val version by com.seyal.app.agent.AwareStore.version.collectAsState()
+    var interests by remember(version) { mutableStateOf(com.seyal.app.agent.AwareStore.interests.joinToString(", ")) }
+    var daily by remember(version) { mutableStateOf(com.seyal.app.agent.AwareStore.daily) }
+    val latest = remember(version) { com.seyal.app.agent.AwareStore.latest }
+    val latestAt = remember(version) { com.seyal.app.agent.AwareStore.latestAt }
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    Card {
+        Text("Your brief", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Every headline that matters in the fields you choose: warnings first, then what is new, opportunities, research, rules and money. The headlines are the publishers' own, with source, date and a link. Nothing is written by an AI.",
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = interests, onValueChange = { interests = it },
+            label = { Text("Your interests, separated by commas (up to 12)") },
+            placeholder = { Text("AI, Java, data engineering jobs, gold price") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SmallButton("Save", filled = false) { com.seyal.app.agent.AwareStore.set(interests.split(',', ';', '\n')); Scheduler.syncBackground(ctx) }
+            Spacer(Modifier.width(8.dp))
+            SmallButton(if (busy) "Reading…" else "Brief now", filled = !busy) {
+                if (!busy && interests.isBlank()) note = "Type your interests first, for example: AI, Java, gold price."
+                else if (!busy) {
+                    note = ""
+                    com.seyal.app.agent.AwareStore.set(interests.split(',', ';', '\n'))
+                    busy = true
+                    scope.launch { runCatching { com.seyal.app.agent.AwareRun.brief() }; busy = false }
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                if (busy) "Reading the news on each interest…" else if (note.isNotBlank()) note else if (latestAt > 0) "Last brief: ${Times.format(latestAt)}" else "Takes a few seconds. No AI request.",
+                style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        SwitchRow("A brief every morning at 8, and an alert for something big", "The alert comes at once when a warning in one of your interests is carried by three or more publishers (checked every three hours of the day).", daily) { v ->
+            daily = v; com.seyal.app.agent.AwareStore.setDaily(v); Scheduler.syncBackground(ctx)
+        }
+        if (latest.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Rich(latest, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+    Spacer(Modifier.height(12.dp))
 }

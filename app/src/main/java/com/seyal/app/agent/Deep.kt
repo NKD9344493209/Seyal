@@ -37,7 +37,7 @@ object Deep {
     )
     /** Tools that count as having looked something up. */
     val lookups = setOf(
-        "web_search", "read_page", "news", "weather", "wikipedia", "foresight", "read_mail", "search_mail", "past_search", "chats_search",
+        "web_search", "read_page", "news", "weather", "wikipedia", "foresight", "awareness", "read_mail", "search_mail", "past_search", "chats_search",
         "money_summary", "calendar_list", "notifications_read", "files_search", "phone_state", "app_usage", "location",
     )
 

@@ -87,3 +87,9 @@ Set an alarm for 5:10 am tomorrow
 what alarms do I have
 cancel the 5:10 alarm
 cancel all alarms
+my interests are AI, Java and gold price
+any recent news on AI
+> more on 1
+brief
+daily brief on
+daily brief off

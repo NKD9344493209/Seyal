@@ -177,6 +177,19 @@ object Basics {
         // "dad ku I will be late nu message pannu"
         Regex("^(.{2,30}?) ?(?:ku|kku|kitta) (.{2,}?) (?:nu|nnu|endru|apdinu) (?:oru )?(whatsapp|message|msg|sms|text) (?:pannu|anuppu|anupu|podu|pannunga|send pannu)$").on { m -> message(m.groupValues[1], typed(m, 2), m.groupValues[3]) }?.let { return it }
 
+        // ---- Dirghadarshi's awareness: "any recent news on AI", "brief", "my interests are …", "daily brief on". No AI:
+        // the headlines are the publishers' own, so nothing is invented and nothing is left out by a summary.
+        when (val a = Aware.asks(asTyped)) {
+            is Aware.Ask.News -> return Plan("awareness", args("action" to "news", "topic" to a.topic)) { o -> o.optString("say").ifBlank { "No news found." } }
+            is Aware.Ask.Brief -> return Plan("awareness", args("action" to "brief")) { o -> o.optString("say").ifBlank { Aware.NO_INTERESTS } }
+            is Aware.Ask.Interests -> return Plan("awareness", args("action" to "interests_" + a.op, "items" to a.items.joinToString(", "))) { o -> o.optString("say").ifBlank { "Done." } }
+            is Aware.Ask.Daily -> return Plan("awareness", args("action" to if (a.on) "daily_on" else "daily_off")) { o -> o.optString("say").ifBlank { "Done." } }
+            // "more headlines", "more on 2": only about a list of headlines (in a fresh chat, the brief's), never about some other numbered answer.
+            is Aware.Ask.More -> if (lastAnswer == null || Aware.isList(lastAnswer)) return Plan("awareness", args("action" to "more")) { o -> o.optString("say").ifBlank { "That was all the headlines." } }
+            is Aware.Ask.Detail -> if (lastAnswer == null || Aware.isList(lastAnswer)) return Plan("awareness", args("action" to "detail", "n" to a.n)) { o -> o.optString("say").ifBlank { "No details found." } }
+            null -> {}
+        }
+
         // ---- "dismiss the alarm", "cancel the 6:30 alarm", "what alarms do I have": Seyal's own alarms, no AI
         AlarmPick.asks(t)?.let { w -> return Plan("alarm_cancel", args("which" to if (w.all) "all" else w.time)) { o -> o.optString("say").ifBlank { "Done." } } }
         if (AlarmPick.asksList(t)) return Plan("alarm_list") { o -> o.optString("say").ifBlank { "No alarm is set in Seyal." } }

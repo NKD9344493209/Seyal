@@ -90,7 +90,7 @@ object Scheduler {
     fun syncBackground(ctx: Context) {
         val now = System.currentTimeMillis()
         val foresight = if (ForesightStore.enabled) Foresight.nextRun(now, ForesightStore.lastOkAt, ForesightStore.lastTryAt) else null
-        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now), foresight).minOrNull()
+        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now), foresight, AwareRun.next(now)).minOrNull()
         if (next == null) { am(ctx).cancel(pending(ctx, "tick", "bg", 0, "")); forget("tick", "bg"); return }
         val at = maxOf(next, now + 5_000)
         remember("tick", "bg", at, "")
@@ -339,6 +339,8 @@ object Background {
                 runCatching { offerHabit(ctx, now) }
                 // 1d. Dirghadarshi's weekly report, when it is switched on and due (it runs on by itself; nothing here waits for it).
                 runCatching { ForesightRun.weekly(ctx) }
+                // 1e. Dirghadarshi's morning brief over the user's interests, and its watch for something big.
+                runCatching { AwareRun.tick(ctx) }
                 // 2. Watched pages whose turn it is.
                 // A few per wake-up, so it always finishes in time; the rest follow a minute later.
                 if (!Settings.paused) Watchers.dueNow(now).take(3).forEach { w ->
