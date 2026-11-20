@@ -47,7 +47,8 @@ import kotlinx.coroutines.launch
  * The Dirghadarshi tab (தீர்க்கதரிசி, "one who sees far"). Everything Dirghadarshi does for the user in one place:
  * today's brief over the interests they chose (warnings first; a tap on a headline shows what the story says),
  * a box to ask before a decision (it opens a chat with the thinking mode on), the interests themselves, the
- * alerts that were sent, and, on its second page, the weekly reading of world signals.
+ * alerts that were sent, and, on its second page, the weekly reading of world signals. Its third page is the
+ * internship and job watcher (JobsScreen.kt).
  * Asked for by Naveen on 19 Nov 2026: before this it was spread over the chat, the Brain tab and notifications.
  */
 @Composable
@@ -63,18 +64,27 @@ fun DirghadarshiScreen(goTo: (Tab) -> Unit) {
         Column(Modifier.padding(horizontal = 4.dp, vertical = 12.dp)) {
             Text("Dirghadarshi", style = MaterialTheme.typography.headlineMedium)
             Text(
-                if (page == 0) "Sees far for you: what to know today, what to watch out for, and help before you decide."
-                else "What is starting to rise in the world, told early, with proof.",
+                when (page) {
+                    0 -> "Sees far for you: what to know today, what to watch out for, and help before you decide."
+                    1 -> "What is starting to rise in the world, told early, with proof."
+                    else -> "Internships and fresher jobs that fit you, from companies' own job boards, checked through the day."
+                },
                 style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
             )
             Spacer(Modifier.height(10.dp))
-            Row {
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
                 Chip("For you", selected = page == 0) { page = 0 }
                 Spacer(Modifier.width(8.dp))
                 Chip("World signals", selected = page == 1) { page = 1 }
+                Spacer(Modifier.width(8.dp))
+                Chip("Jobs", selected = page == 2) { page = 2 }
             }
         }
-        if (page == 1) ForesightSection() else ForYou(goTo)
+        when (page) {
+            1 -> ForesightSection()
+            2 -> JobsPage()
+            else -> ForYou(goTo)
+        }
         Spacer(Modifier.height(16.dp))
     }
 }

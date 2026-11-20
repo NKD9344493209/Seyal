@@ -163,6 +163,10 @@ object Basics {
         // Guarded: a fault in reading the time must never stop the everyday commands below.
         runCatching { Later.find(original, now) }.getOrNull()?.let { w -> runCatching { later(w, now, whatsApp) }.getOrNull()?.let { return it } ?: return null }
 
+        // ---- the internship and job watcher ("jobs", "check jobs now", "watch internships for data engineer in Bengaluru").
+        // Guarded like the line above: a fault there must never stop the everyday commands below.
+        runCatching { Jobs.plan(t) }.getOrNull()?.let { return it }
+
         // ---- in Tamil, for those who would rather speak than type (the answers come back in Tamil and are read aloud)
         if (Regex("^(இப்போ |இப்போது )?(நேரம்|மணி) (என்ன|எத்தனை|எவ்வளவு)( ஆச்சு)?$|^(இப்போ )?மணி என்ன ஆச்சு$").matches(t))
             return Plan("", say = "இப்போது மணி ${now.format(java.time.format.DateTimeFormatter.ofPattern("h:mm", java.util.Locale.ENGLISH))}.", speak = true)

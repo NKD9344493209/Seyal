@@ -222,7 +222,7 @@ fun Shell(openSessionId: String?) {
     val wantTab = activity?.openTab?.value
     LaunchedEffect(wantTab) {
         if (wantTab == "brain") { tab = Tab.BRAIN; activity?.openTab?.value = null }
-        else if (wantTab == "aware" || wantTab == "foresight") { activity?.dirghaPage?.value = if (wantTab == "foresight") 1 else 0; tab = Tab.DIRGHA; activity?.openTab?.value = null }
+        else if (wantTab == "aware" || wantTab == "foresight" || wantTab == "jobs") { activity?.dirghaPage?.value = when (wantTab) { "foresight" -> 1; "jobs" -> 2; else -> 0 }; tab = Tab.DIRGHA; activity?.openTab?.value = null }
     }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         // Bottom bar and composer stay above the navigation bar and the keyboard.

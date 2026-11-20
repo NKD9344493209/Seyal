@@ -31,6 +31,9 @@ import com.seyal.app.agent.AlarmPick
 import com.seyal.app.agent.DayStrip
 import com.seyal.app.agent.Aware
 import com.seyal.app.agent.Later
+import com.seyal.app.agent.Jobs
+import com.seyal.app.agent.JobRun
+import com.seyal.app.agent.JobStore
 import com.seyal.app.agent.Fresh
 import com.seyal.app.agent.AwareStore
 import java.time.ZoneId
@@ -3246,6 +3249,148 @@ fun testPayPage() {
     T.check("…and the user is told what to do, in plain words", PayPause.LOST.contains("Off, then On") && PayPause.LOST.contains("stopped here"))
 }
 
+fun testJobWatch() {
+    println("The internship and job watcher (asked for on 20 Nov 2026): companies' own job boards, kept only when they fit")
+    val zone = java.time.ZoneId.of("Asia/Kolkata")
+    val now = java.time.LocalDateTime.of(2026, 11, 20, 12, 0).atZone(zone).toInstant().toEpochMilli()
+    val day = 86_400_000L
+    fun iso(ms: Long) = java.time.Instant.ofEpochMilli(ms).toString()
+
+    // ---- reading each service's feed (made-up companies and postings; the shapes are the services' own)
+    val gh = Jobs.Company("Example Corp", "greenhouse", "examplecorp")
+    val ghBody = """{"jobs":[{"id":4704566005,"title":"Data Engineering Intern","updated_at":"2026-11-19T10:00:00-05:00","first_published":"2026-11-19T09:30:00-05:00","location":{"name":"Bengaluru, Karnataka, India"},"absolute_url":"https://job-boards.greenhouse.io/examplecorp/jobs/4704566005"},
+        {"id":2,"title":"Senior Data Engineer","updated_at":"2026-11-18T10:00:00Z","location":{"name":"Bengaluru"},"absolute_url":"https://job-boards.greenhouse.io/examplecorp/jobs/2"},{"title":"no link"}],"meta":{"total":3}}"""
+    val g = Jobs.read(gh, ghBody)
+    T.eq("Greenhouse: every posting with a link, its first-published time", listOf("2", "Data Engineering Intern", "Bengaluru, Karnataka, India", "greenhouse:examplecorp:4704566005", "2026-11-19T14:30:00Z"),
+        listOf(g.size.toString(), g[0].title, g[0].place, g[0].id, iso(g[0].posted)))
+    val lv = Jobs.Company("Example Lever", "lever", "examplelever")
+    val lvBody = """[{"id":"984b6eab-0d12","text":"Data Engineering Intern","hostedUrl":"https://jobs.lever.co/examplelever/984b6eab-0d12","createdAt":${now - 2 * day},"workplaceType":"onsite","country":"IN",
+        "categories":{"location":"Bengaluru","commitment":"Intern","team":"Engineering","allLocations":["Bengaluru"]},"descriptionPlain":"Build pipelines with SQL and Python on Spark.","additionalPlain":""}]"""
+    val l = Jobs.read(lv, lvBody)
+    T.eq("Lever: title, place, type, country and text", listOf("Data Engineering Intern", "Bengaluru", "Intern", "IN", "true"), listOf(l[0].title, l[0].place, l[0].type, l[0].country, l[0].text.contains("SQL").toString()))
+    val ab = Jobs.Company("Example Ashby", "ashby", "exampleashby")
+    val abBody = """{"jobs":[{"id":"a1","title":"Software Engineering Intern","location":"India-Bangalore","employmentType":"Intern","isRemote":false,"isListed":true,"publishedAt":"2026-11-17T12:00:00.000+00:00","jobUrl":"https://jobs.ashbyhq.com/exampleashby/a1","descriptionPlain":"Work on data pipelines in SQL."},
+        {"id":"a2","title":"Hidden role","location":"Bengaluru","isListed":false,"jobUrl":"https://jobs.ashbyhq.com/exampleashby/a2"}]}"""
+    val a = Jobs.read(ab, abBody)
+    T.eq("Ashby: unlisted postings are left out", listOf("1", "Software Engineering Intern", "2026-11-17T12:00:00Z"), listOf(a.size.toString(), a[0].title, iso(a[0].posted)))
+    val sr = Jobs.Company("Example SR", "smartrecruiters", "ExampleSR")
+    val srBody = """{"offset":0,"limit":100,"totalFound":1,"content":[{"id":"744000012345","name":"Associate Data Analyst","releasedDate":"2026-11-15T08:00:00.000Z","location":{"city":"Chennai","country":"in","remote":false,"fullLocation":"Chennai, Tamil Nadu, India"},
+        "typeOfEmployment":{"label":"Full-time"},"experienceLevel":{"label":"Entry Level"},"company":{"identifier":"ExampleSR"}}]}"""
+    val r = Jobs.read(sr, srBody)
+    T.eq("SmartRecruiters: the posting's public page is built from its id", listOf("Associate Data Analyst", "Chennai, Tamil Nadu, India", "https://jobs.smartrecruiters.com/ExampleSR/744000012345", "Full-time · Entry Level"), listOf(r[0].title, r[0].place, r[0].url, r[0].type))
+    T.eq("a broken answer gives nothing, never an error", listOf(0, 0, 0), listOf(Jobs.read(gh, "<html>busy</html>").size, Jobs.read(lv, "{}").size, Jobs.read(Jobs.Company("x", "", "x"), "[]").size))
+    T.eq("only a real board counts when a company is looked for by name", listOf(true, true, false, false, true, false),
+        listOf(Jobs.isBoard("greenhouse", ghBody), Jobs.isBoard("lever", "[]"), Jobs.isBoard("lever", """{"ok":false,"error":"Document not found"}"""), Jobs.isBoard("ashby", "<html>"), Jobs.isBoard("smartrecruiters", srBody), Jobs.isBoard("greenhouse", "[]")))
+    T.eq("times in every form the services use", listOf("2026-11-19T15:00:00Z", "2026-11-19T15:00:00Z", "2026-11-19T00:00:00Z", "0"),
+        listOf(iso(Jobs.time("2026-11-19T10:00:00-05:00")), iso(Jobs.time("1795100400000")), iso(Jobs.time("2026-11-19")), Jobs.time("soon").toString()))
+
+    // ---- companies from what the user gives
+    fun co(s: String) = Jobs.companyFrom(s)?.let { it.ats + ":" + it.token }
+    T.eq("a careers link names its service and board; a name is looked for", listOf("lever:fampay", "greenhouse:razorpaysoftwareprivatelimited", "greenhouse:gitlab", "ashby:ramp", "smartrecruiters:Freshworks", "lever_eu:examplecorp", ":zepto", ":tigeranalytics", null),
+        listOf(co("https://jobs.lever.co/fampay/984b6eab-0d12-4009-b692-20a4de00fa55"), co("https://job-boards.greenhouse.io/razorpaysoftwareprivatelimited/jobs/4704566005"), co("https://boards.greenhouse.io/embed/job_board?for=gitlab"),
+            co("https://jobs.ashbyhq.com/ramp"), co("https://careers.smartrecruiters.com/Freshworks"), co("https://jobs.eu.lever.co/examplecorp"), co("Zepto"), co("Tiger Analytics"), co("https://example.com/careers")))
+    T.eq("the starting list: 18 companies, every one on a known service", listOf(18, 18), listOf(Jobs.DEFAULT_COMPANIES.size, Jobs.DEFAULT_COMPANIES.count { it.ats in Jobs.ATS && Jobs.api(it) != null }))
+
+    // ---- does it fit?
+    val p = Jobs.Profile(listOf("data engineer", "data analyst"), listOf("bengaluru", "chennai", "remote"), listOf("SQL", "Python", "Spark"), Jobs.Kind.BOTH, days = 14, maxYears = 1)
+    fun job(id: String, title: String, place: String, ago: Double, type: String = "", text: String = "", remote: Boolean = false, company: String = "Example Corp", country: String = "") =
+        Jobs.Job("test:$id", company, title, place, remote, "https://example.com/jobs/$id", if (ago < 0) 0 else now - (ago * day).toLong(), type, text, country)
+    val jobs = listOf(
+        job("a", "Data Engineering Intern", "Bengaluru, Karnataka, India", 1.0, "Intern", "SQL and Python pipelines"),
+        job("b", "Senior Data Engineer", "Bengaluru", 1.0),
+        job("c", "Data Engineer", "Bangalore", 2.0, "Full-time", "We need 5+ years of experience with Spark."),
+        job("d", "Data Engineer Intern", "San Francisco, CA", 1.0, "Intern"),
+        job("e", "Data Analyst Intern", "Remote - India", 3.0, "Intern", remote = true),
+        job("f", "Software Engineering Intern", "Bengaluru", 2.0, "Intern", "You will build data pipelines and data engineer tooling in SQL and Python."),
+        job("g", "Sales Intern", "Bengaluru", 1.0, "Intern"),
+        job("h", "Data Engineering Intern", "Chennai", 40.0, "Intern"),
+        job("i", "Data Engineer Intern", "Chennai", 1.0, "Intern", "Selected candidates must pay a registration fee of Rs 2000."),
+        job("j", "Associate Data Engineer", "Chennai, Tamil Nadu, India", 5.0, "Full-time", "0-1 years of experience in SQL."),
+        job("k", "Data Engineer II", "Chennai", 1.0),
+        job("l", "Data Engineering Intern", "Bengaluru, Karnataka, India", 1.0, "Intern", company = "Example Corp"),
+        job("m", "Data Analyst", "Mumbai", 1.0, "Full-time"),
+        job("n", "Data Analyst Intern", "India", -1.0, "Intern"),
+        job("o", "Data Engineer", "Remote", 1.0, "Full-time", "Anywhere in the United States."),
+    )
+    val ranked = Jobs.rank(jobs, p, now)
+    val ids = ranked.matches.map { it.job.id.removePrefix("test:") }
+    T.eq("only what fits is kept: the right role, place, level and age, no money asked, no double; best first", listOf("a", "j", "e", "f", "n"), ids)
+    T.eq("…and each one set aside is counted by why", mapOf("a senior post" to 2, "asks for more experience" to 1, "another place" to 3, "another kind of work" to 1, "older than 14 days" to 1, "asks for money" to 1, "listed twice" to 1),
+        ranked.aside.filterKeys { it != "too weak a fit" })
+    val top = ranked.matches.first()
+    T.eq("the reasons are said: role, level, place, skills, age", listOf("data engineer", "internship", "Bengaluru", "skills: SQL, Python", "posted yesterday"), top.why)
+    T.eq("no experience asked is said plainly", "for freshers", ranked.matches.first { it.job.id == "test:j" }.why[4])
+    T.eq("a description match ranks below a title match", true, ranked.matches.indexOfFirst { it.job.id == "test:f" } > ranked.matches.indexOfFirst { it.job.id == "test:a" })
+    T.eq("India with no city named is kept, and said so", "India (no city given)", ranked.matches.first { it.job.id == "test:n" }.why[2])
+    T.eq("internships only: the job is set aside", listOf("a", "e", "f", "n"), Jobs.rank(jobs, Jobs.Profile(p.roles, p.places, p.skills, Jobs.Kind.INTERN), now).matches.map { it.job.id.removePrefix("test:") })
+    T.eq("fresher jobs only: the internships are set aside", listOf("j"), Jobs.rank(jobs, Jobs.Profile(p.roles, p.places, p.skills, Jobs.Kind.JOB), now).matches.map { it.job.id.removePrefix("test:") })
+    T.eq("no places: anywhere in India, never abroad", listOf("a", "e", "j", "m", "n", "f"), Jobs.rank(jobs, Jobs.Profile(p.roles, emptyList(), p.skills), now).matches.map { it.job.id.removePrefix("test:") })
+    T.eq("words the user ruled out", listOf("j", "e", "n"), Jobs.rank(jobs, Jobs.Profile(p.roles, p.places, p.skills, avoid = listOf("engineering", "software")), now).matches.map { it.job.id.removePrefix("test:") })
+    T.eq("years asked, read from the text", listOf(5, 0, 2, 3, null), listOf(Jobs.yearsAsked("5+ years of experience"), Jobs.yearsAsked("0-1 years of experience"), Jobs.yearsAsked("2 years' experience"), Jobs.yearsAsked("3 to 5 yrs of relevant experience"), Jobs.yearsAsked("a 6 month internship")))
+    T.eq("roles and their short forms", listOf(60, 60, 60, 35, 0), listOf(Jobs.roleFit("ML engineer", "Machine Learning Engineering Intern"), Jobs.roleFit("SDE", "Software Development Engineer - I"), Jobs.roleFit("data analyst", "Analyst, Data & Insights"),
+        Jobs.roleFit("data science engineer", "Data Science Intern"), Jobs.roleFit("data engineer", "Product Designer")))
+
+    // ---- new ones, and what is said
+    val fresh = Jobs.fresh(ranked.matches, setOf("test:a", "test:j"))
+    T.eq("new means not told before", listOf("e", "f", "n"), fresh.map { it.job.id.removePrefix("test:") })
+    val (title, body) = Jobs.notice(fresh)
+    T.eq("the notification", listOf("3 new internships for you", "• Data Analyst Intern · Example Corp · Remote", "Tap to see them and apply early."), listOf(title, body.lines().first(), body.lines().last()))
+    val said = Jobs.say(p, ranked.matches, setOf("test:e"), now, 18, 2)
+    T.eq("the chat list: count, numbered lines with links, NEW marked, what is watched", listOf(true, true, true, true),
+        listOf(said.startsWith("**5 openings fit you** (from 18 companies' own job boards; 2 could not be read)"), said.contains("1. **Data Engineering Intern** · Example Corp\n"), said.contains("3. **Data Analyst Intern** · Example Corp · NEW"), said.contains("[Open the posting](https://example.com/jobs/a)")))
+    T.eq("nothing watched yet: how to start", Jobs.NO_PROFILE, Jobs.say(null, emptyList(), emptySet(), 0, 18, 0))
+
+    // ---- fresh searches on the big sites
+    val links = Jobs.links(p).associate { it.name to it.url }
+    T.eq("one-tap searches with the role and place filled in", listOf(
+        "https://www.linkedin.com/jobs/search/?keywords=data+engineer&location=Bengaluru&f_TPR=r86400&f_E=1%2C2",
+        "https://in.indeed.com/jobs?q=data+engineer&l=Bengaluru&fromage=1",
+        "https://www.naukri.com/data-engineer-jobs-in-bangalore?experience=0",
+        "https://internshala.com/internships/keywords-data%20engineer/"),
+        listOf(links["LinkedIn"], links["Indeed"], links["Naukri"], links["Internshala"]))
+    T.eq("hiring drives: one news search per role, last 7 days", listOf(2, true), Jobs.newsQueries(p).let { listOf(it.size, it[0].contains("when%3A7d")) })
+
+    // ---- from the chat, with no AI
+    fun plan(s: String) = Jobs.plan(s)?.let { it.tool + " " + it.args.optString("action") }?.trim()
+    T.eq("the watcher's own commands", listOf("jobs_list", "jobs_list", "jobs_list", "jobs_check", "job_watch off", "job_watch on", "job_watch show", "job_watch companies", "job_watch add_company", "job_watch remove_company"),
+        listOf("jobs", "any new internships", "what jobs did you find", "check jobs now", "job watch off", "turn on the job watch", "job watch", "which companies do you watch", "watch company zepto", "stop watching company cred").map { plan(it) })
+    val set = Jobs.plan("watch internships for data engineer and data analyst in bengaluru, chennai or remote")
+    T.eq("one line sets what to watch", listOf("job_watch", "set", "data engineer, data analyst", "bengaluru, chennai, remote", "INTERN"), listOf(set?.tool, set?.args?.optString("action"), set?.args?.optString("roles"), set?.args?.optString("places"), set?.args?.optString("kind")))
+    T.eq("…in other words too", listOf("JOB coimbatore sql developer", "INTERN  machine learning", "INTERN chennai data science"),
+        listOf("alert me about new jobs for sql developer in coimbatore", "tell me about new internships for machine learning", "find me internships in data science in chennai").map { s -> Jobs.plan(s)?.args?.let { it.optString("kind") + " " + it.optString("places") + " " + it.optString("roles") } })
+    T.eq("never other requests, even with the word job in them", emptyList<String>(), listOf(
+        "any recent news on jobs", "jobs news", "remind me to apply for jobs at 5 pm", "what is the job market like", "how to get an internship", "send my resume to ram", "find me jobs for my friend",
+        "watch jobs at bangalore", "look for jobs in bangalore", "internship stipend in india", "book 2 tickets for leo", "message amma that i got the internship", "call the hr about the job", "set alarm for my internship at 7 am",
+        "what is today's 22k gold rate in coimbatore", "order 2 masala dosa from a2b", "at 3:34 pm search bairavaa in chrome, don't remind you perform").filter { Jobs.plan(it) != null })
+    T.eq("and through the everyday planner", listOf("jobs_list", "jobs_check"), listOf(Basics.plan("Jobs?")?.tool, Basics.plan("check jobs now")?.tool))
+
+    // ---- when it looks
+    fun at(h: Int, m: Int = 0) = java.time.LocalDateTime.of(2026, 11, 20, h, m).atZone(zone).toInstant().toEpochMilli()
+    T.eq("a look every 6 hours in the day, never at night, not straight after a failed try", listOf(true, false, false, false, false, true),
+        listOf(JobRun.due(at(13), true, true, at(6), at(6), zone), JobRun.due(at(11), true, true, at(6), at(6), zone), JobRun.due(at(23), true, true, at(6), at(6), zone),
+            JobRun.due(at(13), false, true, at(6), at(6), zone), JobRun.due(at(13), true, true, at(6), at(12, 50), zone), JobRun.due(at(13), true, true, 0, 0, zone)))
+    T.eq("the next wake-up: 6 hours on, or 7:05 the next morning", listOf(at(14), at(7, 5) + day, null),
+        listOf(JobRun.nextAt(at(9), true, true, at(8), at(8), zone), JobRun.nextAt(at(20), true, true, at(19), at(19), zone), JobRun.nextAt(at(9), false, true, at(8), at(8), zone)))
+
+    // ---- what is kept on the phone
+    val dir = java.nio.file.Files.createTempDirectory("jobs").toFile()
+    JobStore.init(dir)
+    JobStore.setProfile(p)
+    JobStore.checked(ranked, fresh, mapOf("greenhouse:examplecorp" to "ok 3 open"), 1, listOf(Aware.Item("Example Corp off campus drive 2027 for freshers", "Example News", "https://example.com/n", now, "jobs", "data engineer")), now)
+    JobStore.addCompany(Jobs.Company("Zepto", "", "zepto"))
+    JobStore.init(dir)
+    val back = JobStore.get()
+    T.eq("kept across a restart: profile, matches, new ones, news, companies, seen", listOf("data engineer, data analyst", "5", "e,f,n", "1", "19", "true"),
+        listOf(back.profile?.roles?.joinToString(", "), back.matches.size.toString(), back.newIds.map { it.removePrefix("test:") }.sorted().joinToString(","), back.news.size.toString(), back.companies.size.toString(), ("test:a" in back.seenIds()).toString()))
+    JobStore.viewed()
+    T.eq("seen once the page was looked at", 0, JobStore.get().newIds.size)
+    T.eq("the notification budget per day", listOf(1, 2), run { JobStore.told("2026-11-20"); val one = JobStore.get().toldCount; JobStore.told("2026-11-20"); listOf(one, JobStore.get().toldCount) })
+    dir.deleteRecursively()
+
+    // ---- patterns Android accepts
+    T.eq("the watcher's patterns load on Android", emptyList<String>(), Jobs.patterns.map { it.pattern }.filter { icuTrap(it) })
+}
+
 fun testDoLater() {
     println("A thing to DO at a time is done by Seyal then, not turned into a reminder (phone, 20 Nov 2026: \"…search bairavaa in chrome... don't remind you perform\" → \"Reminder set\")")
     val now = java.time.LocalDateTime.of(2026, 11, 20, 15, 33, 5)
@@ -3478,7 +3623,7 @@ fun testFresh() {
 }
 
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testDoLater(); testPayPage()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testDoLater(); testJobWatch(); testPayPage()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3487,7 +3632,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testDoLater(); testPayPage()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testDoLater(); testJobWatch(); testPayPage()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

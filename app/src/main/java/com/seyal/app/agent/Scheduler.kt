@@ -90,7 +90,7 @@ object Scheduler {
     fun syncBackground(ctx: Context) {
         val now = System.currentTimeMillis()
         val foresight = if (ForesightStore.enabled) Foresight.nextRun(now, ForesightStore.lastOkAt, ForesightStore.lastTryAt) else null
-        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now), foresight, AwareRun.next(now)).minOrNull()
+        val next = listOfNotNull(Inbox.nextReminder(now), Watchers.nextCheck(now), Coach.nextNudge(now), com.seyal.app.device.Guardian.next(now), Background.nextOffer(now), foresight, AwareRun.next(now), runCatching { JobRun.next(now) }.getOrNull()).minOrNull()
         if (next == null) { am(ctx).cancel(pending(ctx, "tick", "bg", 0, "")); forget("tick", "bg"); return }
         val at = maxOf(next, now + 5_000)
         remember("tick", "bg", at, "")
@@ -347,6 +347,8 @@ object Background {
                     val page = runCatching { com.seyal.app.util.Parsers.strip(com.seyal.app.tools.Common.http(w.url, timeoutMs = 8_000)) }.getOrNull()
                     Watchers.record(w, page, System.currentTimeMillis())?.let { say -> Notify.alert(ctx, "watch${w.id}", if (w.enabled || w.hitAt > 0) "It's time: ${w.what}" else "Stopped watching", say, w.url) }
                 }
+                // 3. The internship and job watcher, when a look is due (it runs on by itself; nothing here waits for it).
+                runCatching { JobRun.tick(ctx) }
             } finally {
                 running.set(false)
                 runCatching { Scheduler.syncBackground(ctx) }
