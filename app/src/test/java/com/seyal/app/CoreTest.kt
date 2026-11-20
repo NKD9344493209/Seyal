@@ -3176,8 +3176,77 @@ fun testPatternsLoadOnAndroid() {
     T.check("Later loads and reads a time", Later.find("gold news at 9 pm", LocalDateTime.of(2026, 11, 20, 8, 0))?.at?.hour == 21)
 }
 
+fun testPayPage() {
+    println("At the Pay button Seyal stops; a place left open is no place (phone, 20 Nov 2026, 9:05 AM, v3.30.0)")
+    val now = LocalDateTime.of(2026, 11, 20, 9, 5)
+    val said = listOf("book movie ticket  book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket")
+    // ---- he wrote "190 per ticket" and was asked "the most you want to pay per ticket?"
+    T.eq("his sentence leaves nothing to ask", emptyList<String>(), Preflight.missingMovie(said, now))
+    val byWords = Order.fromWords(Preflight.Kind.MOVIE, said, now)
+    T.eq("…film, day, how many, limit and no named theatre are read from it", listOf("OM", "2026-11-20", "2", "190", ""), listOf(byWords.item, byWords.date, byWords.count.toString(), byWords.maxEach.toString(), byWords.place))
+    // ---- the AI noted "any nearby theatre" as the theatre; at Pay the check sent Seyal back and the picked seats were lost
+    for (open in listOf("any nearby theatre", "nearby theatre", "nearby", "any", "nearest theatre", "any theatre near me", "best rated", "you choose", "any nearby", "Any Nearby Theatre", "anywhere", ""))
+        T.check("\"$open\" names no place", Order.openPlace(open))
+    for (named in listOf("Broadway Cinemas", "KG", "Cosmo Cinemas Peelamedu", "PVR", "INOX Prozone"))
+        T.check("\"$named\" names a place", !Order.openPlace(named))
+    T.check("a short name is held to the screen too", Order.samePlace("KG", "KG Cinemas: Coimbatore") && !Order.samePlace("KG", "Broadway Cinemas: Coimbatore") && !Order.samePlace("PVR", "INOX Prozone Mall") && Order.samePlace("PVR", "PVR Brookefields Coimbatore"))
+    T.check("…and longer names as before", Order.samePlace("Broadway Cinemas", "Broadway Cinemas: Coimbatore") && Order.samePlace("Sangeetha", "Sangeeta Multiplex: Somanur") && !Order.samePlace("Broadway", "Cosmo Cinemas PEELAMEDU"))
+    T.eq("\"at KG\" the AI noted is held, since the user said it", "KG", Order.placeFor("KG", listOf("book 2 tickets for OM at KG tomorrow"), Preflight.Kind.MOVIE))
+    for (odd in listOf("book movie ticket book o. m movie ticket on 20th November 2 tickets 190 per ticket", "book o. m movie ticket releasing on 20th November", "Book O.M movie tickets", "book movie ticket for OM tomorrow 2 tickets", "book 2 tickets for o. m movie", "book tickets book tickets for OM"))
+        T.eq("the film in \"$odd\"", "OM", Order.titleIn(listOf(odd)))
+    T.eq("no film named: none made up", "", Order.titleIn(listOf("book movie ticket book movie ticket")))
+    T.eq("the AI's \"any nearby theatre\" is not held as a place", "", Order.placeFor("any nearby theatre", said, Preflight.Kind.MOVIE))
+    T.eq("…nor a theatre the AI chose by itself when the user left it open", "", Order.placeFor("Cosmo Cinemas", said, Preflight.Kind.MOVIE))
+    T.eq("a theatre the user named is held", "Broadway Cinemas", Order.placeFor("Broadway Cinemas", listOf("book 2 tickets for OM at Broadway Cinemas tomorrow"), Preflight.Kind.MOVIE))
+    T.eq("…in the AI's fuller spelling too", "Broadway Cinemas Coimbatore", Order.placeFor("Broadway Cinemas Coimbatore", listOf("book 2 tickets for OM at Broadway Cinemas tomorrow"), Preflight.Kind.MOVIE))
+    T.eq("a theatre the AI invented is replaced by the one the user said", "KG Cinemas", Order.placeFor("Sathyam Cinemas", listOf("2 tickets for OM at KG Cinemas"), Preflight.Kind.MOVIE))
+    T.eq("food: \"nearby restaurant\" is no restaurant", "", Order.placeFor("nearby restaurant", listOf("order dosa from nearby restaurant 2 dosa... 100 per dosa"), Preflight.Kind.FOOD))
+    T.eq("food: a named restaurant is held", "A2B", Order.placeFor("A2B", listOf("order 1 chicken biryani from A2B"), Preflight.Kind.FOOD))
+    val cosmo = JSONObject().put("place", "Cosmo Cinemas: NARASIMANAIKEN PALAYAM, AC 4k ATMOS").put("date", "2026-11-20").put("count", 2).put("price_each", 190)
+    T.eq("an order whose place was noted as \"any nearby theatre\" matches any theatre", emptyList<String>(), Order("MOVIE", item = "OM", place = "any nearby theatre", count = 2, date = "2026-11-20", maxEach = 190).mismatches(cosmo))
+    T.check("a named theatre is still held against the screen", Order("MOVIE", item = "OM", place = "Broadway Cinemas", count = 2, date = "2026-11-20").mismatches(cosmo).any { it.contains("different place") })
+
+    // ---- the Pay page, as it stood when the AI pressed Back three times
+    val pay = "1 [button] Back @40,60\n2 [text] O.M Operation Mole @300,50\n3 [text] Cosmo Cinemas: NARASIMANAIKEN PALAYAM, AC 4k ATMOS @300,80\n4 [text] Fri, 20 Nov @100,140\n5 [tap] 2 Tickets @900,140\n" +
+        "6 [tap] 09:35 AM · RGB LASER @100,200\n7 [tap] 03:50 PM · RGB LASER @300,200\n8 [text] Rs.190 GOLD @80,260\n9 [text] Available @180,905\n10 [text] Selected @260,905\n11 [text] Sold @330,905\n12 [text] YES Private Debit Card Offer @200,950\n13 [button] Pay ₹380 @500,1000"
+    val order = Order("MOVIE", item = "OM", count = 2, date = "2026-11-20", maxEach = 190)
+    T.eq("the amount on the Pay button", 380, BookGuard.payTotal(pay))
+    T.eq("…with a comma, and \"Proceed to pay Rs.\"", listOf(1140, 760), listOf(BookGuard.payTotal("x\n3 [button] Pay ₹1,140 @1,1"), BookGuard.payTotal("3 [button] Proceed to Pay Rs. 760 @1,1")))
+    T.eq("no Pay button, no amount", null, BookGuard.payTotal("1 [text] Rs.190 GOLD @1,1\n2 [text] 2 Tickets @2,2"))
+    T.eq("the theatre at the top of the page", "Cosmo Cinemas: NARASIMANAIKEN PALAYAM, AC 4k ATMOS", BookGuard.theatreOn(pay))
+    val ready = BookGuard.ready(pay, order, "09:35 AM · RGB LASER", now)
+    T.check("Seyal stops there and says what is ready", ready != null && ready.startsWith("Ready to pay: OM · Cosmo Cinemas") && ready.contains("Fri 20 Nov, 09:35 AM") && ready.contains("2 tickets") && ready.contains("₹380 in all (about ₹190 each)") && ready.contains("Seyal never pays"))
+    T.check("…also when the show's time is not known", BookGuard.ready(pay, order, "", now)?.contains("Fri 20 Nov ·") == true)
+    // what must NOT end the booking
+    T.eq("a seat map with no seats picked yet (no Pay button)", null, BookGuard.ready(pay.replace("13 [button] Pay ₹380 @500,1000", ""), order, "", now))
+    T.eq("the wrong day on the page", null, BookGuard.ready(pay.replace("Fri, 20 Nov", "Mon, 23 Nov"), order, "", now))
+    T.eq("the wrong number of tickets", null, BookGuard.ready(pay.replace("2 Tickets", "6 Tickets").replace("₹380", "₹1140"), order, "", now))
+    T.eq("a price far above the user's limit", null, BookGuard.ready(pay.replace("₹380", "₹700"), order, "", now))
+    T.check("a booking fee on top of the limit is fine", BookGuard.ready(pay.replace("₹380", "₹440"), order, "", now) != null)
+    T.eq("a theatre other than the one the user named", null, BookGuard.ready(pay, Order("MOVIE", item = "OM", place = "Broadway Cinemas", count = 2, date = "2026-11-20"), "", now))
+    T.check("…the named one itself is fine", BookGuard.ready(pay, Order("MOVIE", item = "OM", place = "Cosmo Cinemas", count = 2, date = "2026-11-20"), "", now) != null)
+    T.eq("a named theatre that cannot be read on the page is left to the check", null, BookGuard.ready(pay.replace("3 [text] Cosmo Cinemas: NARASIMANAIKEN PALAYAM, AC 4k ATMOS @300,80\n", ""), Order("MOVIE", item = "OM", place = "Cosmo Cinemas", count = 2, date = "2026-11-20"), "", now))
+    T.eq("a payment page of some other kind (no tickets on it)", null, BookGuard.ready("1 [text] Order summary @1,1\n2 [button] Pay ₹380 @2,2", order, "", now))
+    T.eq("an empty screen", null, BookGuard.ready("", order, "", now))
+    T.check("one ticket is said as one", BookGuard.ready(pay.replace("2 Tickets", "1 Ticket").replace("₹380", "₹190"), Order("MOVIE", item = "OM", count = 1, date = "2026-11-20"), "", now)?.let { it.contains("1 ticket ·") && it.contains("Your seat is selected") && !it.contains("each") } == true)
+    T.check("no limit and no day given: still ready", BookGuard.ready(pay, Order("MOVIE", item = "OM", count = 2), "", now) != null)
+    // ---- the seats the user picked are not thrown away by a step back
+    T.check("Back, reopening the app or a link is refused on the page the user picked seats on", listOf("screen_back", "open_app", "open_url").all { BookGuard.keepSeats(it, true, false, pay, order, now) })
+    T.check("…also when the Pay button's words cannot be read", BookGuard.keepSeats("screen_back", true, false, pay.replace("13 [button] Pay ₹380 @500,1000", ""), order, now))
+    T.check("a tap or a scroll there is not refused", !BookGuard.keepSeats("screen_tap", true, false, pay, order, now) && !BookGuard.keepSeats("screen_scroll", true, false, pay, order, now))
+    T.check("Back is allowed when the user has not picked seats yet", !BookGuard.keepSeats("screen_back", false, false, pay, order, now))
+    T.check("…when the check found the page wrong", !BookGuard.keepSeats("screen_back", true, true, pay, order, now))
+    T.check("…when the page shows the wrong day or count", !BookGuard.keepSeats("screen_back", true, false, pay.replace("Fri, 20 Nov", "Mon, 23 Nov"), order, now) && !BookGuard.keepSeats("screen_back", true, false, pay.replace("2 Tickets", "6 Tickets"), order, now))
+    T.check("…on the \"How many seats?\" sheet, a show list, or any other page", !BookGuard.keepSeats("screen_back", true, false, "1 [text] How many seats? @1,1\n2 [text] 2 Tickets @2,2", order, now) && !BookGuard.keepSeats("screen_back", true, false, "1 [text] Cosmo Cinemas @1,1\n2 [tap] 09:35 AM @2,2", order, now) && !BookGuard.keepSeats("screen_back", true, false, "", order, now))
+    T.check("…and in an order that is not a film", !BookGuard.keepSeats("screen_back", true, false, pay, Order("FOOD", item = "dosa", count = 2), now) && !BookGuard.keepSeats("screen_back", true, false, pay, null, now))
+    T.check("the AI is told why, and what to do instead", BookGuard.KEEP_SEATS.contains("order_check") && BookGuard.KEEP_SEATS.contains("pay themselves"))
+    // ---- screen control dropped out in the middle (first recording of the morning: no progress bar, the app reopened again and again)
+    T.check("a step that failed because screen control is not answering is known", PayPause.lostScreen("Screen control is off. Full edition → Control → turn on Seyal in Accessibility settings.") && !PayPause.lostScreen("No text field on screen") && !PayPause.lostScreen(""))
+    T.check("…and the user is told what to do, in plain words", PayPause.LOST.contains("Off, then On") && PayPause.LOST.contains("stopped here"))
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testPayPage()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3186,7 +3255,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testPayPage()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

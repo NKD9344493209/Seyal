@@ -524,6 +524,26 @@ object Agent {
                 if (lock.withLock { s.status == SessionStatus.CANCELLED }) return
                 // A dead end met during the last step (the app's search has nothing by that name, twice over): stop here.
                 deadEnds.remove(s.id)?.let { end -> finish(s, SessionStatus.DONE, end); return }
+                // Screen control dropped out in the middle of the request (Android leaves it switched on but dead after an
+                // update): it is switched on again where Seyal can, else said plainly. On a real phone the AI reopened the
+                // app again and again instead, with no word to the user.
+                if (!firstRound && s.parentId == null && BuildConfig.FLAVOR == "full" && !ScreenDriver.available) {
+                    val lost = lock.withLock { s.messages.lastOrNull()?.takeIf { it.role == "tool" }?.results?.any { it.isError && PayPause.lostScreen(it.output.optString("error")) } == true }
+                    if (lost) {
+                        report("Switching screen control on…")
+                        val back = runCatching { ScreenAccess.on(app) }.getOrDefault(false)
+                        if (!back) { finish(s, SessionStatus.FAILED, PayPause.LOST); return }
+                        lock.withLock { s.messages += Msg("user", listOf(Part.Text(CHECK + PayPause.BACK_ON))); touch(s) }
+                    }
+                }
+                // The seats are picked and the Pay button is up: Seyal's part is over, said at once and by code.
+                readyToPay.remove(s.id)?.let { ready ->
+                    val note = PayPause.payNote(true, ScreenDriver.available, ScreenAccess.onDemand(app))
+                    val text = if (note != null) ready + "\n\n" + note else ready
+                    lock.withLock { s.messages += Msg("assistant", listOf(Part.Text(text))); touch(s) }
+                    finish(s, SessionStatus.DONE, text)
+                    return
+                }
                 // The words of a new request (first round only).
                 val said = if (!firstRound) "" else lock.withLock { s.messages.lastOrNull() }?.takeIf { it.role == "user" && it.parts.none { p -> p is Part.Image } }?.text?.removePrefix(MIDTASK).orEmpty()
                 // Screen control may be resting (payment apps refuse to pay while it is on): it is switched on, or asked
@@ -633,6 +653,8 @@ object Agent {
                             // Food: when the user's own words already say the dish, how many and where from, no question is
                             // asked, whatever the AI wanted to ask ("already told u", seen on a real phone).
                             if (kind == Preflight.Kind.FOOD && question != null && Preflight.missingFood(lock.withLock { requestWords(s) }).isEmpty()) question = null
+                            // A film too: "…190 per ticket" was asked "the most you want to pay per ticket?" (real phone, twice).
+                            if (kind == Preflight.Kind.MOVIE && question != null && Preflight.missingMovie(lock.withLock { requestWords(s) }, java.time.LocalDateTime.now()).isEmpty()) question = null
                             if (question == null) {
                                 // The AI did not ask. That is only right when the user really gave the details: check the one
                                 // that costs most when guessed (how many), and ask it ourselves if nobody said it.
@@ -691,7 +713,9 @@ object Agent {
                                 if (!Order.grounded(byAi.item, words)) put("item", when (kind) { Preflight.Kind.MOVIE -> Order.titleIn(words); Preflight.Kind.FOOD -> byWords.item; else -> Order.itemFromWords(words) })
                                 // The food the user named, when the AI noted none.
                                 if (kind == Preflight.Kind.FOOD && byAi.item.isBlank() && byWords.item.isNotBlank()) put("item", byWords.item)
-                                if (kind == Preflight.Kind.FOOD && byAi.place.isBlank() && byWords.place.isNotBlank()) put("place", byWords.place)
+                                // The place is held against the Pay screen later: only a place the user really named counts.
+                                // "Any nearby theatre" is no place (it was once noted as the theatre's name).
+                                put("place", Order.placeFor(byAi.place, words, kind))
                             })
                             // "Same as last time": what they left out comes from the last order of this kind that went through.
                             s.order = if (words.any { Usual.asksForSame(it) }) Usual.fill(noted ?: Order(kind.name)).takeIf { !it.isEmpty } else noted
@@ -825,6 +849,30 @@ object Agent {
                 suspend fun one(call: Part.Call): Part.Result {
                     val sig = call.name + call.args.toString()
                     if ((sameCount[sig] ?: 0) >= 2 && call.name !in setOf("wait", "ask_user")) { skipped += call.id; return stuck(s, call) }
+                    // The AI hands the seat map to the user in its own words ("…in row D or F", rows it made up, on a real
+                    // phone): on a seat map the bar says only what is true.
+                    if (call.name == "your_turn" && s.parentId == null) runCatching {
+                        val o = s.order
+                        if (o != null && o.kind == Preflight.Kind.MOVIE.name && o.count in 1..10 && ScreenDriver.available && BookGuard.seatMap(ScreenDriver.peek()) &&
+                            !BookGuard.seyalPicksSeats(lock.withLock { requestWords(s) })
+                        ) { call.args.put("what", BookGuard.pickSeats(o.count)); s.checked += "handover" }
+                    }
+                    // The seats the user picked are never thrown away by a step back (real phone: Back three times at "Pay ₹380").
+                    if (call.name in BookGuard.leaving && s.parentId == null && s.order != null && ScreenDriver.available) {
+                        val refuse = runCatching {
+                            val did = lock.withLock { didSince(s) }
+                            val picked = did.indexOfLast { it.name == "your_turn" && it.ok }
+                            picked >= 0 && BookGuard.keepSeats(call.name, true, did.drop(picked + 1).any { it.name == "order_check" && !it.ok }, ScreenDriver.peek(), s.order, java.time.LocalDateTime.now())
+                        }.getOrDefault(false)
+                        if (refuse && s.checked.count { it.startsWith("keep") } < 3) {
+                            s.checked += "keep" + s.checked.size
+                            return lock.withLock {
+                                s.state(call.id).apply { status = CallStatus.FAILED; error = "Not done: your seats are selected on this page"; startedAt = System.currentTimeMillis(); endedAt = startedAt }
+                                touch(s)
+                                Part.Result(call.id, call.name, JSONObject().put("error", BookGuard.KEEP_SEATS), true)
+                            }
+                        }
+                    }
                     return runCall(s, call, byName[call.name])
                 }
                 // Screen actions sent together assume each one worked: after one fails, the rest would hit the wrong screen.
@@ -1272,6 +1320,17 @@ object Agent {
             report("Waiting for the seats…")
             for (i in 1..4) { delay(750); now = look(); if (loaded(now)) break }
         }
+        // 0. The user has picked the seats and the Pay button is up, for the right day, number and price: the end.
+        suspend fun readyOn(screen: String): Boolean {
+            if ("ready" in s.checked || BookGuard.seyalPicksSeats(lock.withLock { requestWords(s) })) return false
+            val did = lock.withLock { didSince(s) }
+            if (did.none { it.name == "your_turn" && it.ok }) return false
+            val time = did.lastOrNull { it.name == "screen_tap" && it.ok && BookGuard.isShowTime(it.output?.optString("tapped").orEmpty()) }?.output?.optString("tapped").orEmpty()
+            val text = BookGuard.ready(screen, order, time, java.time.LocalDateTime.now()) ?: return false
+            s.checked += "ready"; readyToPay[s.id] = text
+            return true
+        }
+        if (readyOn(now)) return 0
         var n = 0
         // 1. How many.
         n += setSeatCount(s, now)
@@ -1283,6 +1342,8 @@ object Agent {
             val turn = Toolbox.get("your_turn") ?: return n
             s.checked += "handover"
             runSynthetic(s, Part.Call(newId(), "your_turn", JSONObject().put("what", BookGuard.pickSeats(order.count))), turn); s.steps++; n++
+            // The user is back: with their seats picked and the Pay button up, that is the end (no AI round in between).
+            delay(300); readyOn(look())
             return n
         }
         // 3. The day.
@@ -1304,6 +1365,8 @@ object Agent {
         return n
     }
 
+    /** A booking that has reached the Pay button with the user's own seats: the words to finish with, by chat id. */
+    private val readyToPay = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** A request that code has found cannot go on (the film is not running): the words to finish with, by chat id. */
     private val deadEnds = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** The film's own page, looked for on the web while the booking details are still being noted: chat id → (title, link). */

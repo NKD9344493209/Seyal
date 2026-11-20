@@ -135,6 +135,58 @@ object BookGuard {
     /** [label] is a show time ("06:00 AM · RGB LASER"): the tap on one opens the count sheet or the seat map a moment later. */
     fun isShowTime(label: String): Boolean = showTime.containsMatchIn(label) && label.length <= 60
 
+    private val payRx = Regex("\\b(?:pay|proceed to pay)\\s*(?:₹|rs\\.?|inr)\\s*([\\d,]{2,9})", I)
+    /** "Pay ₹380", "Proceed to pay Rs. 1,140": the amount on the pay button, or null when there is none. */
+    fun payTotal(screen: String): Int? = payRx.find(screen)?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()?.takeIf { it in 20..200000 }
+
+    private val theatreRx = Regex("cinema|theat(?:re|er)|multiplex|\\bpvr\\b|\\binox\\b|talkies|cineplex|\\bmall\\b|\\bmax\\b.*\\bscreen", I)
+    /** The theatre named at the top of a seat page ("Cosmo Cinemas: NARASIMANAIKEN PALAYAM, AC 4k ATMOS"); "" when none is read. */
+    fun theatreOn(screen: String): String =
+        Opener.items(screen).take(14).map { it.label }.firstOrNull { theatreRx.containsMatchIn(it) && it.length in 4..90 && !Regex("tickets?\\b|offer|\\bpay\\b", I).containsMatchIn(it) }.orEmpty()
+
+    /**
+     * The end of Seyal's part of a film booking: the user has picked the seats and the Pay button is up, for the
+     * user's day, number of tickets and price. Returns what to tell them; null when the screen is anything else
+     * (then the AI carries on). Said by code, because here the AI once pressed Back three times and started again
+     * (real phone, 20 Nov 2026: seats M5 and M6 picked, "Pay ₹380" on the screen).
+     * [showTime]: the show that was tapped ("09:35 AM · RGB LASER"), "" when not known.
+     */
+    fun ready(screen: String, order: Order, showTime: String, now: java.time.LocalDateTime): String? {
+        val total = payTotal(screen) ?: return null
+        if (!Regex("\\b\\d{1,2}\\s*tickets?\\b", I).containsMatchIn(screen)) return null
+        if (SeatScreen.problem(screen, order, now) != null) return null
+        val n = order.count.takeIf { it > 0 } ?: Regex("\\b(\\d{1,2})\\s*tickets?\\b", I).find(screen)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        val each = total / n
+        // Fees sit on top of the ticket price: a little over is the fee, a lot over is the wrong class (the AI asks then).
+        if (order.maxEach > 0 && each > order.maxEach * 1.2 + 5) return null
+        val theatre = theatreOn(screen)
+        // A theatre the user named must be the one on the screen; when it cannot be read, the AI checks it.
+        if (!Order.openPlace(order.place) && (theatre.isBlank() || !Order.samePlace(order.place, theatre))) return null
+        val day = runCatching { java.time.LocalDate.parse(order.date) }.getOrNull()?.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM", java.util.Locale.ENGLISH))
+        val time = showTime.substringBefore(" · ").trim().takeIf { isShowTime(it) }
+        val what = listOfNotNull(
+            order.item.takeIf { it.isNotBlank() }, theatre.takeIf { it.isNotBlank() },
+            listOfNotNull(day, time).joinToString(", ").takeIf { it.isNotBlank() },
+            "$n ticket${if (n == 1) "" else "s"}", "₹$total in all" + (if (n > 1) " (about ₹$each each)" else ""),
+        ).joinToString(" · ")
+        return "Ready to pay: $what.\nYour seat${if (n == 1) " is" else "s are"} selected and the Pay button is on the screen. Check it and pay yourself: Seyal never pays."
+    }
+
+    /** Steps that leave the page the seats were picked on. */
+    val leaving = setOf("screen_back", "open_app", "open_url")
+    const val KEEP_SEATS = "The user has just picked the seats on this page, and it shows the day and the number of tickets they asked for. Leaving it would throw their seats away, so this step was not done. " +
+        "Call order_check with exactly what the page shows (theatre, date, count, price, seats). If it matches, stop: tell the user it is ready and that they pay themselves. " +
+        "Leave this page only if order_check says the day or the number of tickets is wrong, or the user asks for another show."
+
+    /**
+     * Whether a step that leaves the page must be refused: the user picked the seats here ([userPicked]) and the page
+     * still shows a seat page with their day and count, and no check since has found it wrong ([checkFailed]).
+     */
+    fun keepSeats(tool: String, userPicked: Boolean, checkFailed: Boolean, screen: String, order: Order?, now: java.time.LocalDateTime): Boolean =
+        tool in leaving && userPicked && !checkFailed && order != null && order.kind == Preflight.Kind.MOVIE.name &&
+            Regex("\\b\\d{1,2}\\s*tickets?\\b", I).containsMatchIn(screen) && !Regex("how many seats|number of seats", I).containsMatchIn(screen) &&
+            SeatScreen.problem(screen, order, now) == null
+
     /** The screen is a seat map or its count sheet (the only places where the header's day and ticket count are checked). */
     fun seatPage(screen: String): Boolean = Regex("\\b\\d{1,2} tickets?\\b|how many seats|select seats", I).containsMatchIn(screen)
 }

@@ -83,6 +83,14 @@ object PayPause {
     fun stillOff(app: String): String =
         "Screen control is still off, so the steps inside ${app.ifBlank { "the app" }} are yours this time. To let me do them: Settings → Accessibility → Downloaded apps → Seyal → On, then say \"continue\"."
 
+    /** A step's error says that screen control is not answering (see ScreenDriver.svc). */
+    fun lostScreen(error: String): Boolean = error.contains("Screen control is off", ignoreCase = true)
+    /** Said when screen control dropped out in the middle of a request and could not be brought back. */
+    const val LOST = "Screen control stopped answering, so I can't tap or read inside the app, and I have stopped here. " +
+        "On the phone: Settings → Accessibility → Downloaded apps → Seyal: switch it Off, then On. Then ask me again. " +
+        "(Android sometimes leaves it switched on but not working right after Seyal is updated.)"
+    const val BACK_ON = "Screen control had dropped out and is on again now. Do the last step again."
+
     /** The Control tab's words for the "only while working" switch. */
     const val SWITCH_TITLE = "Screen control only while Seyal works"
     const val SWITCH_ABOUT = "For Google Pay and bank apps: they block payments while any screen-control app is on. With this, Seyal switches its own on when a request needs it and off when it is done or it is time to pay. While off, ad skipping and \"when I open an app\" skills rest."

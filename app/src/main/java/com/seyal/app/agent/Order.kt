@@ -208,8 +208,10 @@ class Order(
         fun titleIn(words: List<String>): String {
             val first = words.firstOrNull().orEmpty().trim()
             val stop = Regex("\\b(?:$STOP_AT|movie|film|padam|tickets?|seats?)\\b", RegexOption.IGNORE_CASE)
-            for (rx in titleRx) {
-                val raw = rx.find(first)?.groupValues?.get(1)?.trim()?.trim(',', '!', '?', '-', ':')?.trim() ?: continue
+            // Every place the pattern fits is tried, not only the first: "book movie ticket book o. m movie ticket…"
+            // (typed like that on a real phone) fits first at "book movie ticket", which names no film.
+            for (rx in titleRx) for (m in rx.findAll(first)) {
+                val raw = m.groupValues[1].trim().trim(',', '!', '?', '-', ':').trim()
                 // A title does not run across a comma or a word like "for", "tomorrow", "tickets": then this is not where the title is.
                 if (raw.contains(',') || raw.contains(';') || stop.containsMatchIn(raw)) continue
                 val left = raw.split(Regex("\\s+")).filter { it.isNotBlank() }
@@ -242,6 +244,35 @@ class Order(
         /** The theatre the user named ("at Broadway Cinemas"); "" when they named none or left it open ("any nearby theatre"). */
         fun placeIn(words: List<String>): String =
             words.asReversed().firstNotNullOfOrNull { w -> if (anyPlaceRx.containsMatchIn(w)) null else namedPlaceRx.find(w)?.groupValues?.get(1)?.trim() }.orEmpty().take(60)
+        private val openWords = setOf("any", "anywhere", "nearby", "near", "nearest", "close", "closest", "around", "here", "local", "best", "good", "top", "rated", "you", "choose", "your", "choice", "whichever", "which", "ever", "one", "some", "place", "area", "city", "town")
+        /**
+         * [place] names no place at all ("any nearby theatre", "nearest", "best rated", "you choose"): then nothing is
+         * held against the theatre on the screen. (Seen on a real phone, 20 Nov 2026: the AI noted the user's "any nearby
+         * theatre" as the theatre's name; at the Pay button the check called every theatre "a different place", and
+         * Seyal went back and threw away the seats the user had just picked.)
+         */
+        fun openPlace(place: String): Boolean = place.isBlank() || names(place).isEmpty()
+        private val placeNouns = setOf("the", "and", "cinemas", "cinema", "theatre", "theater", "theatres", "theaters", "multiplex", "screen", "screens", "hall", "halls", "hotel", "restaurant", "restaurants", "shop", "mall", "road", "me", "by", "in", "at", "to", "of", "for", "a", "an", "my", "is", "it")
+        /** The words of [place] that name it ("kg" in "KG Cinemas"; none in "any nearby theatre"). Two letters are enough for a name. */
+        private fun names(place: String): List<String> = place.lowercase().replace(Regex("[^a-z0-9\\u0B80-\\u0BFF ]"), " ").split(Regex("\\s+"))
+            .filter { it.length >= 2 && it !in openWords && it !in placeNouns }
+
+        /**
+         * The place to hold a booking to: the AI's note [byAi] only when the user's [words] really name a place and
+         * do not leave it open; else what the words themselves name ("" = any).
+         */
+        fun placeFor(byAi: String, words: List<String>, kind: Preflight.Kind): String {
+            val said = when (kind) { Preflight.Kind.MOVIE -> placeIn(words); Preflight.Kind.FOOD -> restaurantIn(words); else -> "" }
+            val leftOpen = when (kind) { Preflight.Kind.MOVIE -> words.any { anyPlaceRx.containsMatchIn(it) }; Preflight.Kind.FOOD -> words.any { anyRestaurantRx.containsMatchIn(it) }; else -> false }
+            if (openPlace(byAi)) return said
+            if (leftOpen && said.isBlank()) return ""
+            // The AI's name must be made of the user's own words.
+            val have = names(words.joinToString(" "))
+            val want = names(byAi)
+            val heard = want.count { w -> have.any { h -> h == w || (w.length >= 5 && distance(w, h) <= 1) } }
+            return if (want.isNotEmpty() && heard * 2 >= want.size) byAi else said
+        }
+
         /** Whether the user spoke of the theatre at all (named one, or said "any nearby"). */
         fun saysPlace(words: List<String>): Boolean = words.any { anyPlaceRx.containsMatchIn(it) || namedPlaceRx.containsMatchIn(it) }
 
@@ -296,7 +327,8 @@ class Order(
          */
         fun samePlace(wanted: String, shown: String): Boolean {
             val want = tokens(wanted); val have = tokens(shown)
-            if (want.isEmpty()) return true
+            // A short name ("KG", "PVR 4") has no long word in it: then its short words must stand on the screen as they are.
+            if (want.isEmpty()) return names(wanted).let { short -> short.isEmpty() || names(shown).containsAll(short) }
             if (have.isEmpty()) return false
             return want.all { w -> have.any { h -> h == w || (w.length >= 5 && distance(w, h) <= (if (w.length >= 8) 2 else 1)) || (w.length >= 5 && h.startsWith(w)) || (h.length >= 5 && w.startsWith(h)) } }
         }
@@ -315,7 +347,7 @@ class Order(
             else if (n != count) bad += "The app shows $n, but the user asked for exactly $count. Change the quantity to $count (the app pre-selects a number: tap $count), re-select if needed, and check again."
         }
         val sp = shown.optString("place")
-        if (place.isNotBlank()) {
+        if (!openPlace(place)) {
             if (sp.isBlank()) unread += "place (the theatre / restaurant / operator named on the screen)"
             else if (!samePlace(place, sp)) bad += "The screen shows \"$sp\", but the user asked for \"$place\". That is a different place: go back and pick \"$place\". If \"$place\" is not listed for this item and day, do NOT book elsewhere: ask_user, saying it is not listed and what the nearest options are."
         }
