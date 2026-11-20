@@ -19,12 +19,15 @@ object Later {
     /** [at]: the one time to run (null for a daily one); [daily]: the clock time of a daily one; [rest]: the request without its time. */
     class When(val at: LocalDateTime?, val daily: LocalTime?, val rest: String, val past: Boolean = false)
 
-    private const val CLOCK = "(\\d{1,2})(?:[:.](\\d{2}))?\\s?(am|pm|a\\.m\\.?|p\\.m\\.?)|(\\d{1,2})[:.](\\d{2})"
+    // Android's pattern reader (ICU) takes "[:" … ":]" anywhere in a pattern as one named class and refuses the whole
+    // pattern, where the laptop's Java does not. So ":" never stands first or last inside [ ] here. (3.27 and 3.28
+    // broke every typed request on a phone because of exactly this.)
+    private const val CLOCK = "(\\d{1,2})(?:[.:](\\d{2}))?\\s?(am|pm|a\\.m\\.?|p\\.m\\.?)|(\\d{1,2})[.:](\\d{2})"
     private const val DAY = "today|tonight|tomorrow|tmrw|tomorow|innaiku|inniku|naalaikku|naalaiku|nalaiku"
     private const val EVERY = "every ?day|daily|every morning|every evening|every night|dhinamum|daily once"
 
     /** "[every day|today|tomorrow] [at] 11:09 pm [today|tomorrow|every day]" anywhere in the request. */
-    private val clockAt = Regex("(?:\\b($EVERY|$DAY)\\s+)?(?:\\b(?:at|by|@)\\s+)?(?:\\b($EVERY|$DAY)\\s+)?(?:\\b(?:at|by|@)\\s+)?\\b(?:$CLOCK)(?![\\d:])(?:\\s+\\b($EVERY|$DAY)\\b)?", I)
+    private val clockAt = Regex("(?:\\b($EVERY|$DAY)\\s+)?(?:\\b(?:at|by|@)\\s+)?(?:\\b($EVERY|$DAY)\\s+)?(?:\\b(?:at|by|@)\\s+)?\\b(?:$CLOCK)(?!\\d|:)(?:\\s+\\b($EVERY|$DAY)\\b)?", I)
     private val inMinutes = Regex("\\b(?:in|after)\\s+(\\d{1,3}|a|an|one|half an?)\\s*(min|mins|minutes?|hrs?|hours?)\\b", I)
 
     /** Requests where the time belongs to the thing itself: an alarm, a reminder, a meeting, a booking, a show time. */

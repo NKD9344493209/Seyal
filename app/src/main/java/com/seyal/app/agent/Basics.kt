@@ -141,7 +141,8 @@ object Basics {
         // ---- for later: "give the news about gold at today 11:09 pm", "brief me tomorrow 8 am", "in 10 minutes AI news".
         // What can be fetched then is scheduled now, by code; anything else with a later time goes to the AI, which
         // plans it (skill_save). Nothing with a later time is done now.
-        Later.find(original, now)?.let { w -> return later(w, now, whatsApp) }
+        // Guarded: a fault in reading the time must never stop the everyday commands below.
+        runCatching { Later.find(original, now) }.getOrNull()?.let { w -> runCatching { later(w, now, whatsApp) }.getOrNull()?.let { return it } ?: return null }
 
         // ---- in Tamil, for those who would rather speak than type (the answers come back in Tamil and are read aloud)
         if (Regex("^(இப்போ |இப்போது )?(நேரம்|மணி) (என்ன|எத்தனை|எவ்வளவு)( ஆச்சு)?$|^(இப்போ )?மணி என்ன ஆச்சு$").matches(t))

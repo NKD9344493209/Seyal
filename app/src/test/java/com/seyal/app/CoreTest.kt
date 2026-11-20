@@ -3125,8 +3125,55 @@ fun testBackup() {
     home.deleteRecursively(); fresh.parentFile.deleteRecursively()
 }
 
+/**
+ * Android reads patterns with ICU, the laptop and GitHub's unit tests with Java. ICU takes "[:" … ":]" anywhere in one
+ * pattern as a named class and refuses the pattern; Java does not. One such pattern in an object's fields stops the
+ * whole object from loading on a phone (3.27: every typed request answered "Something broke").
+ */
+fun icuTrap(pattern: String): Boolean {
+    val open = pattern.indexOf("[:")
+    return open >= 0 && pattern.indexOf(":]", open + 2) >= 0
+}
+
+fun testPatternsLoadOnAndroid() {
+    println("Patterns that Java takes and Android refuses (phone, 3.27 and 3.28: every typed request broke)")
+    T.check("the trap is known: \"[:\" with \":]\" later in the same pattern", icuTrap("(\\d)[:.](\\d{2})(?![\\d:])") && !icuTrap("(\\d)[.:](\\d{2})(?!\\d|:)") && !icuTrap("[:.]\\d") && !icuTrap("a[\\d:]b"))
+    // Every pattern kept in a field of every class of the app that can be loaded here.
+    // Only classes that touch nothing of Android are loaded here (the others cannot start on a laptop, and must not be
+    // started by a test): told from the names written inside the class file.
+    val names = sortedSetOf<String>()
+    fun pure(bytes: ByteArray) = String(bytes, Charsets.ISO_8859_1).let { !it.contains("android/") && !it.contains("androidx/") && !it.contains("com/google/") }
+    runCatching {
+        val where = java.io.File(Later::class.java.protectionDomain.codeSource.location.toURI())
+        if (where.isDirectory) where.walkTopDown().filter { it.isFile && it.name.endsWith(".class") && pure(it.readBytes()) }.forEach { names += it.relativeTo(where).invariantSeparatorsPath.removeSuffix(".class").replace('/', '.') }
+        else java.util.zip.ZipFile(where).use { z -> z.entries().asSequence().filter { it.name.endsWith(".class") && pure(z.getInputStream(it).readBytes()) }.forEach { names += it.name.removeSuffix(".class").replace('/', '.') } }
+    }
+    val loader = Later::class.java.classLoader
+    var seen = 0
+    val bad = mutableListOf<String>()
+    fun look(owner: String, v: Any?) {
+        when (v) {
+            is Regex -> { seen++; if (icuTrap(v.pattern)) bad += "$owner: ${v.pattern.take(60)}" }
+            is java.util.regex.Pattern -> { seen++; if (icuTrap(v.pattern())) bad += "$owner: ${v.pattern().take(60)}" }
+            is Collection<*> -> v.take(200).forEach { look(owner, it) }
+            is Map<*, *> -> v.values.take(200).forEach { look(owner, it) }
+            is Pair<*, *> -> { look(owner, v.first); look(owner, v.second) }
+        }
+    }
+    for (n in names.filter { it.startsWith("com.seyal.app.agent.") || it.startsWith("com.seyal.app.util.") || it.startsWith("com.seyal.app.data.") }) {
+        val c = runCatching { Class.forName(n, false, loader) }.getOrNull() ?: continue
+        for (f in runCatching { c.declaredFields }.getOrNull() ?: continue) {
+            if (!java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
+            runCatching { f.isAccessible = true; look("${c.simpleName}.${f.name}", f.get(null)) }
+        }
+    }
+    T.check("the app's classes were found and their patterns read ($seen patterns)", seen > 60)
+    T.eq("none of them is one Android refuses", emptyList<String>(), bad)
+    T.check("Later loads and reads a time", Later.find("gold news at 9 pm", LocalDateTime.of(2026, 11, 20, 8, 0))?.at?.hour == 21)
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3135,7 +3182,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }
