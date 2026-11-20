@@ -24,9 +24,9 @@ object WebTools {
                 "web_search", "web",
                 "Search the web and read the top pages. Output: results[title, url, snippet], pages[url, title, text]. For prices, ratings, release dates, lists, show times, 'what's new'. read = how many top pages to read (0-3, default 2).",
                 schema { str("query", "Search words", required = true); int("count", "Results to return (1-10)"); int("read", "Pages to read (0-3)") },
-            ) { a, _ -> search(a.optString("query"), a.optInt("count", 6), a.optInt("read", 2)) },
+            ) { a, _ -> search(a.optString("query"), a.optInt("count", 6), a.optInt("read", 2), a.optInt("fresh_days", 0)) },
 
-            Tool("read_page", "web", "Read the text of one web page. Output: title, text.", schema { str("url", "https://…", required = true) }) { a, _ -> readPage(a.optString("url")) },
+            Tool("read_page", "web", "Read the text of one web page. Output: title, text.", schema { str("url", "https://…", required = true) }) { a, _ -> readPage(a.optString("url"), a.optInt("fresh_days", 0)) },
 
             Tool(
                 "news", "web", "Latest headlines on a topic (Google News, India edition). Output: items[title, source, link, published].",
@@ -52,7 +52,12 @@ object WebTools {
         (0 until found.length()).mapNotNull { i -> found.optJSONObject(i)?.let { it.optString("title") to it.optString("url") } }.filter { it.second.startsWith("http") }
     }
 
-    private suspend fun search(query: String, count: Int, read: Int): ToolResult = withContext(Dispatchers.IO) {
+    /**
+     * [freshDays] > 0 (set by Seyal itself in Dirghadarshi mode, for a figure that moves every day; see Fresh): only
+     * pages dated within that many days are given to the AI, more pages are tried, and search snippets are left out.
+     */
+    private suspend fun search(query: String, count: Int, read: Int, freshDays: Int = 0): ToolResult = withContext(Dispatchers.IO) {
+        if (freshDays > 0) return@withContext searchFresh(query, freshDays)
         if (query.isBlank()) return@withContext ToolResult.Failed("Empty search")
         fun find(q: String): JSONArray? = runCatching { Parsers.searchResults(http("https://html.duckduckgo.com/html/?q=${URLEncoder.encode(q, "UTF-8")}"), count.coerceIn(1, 10)) }.getOrNull()
         var asked = query
@@ -66,20 +71,81 @@ object WebTools {
         coroutineScope {
             urls.map { u -> async { runCatching { http(u, timeoutMs = 9_000) }.getOrNull()?.let { u to it } } }.awaitAll()
         }.filterNotNull().forEach { (u, page) ->
-            val text = Parsers.strip(page).take(3500)
-            if (text.length > 200) pages.put(JSONObject().put("url", u).put("title", Parsers.pageTitle(page)).put("text", text))
+            val whole = Parsers.strip(page)
+            val text = whole.take(3500)
+            val title = Parsers.pageTitle(page)
+            // The day the page says it is from, so an old page is never taken for today's (empty = it shows none).
+            val dated = runCatching { com.seyal.app.agent.Fresh.dateOf(page, u, title, whole, java.time.LocalDate.now()) }.getOrNull()
+            if (text.length > 200) pages.put(JSONObject().put("url", u).put("title", title).put("dated", dated?.toString().orEmpty()).put("text", text))
         }
         val line = "Searched: $query" + if (pages.length() > 0) " · read ${pages.length()} pages" else ""
         ToolResult.Done(JSONObject().put("query", asked).put("results", results).put("pages", pages), line)
     }
 
-    private suspend fun readPage(url: String): ToolResult = withContext(Dispatchers.IO) {
+    /**
+     * A search for today's figure: up to six pages are opened, each is dated by what the page itself says, and only
+     * those from the last [days] day(s) are given back (newest first, three at most). The rest are named with their
+     * dates, without their text. When none is that new, the newest dated page is given, marked as old.
+     */
+    private suspend fun searchFresh(query: String, days: Int): ToolResult = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext ToolResult.Failed("Empty search")
+        val F = com.seyal.app.agent.Fresh
+        val today = java.time.LocalDate.now()
+        val asked = F.sharpen(query, today)
+        fun find(q: String): JSONArray? = runCatching { Parsers.searchResults(http("https://html.duckduckgo.com/html/?q=${URLEncoder.encode(q, "UTF-8")}"), 10) }.getOrNull()
+        var results = find(asked) ?: find(asked) ?: return@withContext ToolResult.Failed("Search failed (no connection to the search site). Try once more.", retryable = true)
+        if (results.length() == 0) Parsers.simplerQuery(asked)?.let { plain -> find(plain)?.takeIf { it.length() > 0 }?.let { results = it } }
+        if (results.length() == 0) return@withContext ToolResult.Failed("No results for \"$asked\". Use 3 to 6 plain words.", retryable = true)
+        val urls = Parsers.readableUrls(results, 6)
+        class Read(val url: String, val title: String, val dated: java.time.LocalDate?, val text: String)
+        val read = coroutineScope {
+            urls.map { u -> async { runCatching { http(u, timeoutMs = 9_000) }.getOrNull()?.let { u to it } } }.awaitAll()
+        }.filterNotNull().mapNotNull { (u, page) ->
+            val whole = Parsers.strip(page)
+            if (whole.length <= 200) return@mapNotNull null
+            val title = Parsers.pageTitle(page)
+            Read(u, title, runCatching { F.dateOf(page, u, title, whole, today) }.getOrNull(), F.focus(whole, 3500))
+        }
+        val good = read.filter { F.fresh(it.dated, today, days) }.sortedByDescending { it.dated }.distinctBy { F.host(it.url) }.take(3)
+        val aside = read.filter { r -> good.none { it.url == r.url } }
+        val pages = JSONArray()
+        good.forEach { pages.put(JSONObject().put("url", it.url).put("title", it.title).put("dated", it.dated.toString()).put("text", it.text)) }
+        // Nothing from today: the newest dated page is shown, marked, so the AI can say "the latest I found" with its date.
+        val newestOld = if (good.isEmpty()) aside.filter { it.dated != null }.maxByOrNull { it.dated!! } else null
+        newestOld?.let {
+            pages.put(JSONObject().put("url", it.url).put("title", it.title).put("dated", it.dated.toString()).put("old", true)
+                .put("text", "OLD PAGE, dated ${F.say(it.dated!!)} (${F.age(it.dated, today)}). Its figures are NOT today's.\n" + it.text))
+        }
+        // …and one page that shows no date at all, marked too: a live-rates page may be right, but nothing on it proves it.
+        val undated = if (good.isEmpty()) aside.firstOrNull { it.dated == null } else null
+        undated?.let {
+            pages.put(JSONObject().put("url", it.url).put("title", it.title).put("dated", "").put("old", true)
+                .put("text", "UNDATED PAGE: it shows no date, so its figures may be old. Give them only as \"the page shows no date\".\n" + it.text))
+        }
+        val shownOnly = JSONArray().also { a -> good.forEach { a.put(JSONObject().put("title", it.title).put("url", it.url)) } }
+        val note = F.note(good.size, aside.filter { it.url != newestOld?.url && it.url != undated?.url }.map { F.host(it.url) to it.dated }, today, days)
+        val line = "Searched: $asked · " + (if (good.isEmpty()) "no page dated today" else "read ${good.size} page${if (good.size == 1) "" else "s"} dated ${good.mapNotNull { it.dated }.distinct().joinToString(", ") { F.say(it) }}") +
+            (if (aside.isNotEmpty()) " · set aside ${aside.size} old or undated" else "")
+        ToolResult.Done(JSONObject().put("query", asked).put("today", today.toString()).put("results", shownOnly).put("pages", pages).put("note", note), line)
+    }
+
+    private suspend fun readPage(url: String, freshDays: Int = 0): ToolResult = withContext(Dispatchers.IO) {
         if (!url.startsWith("http")) return@withContext ToolResult.Failed("Not a web link")
         if (com.seyal.app.agent.Links.isPirate(url)) return@withContext ToolResult.Failed(com.seyal.app.agent.Links.PIRATE_NOTE)
         val html = runCatching { http(url) }.getOrElse { return@withContext ToolResult.Failed("Could not open the page (${it.message})", retryable = true) }
         val title = Parsers.pageTitle(html)
-        val text = Parsers.strip(html).take(8000)
-        ToolResult.Done(JSONObject().put("url", url).put("title", title).put("text", text), "Read: ${title.ifBlank { url }}")
+        val whole = Parsers.strip(html)
+        val today = java.time.LocalDate.now()
+        val dated = runCatching { com.seyal.app.agent.Fresh.dateOf(html, url, title, whole, today) }.getOrNull()
+        val out = JSONObject().put("url", url).put("title", title).put("dated", dated?.toString().orEmpty())
+        // A question about today's figure: a page that is not from today or yesterday is marked, loudly.
+        if (freshDays > 0 && !com.seyal.app.agent.Fresh.fresh(dated, today, freshDays)) {
+            val why = dated?.let { "dated ${com.seyal.app.agent.Fresh.say(it)} (${com.seyal.app.agent.Fresh.age(it, today)})" } ?: "showing no date"
+            out.put("old", true).put("text", "OLD OR UNDATED PAGE, $why. Its figures are NOT confirmed for today (${com.seyal.app.agent.Fresh.say(today)}): give them only with that date, never as today's.\n" + com.seyal.app.agent.Fresh.focus(whole, 6000))
+            return@withContext ToolResult.Done(out, "Read: ${title.ifBlank { url }} · $why")
+        }
+        out.put("text", if (freshDays > 0) com.seyal.app.agent.Fresh.focus(whole, 8000) else whole.take(8000))
+        ToolResult.Done(out, "Read: ${title.ifBlank { url }}")
     }
 
     private suspend fun news(topic: String, count: Int): ToolResult = withContext(Dispatchers.IO) {

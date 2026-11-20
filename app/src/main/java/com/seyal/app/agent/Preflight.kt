@@ -177,6 +177,9 @@ object Preflight {
     private val buyVerb = Regex("\\b(buy|purchase|vaangu|vangu|vaangi)\\b|வாங்கு|வாங்கி", RegexOption.IGNORE_CASE)
     private val orderVerb = Regex("\\border\\b|ஆர்டர்", RegexOption.IGNORE_CASE)
 
+    /** [kind] for a chat in Dirghadarshi mode ([deep]): there a question is never an order (see Deep.asksOnly). */
+    fun kind(text: String, deep: Boolean): Kind? = if (deep && Deep.asksOnly(text)) null else kind(text)
+
     fun kind(text: String): Kind? {
         // "Dirghadarshi: should I buy…" is the question "should I buy…" asked in the thinking mode.
         val t = Deep.strip(text).trim()

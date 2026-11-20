@@ -59,6 +59,29 @@ object Deep {
         I,
     )
 
+    private val orderIt = Regex(
+        "^(?:please |pls |kindly |can you |could you |go ahead and |ok |okay |now )*(?:book|order|buy|purchase|reserve|get me|get us|i want to (?:book|order|buy)|i need to (?:book|order|buy)|i (?:want|need) (?:\\d+|a|an|two|three) )\\b" +
+            "|\\b(?:book it|order it|buy it|place the order|go ahead|add (?:it )?to (?:the |my )?cart)\\b|வாங்கு|புக் பண்ணு|ஆர்டர் பண்ணு",
+        I,
+    )
+    private val asking = Regex(
+        "\\?|\\b(?:what|when|which|why|whether|how much|how many|how is|how are|is it|is this|is that|is now|are there|should i|shall i|can i|could i|will|would|does|do you think|did|tell me|explain|compare|" +
+            "best time|good time|right time|worth|price of|rate of|cost of|today'?s? (?:rate|price)|current (?:rate|price)|cheapest|trend|forecast|predict\\w*|advice|suggest\\w*|recommend\\w*|enna|evlo|eppo|epdi|yen|sollu)\\b|என்ன|எவ்வளவு|எப்போ",
+        I,
+    )
+
+    /**
+     * In this mode a question is a question: "best time to buy the cheapest gold", "what is the price of gold",
+     * "should I buy now" ask for facts and a judgement, and nothing is to be ordered. (On a real phone such a
+     * question was met with "which app, how many?" and Amazon and Flipkart.) A request counts as an order here only
+     * when it is worded as one ("book 2 tickets…", "order…", "buy me…", "go ahead") and asks nothing.
+     */
+    fun asksOnly(said: String): Boolean {
+        val t = strip(said).trim()
+        if (t.isEmpty()) return false
+        return !orderIt.containsMatchIn(t) || (asking.containsMatchIn(t) && !Regex("^(?:please |pls |kindly |can you |could you )*(?:book|order|reserve)\\b", I).containsMatchIn(t))
+    }
+
     /** A plain instruction ("send…", "set an alarm…", "open…"): something to do, not something to think through. */
     fun isAction(said: String): Boolean = doIt.containsMatchIn(strip(said).trim())
 
@@ -118,6 +141,9 @@ PRECISION (the user makes real decisions from this; a wrong answer is worse than
 - If what you found cannot support a choice, say "I could not verify enough to say", and name what is missing. Never fill the gap with a guess.
 - A question that can be read two ways ("when the gold rate decreases": under what conditions, or when will it): answer the reading a person deciding something needs (here: can anyone say when, and what to watch), and say in the first line which reading you took. Nobody can date a market move: say so plainly instead of implying a date.
 - Whose word counts: a central bank, a regulator, an exchange, the company itself, a standards body, or a news agency with editors (Reuters, PTI, AP, a national daily) comes first. A dealer's blog, an affiliate site or an unknown site is used only with a second source beside it, or marked "(one source, a dealer's site)". Name the source by what it is.
+- Dates of pages: every page in a tool result carries "dated", the day the page itself says it is from (empty = it shows none). Give today's figure only from a page dated today or yesterday, and write that date beside it. A page from another year with the same day and month ("November 20" written in 2025) is the commonest mistake: check the year. When a result's note says no page of today was found, your first line says you could not confirm it for today.
+- A local price (gold, silver, fuel): name the purity or grade, the unit and the city (the user's city when the context gives it). 22K and 24K gold are different figures; per gram and per 10 g are different figures: never mix them, and never work one out from the other without saying "by my sum".
+- A question is a question. "Best time to buy…", "what is the price of…", "should I buy…" ask for facts and a judgement: answer them. Never ask which app or how many, never offer shops or carts, unless the user tells you to buy, book or order.
 - The user lives in India: give money in rupees and Indian units as well (gold per gram or per 10 g in the user's city when a source has it, not only dollars per ounce), and say what is different here (the rupee, import duty, GST, local rules).
 - Never name a share, a coin or a bet to buy or sell. For other money questions (gold, a house, a big purchase, a loan) do give your lean, as what a careful person would do and why, with the main risk, and one line saying it is general information and the choice is theirs. For a health, legal or money matter of weight, say when a professional must be asked.
 
@@ -136,6 +162,7 @@ WHEN THE REQUEST IS AN ACTION on the phone (book, order, buy, send, post, delete
             "2. Does the figure the answer rests on have two independent sources? If it has one, search once more.\n" +
             "3. Is the first word of the Answer the choice or the fact they asked for? Is anything vague (\"around\", \"soon\", \"some\"), padded or repeated? Cut it.\n" +
             "4. What is the one risk most likely to make this wrong?\n" +
+            "5. For today's price or rate: is the page it comes from dated today or yesterday (its \"dated\" field, year included)? If the page is older or shows no date, the first line says it is not confirmed for today and gives that date.\n" +
             "Then write the FINAL answer in the answer shape the mode asks for (short unless the user asked for more), in the user's language. " +
             "Write only the final answer: do not mention the draft or this review."
 

@@ -31,6 +31,7 @@ import com.seyal.app.agent.AlarmPick
 import com.seyal.app.agent.DayStrip
 import com.seyal.app.agent.Aware
 import com.seyal.app.agent.Later
+import com.seyal.app.agent.Fresh
 import com.seyal.app.agent.AwareStore
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -3245,8 +3246,81 @@ fun testPayPage() {
     T.check("…and the user is told what to do, in plain words", PayPause.LOST.contains("Off, then On") && PayPause.LOST.contains("stopped here"))
 }
 
+fun testFresh() {
+    println("Dirghadarshi: today's figure only from today's pages (phone, 20 Nov 2026: two gold rates of another year, both \"How sure: High\")")
+    val today = java.time.LocalDate.of(2026, 11, 20)
+    fun d(s: String) = java.time.LocalDate.parse(s)
+    // ---- dates as pages write them
+    T.eq("day month year, month day year, year first, day first", listOf(d("2026-11-20"), d("2026-11-07"), d("2025-11-20"), d("2026-11-19")),
+        Fresh.datesIn("Gold Rate Today (20th November 2026). Earlier: November 7, 2026; see 2025-11-20T09:15:00+05:30 and 19/11/2026."))
+    T.eq("a day and month with no year is no date", emptyList<java.time.LocalDate>(), Fresh.datesIn("Gold price drops on November 20: check 22K rates. Up 20 points; 24 carat 12,486"))
+    T.eq("a price is not a date", emptyList<java.time.LocalDate>(), Fresh.datesIn("₹1,15,100 per 10 grams, 22 Carat 11,510 on Nov 20"))
+    // ---- the day a page is from
+    val meta25 = "<html><head><title>Gold Price DROPS During Wedding Season on November 20: Check 22K, 24K Rates</title><meta property=\"article:published_time\" content=\"2025-11-20T08:10:00+05:30\"/></head><body><time datetime=\"2026-11-20\">related</time> 22 carat - 11,460 per 1 gram</body></html>"
+    T.eq("the trap itself: \"on November 20\" in the title, written in 2025", d("2025-11-20"), Fresh.dateOf(meta25, "https://news.example.com/gallery/gold-price-drops-x2d3", "Gold Price DROPS During Wedding Season on November 20: Check 22K, 24K Rates", "22 carat - 11,460 per 1 gram", today))
+    T.eq("a full date in the title wins", d("2026-11-20"), Fresh.dateOf("<meta property=\"article:published_time\" content=\"2019-01-01\">", "https://rates.example.com/gold-rates/", "Gold Rate Today (20th November 2026) - 22 & 24 Carat", "", today))
+    T.eq("a date in the address", d("2025-11-20"), Fresh.dateOf("", "https://www.example.in/news/gold-and-silver-prices-today-check-prices-in-your-city-on-nov-20-2025", "Gold and Silver Prices Today", "", today))
+    T.eq("…in the year/month/day form", d("2026-11-12"), Fresh.dateOf("", "https://example.com/2026/11/12/gold-prices", "Gold prices", "", today))
+    T.eq("a live page: published long ago, updated today", d("2026-11-20"), Fresh.dateOf("<script type=\"application/ld+json\">{\"datePublished\":\"2019-03-02T10:00:00Z\",\"dateModified\":\"2026-11-20T03:30:00Z\"}</script>", "https://rates.example.com/gold", "Gold rate", "", today))
+    T.eq("the content attribute first", d("2026-11-19"), Fresh.dateOf("<meta content='2026-11-19T22:00:00Z' name='pubdate'>", "https://example.com/a", "A", "", today))
+    T.eq("a date in the first lines of the text", d("2026-11-20"), Fresh.dateOf("", "https://example.com/gold", "Gold", "Updated: 20 Nov 2026, 10:05 AM IST. 22K gold ₹12,480 per gram", today))
+    T.eq("a date beside \"Updated\" lower down the page", d("2026-11-20"), Fresh.dateOf("", "https://example.com/gold", "Gold", "menu ".repeat(500) + "Last Updated on: 20-11-2026 09:30. 22K ₹12,480", today))
+    T.eq("…a date in running text lower down is not the page's date", null, Fresh.dateOf("", "https://example.com/gold", "Gold", "menu ".repeat(500) + "Prices peaked at 13,096 around 7 November 2026 and then fell.", today))
+    T.eq("a page with no date has none", null, Fresh.dateOf("<html><title>Live Price of Gold</title>22K ₹9,745</html>", "https://livepriceofgold.example/india", "Live Price of Gold", "22K ₹9,745 per gram", today))
+    T.eq("a date after tomorrow is not believed", null, Fresh.dateOf("", "https://example.com/x", "Forecast for 25 December 2026", "", today))
+    T.eq("how old, in words", listOf("today", "yesterday", "8 days old", "12 months old"), listOf("2026-11-20", "2026-11-19", "2026-11-12", "2025-11-20").map { Fresh.age(d(it), today) })
+    // ---- which questions need today's pages
+    val live = listOf("what is today's rate 22k", "best time to buy cheapest gold.. be a gold coin", "gold price", "what is the price of gold", "petrol rate in coimbatore", "dollar rate now", "is it good time to buy gold or wait", "silver rate today chennai", "தங்கம் விலை இன்று", "current price of onion")
+    T.eq("a figure that moves every day", emptyList<String>(), live.filter { Fresh.limit(it) != 1 })
+    val notLive = listOf("history of gold prices in 2010", "gold price last year", "book 2 tickets for OM tomorrow", "best phone under 15000", "how does a gold loan work", "what is python", "any recent news on AI", "", "gold")
+    T.eq("…and questions that are not", emptyList<String>(), notLive.filter { Fresh.limit(it) != null })
+    T.eq("a short follow-up keeps the chat's rule", 1, Fresh.limit("then u said 9000", listOf("what is today's rate 22k", "then u said 9000")))
+    T.eq("…a new long question does not", null, Fresh.limit("explain how import duty on electronics is worked out for a laptop bought abroad", listOf("gold price today")))
+    T.eq("the search is given today's full date", "current 22k gold price per gram in India 20 November 2026", Fresh.sharpen("current 22k gold price per gram in India 2026", today))
+    T.eq("…unless it has one", "GoodReturns gold rate today 20 November 2026 22k", Fresh.sharpen("GoodReturns gold rate today 20 November 2026 22k", today))
+    T.check("old or undated pages are not fresh; today, yesterday and a page a day ahead are", listOf("2026-11-20", "2026-11-19", "2026-11-21").all { Fresh.fresh(d(it), today, 1) } && !Fresh.fresh(d("2026-11-18"), today, 1) && !Fresh.fresh(d("2025-11-20"), today, 1) && !Fresh.fresh(null, today, 1))
+    val long = "Home | Markets | News | ".repeat(200) + "Gold Rate Today: 22 Carat ₹12,480 per gram" + " more words".repeat(600)
+    T.check("the part of a long page around its first price is what is read", Fresh.focus(long, 3500).let { it.length == 3500 && it.contains("₹12,480") } && Fresh.focus("short ₹5", 3500) == "short ₹5")
+    T.check("what the AI is told when nothing of today was found", Fresh.note(0, listOf("example.in" to d("2025-11-20"), "live.example" to null), today, 1).let { it.contains("NO such page") && it.contains("example.in (dated 20 Nov 2025, 12 months old)") && it.contains("live.example (no date on the page)") && it.contains("another year") })
+    // ---- how sure, by code: his two answers
+    fun page(url: String, dated: String, text: String) = JSONObject().put("url", url).put("title", "Gold rate").put("dated", dated).put("text", text)
+    val staleSearch = JSONObject().put("pages", JSONArray().put(page("https://www.goodreturns.example/gold-rates/", "2025-11-20", "22 Carat Gold ₹11,510 per gram, ₹1,15,100 per 10 grams")).put(page("https://www.timesnow.example/gold", "", "22k gold at Rs 11,510 after a 4% correction")))
+    val answer2 = "**Answer**: ₹11,510 per gram (approx. ₹1,15,100 per 10 grams) for 22k gold on 20 November 2026.\n**Why**:\n- GoodReturns reported 22k gold at ₹11,510 per gram.\n**Risk**: Retail jewellers add 3% GST.\n**How sure**: High, verified from multiple market trackers on 20 November 2026.\n**Sources**:\n- [GoodReturns Gold Rate Crash](https://www.goodreturns.example/gold-rates/)\n- [Times Now Gold Rate Report](https://www.timesnow.example/gold)\nSay \"more\" for the full view."
+    val stalePages = Fresh.pages(listOf(staleSearch))
+    T.eq("the pages of a search are read back with their dates", listOf("goodreturns.example 2025-11-20", "timesnow.example null"), stalePages.map { it.host + " " + it.dated })
+    val low = Fresh.sure(answer2, stalePages, today, 1)
+    T.eq("₹11,510 from a page of 20 Nov 2025 is Low, whatever the AI wrote", "Low" to false, low?.level to low?.confirmed)
+    T.check("…and it says why", low!!.line.contains("dated 20 Nov 2025") && low.line.contains("12 months old") && low.line.contains("₹11,510"))
+    val stamped = Fresh.stamp(answer2, low)
+    T.check("the AI's \"High\" line is replaced, and the first line warns", stamped.startsWith("Not confirmed for today.") && stamped.contains("**How sure**: Low: ₹11,510 is from a page dated 20 Nov 2025") && !stamped.contains("verified from multiple market trackers") && stamped.contains("**Sources**"))
+    T.check("…once only", Fresh.stamp(stamped, low) == stamped)
+    val goodSearch = JSONObject().put("pages", JSONArray().put(page("https://www.goodreturns.example/gold-rates/", "2026-11-20", "22 Carat Gold ₹12,480 per gram")).put(page("https://m.ratesite.example/gold/coimbatore", "2026-11-19", "Coimbatore 22K: Rs. 12,480 /g")).put(page("https://www.goodreturns.example/gold-rates/chennai.html", "2026-11-20", "₹12,480")))
+    val answer3 = answer2.replace("11,510", "12,480")
+    val high = Fresh.sure(answer3, Fresh.pages(listOf(goodSearch)), today, 1)
+    T.eq("two sites dated today and yesterday that hold the figure: High", "High" to true, high?.level to high?.confirmed)
+    T.check("…naming them and their dates; one site read twice counts once", high!!.line.contains("2 sources dated 19 Nov 2026 and 20 Nov 2026") && high.line.contains("goodreturns.example") && high.line.contains("ratesite.example"))
+    T.check("…and no warning line", !Fresh.stamp(answer3, high).startsWith("Not confirmed") && Fresh.stamp(answer3, high).contains("**How sure**: High: 2 sources"))
+    val oneGood = Fresh.sure(answer3, Fresh.pages(listOf(JSONObject().put("pages", JSONArray().put(page("https://a.example/x", "2026-11-20", "22K ₹12,480"))))), today, 1)
+    T.eq("one dated site: Medium", "Medium", oneGood?.level)
+    T.eq("an undated page only: Low, and said", true, Fresh.sure(answer3, Fresh.pages(listOf(JSONObject().put("url", "https://live.example/gold").put("title", "Live").put("dated", "").put("text", "22K 12480"))), today, 1)?.line?.contains("shows no date"))
+    T.eq("a figure that is in no page is left to the figure check", null, Fresh.sure(answer3, stalePages, today, 1))
+    T.eq("an answer with no amount of money gets no verdict", null, Fresh.sure("**Answer**: Wait. Nobody can date a fall.", stalePages, today, 1))
+    T.check("a missing How sure line is added before the sources", Fresh.stamp("**Answer**: ₹12,480 per gram.\n**Sources**:\n- [A](https://a.example/x)", oneGood!!).let { it.indexOf("**How sure**: Medium") in 1 until it.indexOf("**Sources**") })
+    val datedSources = Fresh.dateSources(answer2, stalePages)
+    T.check("each source gets its page's date beside it", datedSources.contains("(https://www.goodreturns.example/gold-rates/) · dated 20 Nov 2025") && datedSources.contains("(https://www.timesnow.example/gold) · no date on the page"))
+    T.check("…once only, and links above the sources are left alone", Fresh.dateSources(datedSources, stalePages) == datedSources && Fresh.dateSources("See [A](https://www.goodreturns.example/gold-rates/) now", stalePages) == "See [A](https://www.goodreturns.example/gold-rates/) now")
+    // ---- a question is a question
+    val asks = listOf("best time to buy cheapest gold.. be a gold coin", "what is the price of gold", "should i buy gold now or wait", "is it good time to buy the gold or wait", "what is today's rate 22k", "which is cheaper to order, swiggy or zomato?", "தங்கம் விலை என்ன", "i want to buy gold, when is the best time")
+    T.eq("in this mode these ask, they do not order", emptyList<String>(), asks.filter { !Deep.asksOnly(it) || Preflight.kind(it, deep = true) != null })
+    T.check("…and outside the mode nothing changes", asks.all { Preflight.kind(it, deep = false) == Preflight.kind(it) })
+    val orders = listOf("book 2 tickets for OM tomorrow evening", "order 2 dosa from A2B", "buy me a 5 gram gold coin on amazon", "please book a cab to the airport")
+    T.eq("an order worded as one is still an order in the mode", emptyList<String>(), orders.filter { Deep.asksOnly(it) || Preflight.kind(it, deep = true) != Preflight.kind(it) })
+    T.check("the mode is told about dates, units and questions", Deep.SYSTEM.contains("another year") && Deep.SYSTEM.contains("22K and 24K") && Deep.SYSTEM.contains("A question is a question"))
+    T.check("Fresh's own patterns are ones Android reads", listOf("x 20 November 2026 y", "<meta property=\"article:published_time\" content=\"2026-11-20\">").all { Fresh.datesIn(it).size == 1 || Fresh.dateOf(it, "https://e.example/", "", "", today) != null })
+}
+
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testPayPage()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testPayPage()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3255,7 +3329,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testPayPage()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testPayPage()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

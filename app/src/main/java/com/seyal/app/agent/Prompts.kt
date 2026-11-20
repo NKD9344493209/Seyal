@@ -114,7 +114,7 @@ HOW TO WORK
             modeSection(s).takeIf { it.isNotBlank() }?.let { appendLine(); appendLine(it) }
             // The long screen manual is needed once an app is in play. Before that (and for plain questions) two lines do.
             val inApp = s.workApp != null || s.messages.any { m -> m.calls.any { c -> c.name.startsWith("screen") || c.name in setOf("open_app", "open_url", "file_open") } }
-            val handsOn = inApp || screenTask(Agent.lastSaid(s)) || screenTask(s.firstCommand)
+            val handsOn = inApp || screenTask(Agent.lastSaid(s), s.deep) || screenTask(s.firstCommand, s.deep)
             if (screen && !handsOn) {
                 appendLine()
                 appendLine("USING THE SCREEN (short): open_app or open_url gives you that app's screen as numbered lines; screen_tap, screen_type and screen_scroll then operate it, and each returns the new screen. The full instructions come with the first screen.")
@@ -151,7 +151,7 @@ USING THE SCREEN
             s.workApp?.let { apps += ScreenDriver.appLabel(Agent.app, it) }
             apps += Lessons.appsIn(said)
             // A purchase: which of the apps that can do it are on this phone (the one the user named first).
-            val kind = Preflight.kind(said) ?: Preflight.kind(s.firstCommand).takeIf { said.length < 40 }
+            val kind = Preflight.kind(said, s.deep) ?: Preflight.kind(s.firstCommand, s.deep).takeIf { said.length < 40 }
             val canDo = kind?.let { Preflight.appsFor(it, said) }.orEmpty()
             if (kind != null) {
                 apps += canDo.take(2)
@@ -192,7 +192,7 @@ USING THE SCREEN
     }
 
     /** A request that will need an app opened and worked by hand (rather than a question or a direct tool). */
-    internal fun screenTask(text: String): Boolean = text.isNotBlank() && (Preflight.kind(text) != null ||
+    internal fun screenTask(text: String, deep: Boolean = false): Boolean = text.isNotBlank() && (Preflight.kind(text, deep) != null ||
         Regex("\\b(open|tap|click|press|scroll|swipe|type|go to|play|install|uninstall|post|upload|add to|in the \\w+ app|on (youtube|instagram|whatsapp|chrome|swiggy|zomato|amazon|flipkart|spotify|maps|telegram|facebook|snapchat)|using (its|the) screen|settings?)\\b|pannu|podu|thira", RegexOption.IGNORE_CASE).containsMatchIn(text))
 
     /** Which group each piece of guidance belongs to (by how the line starts). Lines not listed are for everyone. */

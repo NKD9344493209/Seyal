@@ -310,7 +310,7 @@ object Agent {
             text = (userWords(s) + s.firstCommand).joinToString("\n"),
             used = calls.map { it.name },
             asked = if (s.allTools) asks + "all" else asks,
-            purchase = s.order != null || Preflight.kind(said) != null || Preflight.kind(s.firstCommand) != null,
+            purchase = s.order != null || Preflight.kind(said, s.deep) != null || Preflight.kind(s.firstCommand, s.deep) != null,
             attached = s.messages.any { m -> m.role == "user" && m.parts.any { it is Part.Image } },
             fromSkill = s.source.startsWith("skill"),
         ).let { if (s.deep) it + "foresight" else it }
@@ -472,7 +472,7 @@ object Agent {
         if (m.length < 12 || followUp.containsMatchIn(m)) return false
         // "Go to that link" means a link of this chat's last answer; "pause screen control" is no job at all.
         if (LinkPick.pointsAtLink(m) || PayPause.asks(m) != null) return false
-        if (Preflight.kind(m) != null) return true
+        if (Preflight.kind(m, deep || s.deep) != null) return true
         // A Dirghadarshi conversation is one line of thought: "do gold prices fall?" after "buy gold now or wait?"
         // belongs to it. (On a real phone that follow-up was moved to a new chat and lost what came before.)
         if (deep || s.deep) return false
@@ -636,7 +636,7 @@ object Agent {
                             }
                         }
                         // 2. Buying, booking or ordering: the user gives the details before anything is opened.
-                        val kind = if (quick == null && known == null) Preflight.kind(said) else null
+                        val kind = if (quick == null && known == null) Preflight.kind(said, s.deep) else null
                         val ask = byName["ask_user"]
                         if (kind != null && ask != null) {
                             report("Checking what I need to know…")
@@ -777,7 +777,7 @@ object Agent {
                         continue
                     }
                     // It said it selected, booked or sent something, yet no step of this request did that: never told to the user as fact.
-                    if ("claim" !in s.checked && s.parentId == null && (s.order != null || Preflight.kind(lock.withLock { lastSaid(s) }) != null)) {
+                    if ("claim" !in s.checked && s.parentId == null && (s.order != null || Preflight.kind(lock.withLock { lastSaid(s) }, s.deep) != null)) {
                         val did = lock.withLock { didSince(s) }
                         val deed = Honest.unbacked(resp.text, did.filter { it.ok }.map { it.name })
                         if (deed != null) {
@@ -821,7 +821,7 @@ object Agent {
                         val said = lastSaid(s)
                         val words = userWords(s)
                         val one = Regex("\\b(1|one|single|just me|only me|myself|alone)\\b", RegexOption.IGNORE_CASE).containsMatchIn(words.joinToString(" ")) && !Regex("\\b([2-9]|two|three|four|five|six)\\s*(tickets?|seats?|people|persons?)", RegexOption.IGNORE_CASE).containsMatchIn(words.joinToString(" "))
-                        Checks.beforeDone(said, Preflight.kind(said) ?: Preflight.kind(words.firstOrNull().orEmpty()).takeIf { said.length < 40 }, didSince(s), s.checked, manyPeople = !one, hasOrder = s.order != null)
+                        Checks.beforeDone(said, Preflight.kind(said, s.deep) ?: Preflight.kind(words.firstOrNull().orEmpty(), s.deep).takeIf { said.length < 40 }, didSince(s), s.checked, manyPeople = !one, hasOrder = s.order != null)
                     } else null
                     if (gap != null) {
                         s.checked += gap.key
@@ -834,7 +834,18 @@ object Agent {
                     // A booking that has reached payment: payment apps refuse to pay while screen control is on.
                     val onDemand = ScreenAccess.onDemand(app)
                     val payNote = PayPause.payNote(s.order != null && s.parentId == null && PayPause.speaksOfPaying(resp.text), ScreenDriver.available, onDemand)
-                    val answer = Meetings.withProof(resp.text, meetings).let { if (payNote != null && it.isNotBlank()) it.trimEnd() + "\n\n" + payNote else it }
+                    // Dirghadarshi: each source gets its page's date, and for a figure that moves every day "How sure" is
+                    // written from the pages themselves (how many sites dated today hold the figure), not by the AI.
+                    val checked = if (s.deep && s.parentId == null && s.order == null && !usedScreen) runCatching {
+                        lock.withLock {
+                            val pages = Fresh.pages(s.messages.filter { it.role == "tool" }.flatMap { it.results }.filter { (it.name == "web_search" || it.name == "read_page") && !it.isError }.map { it.output })
+                            var t = Fresh.dateSources(resp.text, pages)
+                            val days = Fresh.limit(lastSaid(s), userWords(s))
+                            if (days != null) Fresh.sure(t, pages, java.time.LocalDate.now(), days)?.let { t = Fresh.stamp(t, it) }
+                            t
+                        }
+                    }.getOrDefault(resp.text) else resp.text
+                    val answer = Meetings.withProof(checked, meetings).let { if (payNote != null && it.isNotBlank()) it.trimEnd() + "\n\n" + payNote else it }
                     if (answer != resp.text) lock.withLock {
                         val i = s.messages.indexOfLast { it.role == "assistant" && it.calls.isEmpty() }
                         if (i >= 0) s.messages[i] = Msg("assistant", listOf(Part.Text(answer))) else s.messages += Msg("assistant", listOf(Part.Text(answer)))
@@ -872,6 +883,12 @@ object Agent {
                                 Part.Result(call.id, call.name, JSONObject().put("error", BookGuard.KEEP_SEATS), true)
                             }
                         }
+                    }
+                    // Dirghadarshi: a figure that moves every day (gold, fuel, a currency, "today's price") is read only from
+                    // pages dated today or yesterday. Seyal sets this itself; the AI's own call is kept as it was written.
+                    if (s.deep && s.parentId == null && (call.name == "web_search" || call.name == "read_page")) {
+                        val days = runCatching { lock.withLock { Fresh.limit(lastSaid(s), userWords(s)) } }.getOrNull()
+                        if (days != null) return runCall(s, Part.Call(call.id, call.name, JSONObject(call.args.toString()).put("fresh_days", days)), byName[call.name])
                     }
                     return runCall(s, call, byName[call.name])
                 }
@@ -1399,7 +1416,7 @@ object Agent {
         if (s.source != "user") { ensureScreen(); return true }
         if (said.isBlank() || Quick.match(said) != null || runCatching { Basics.plan(said) }.getOrNull() != null) return true
         ensureScreen()
-        val kind = Preflight.kind(said)
+        val kind = Preflight.kind(said, s.deep)
         if (ScreenDriver.available || kind == null) return true
         val ask = Toolbox.get("ask_user") ?: return true
         val appName = runCatching { Preflight.appsFor(kind, said).firstOrNull() }.getOrNull().orEmpty()
