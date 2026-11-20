@@ -159,6 +159,8 @@ class Session(
     val checked: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
     /** Follow-ups typed while a tool round is in flight; appended once the round's results are in (keeps the transcript valid). Not saved. */
     val queued: MutableList<Msg> = mutableListOf()
+    /** Dirghadarshi: the order that came in the same message as a question, to be started when the question is answered (see agent/Deep.jobs). Not saved. */
+    val next: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
 
     val firstCommand: String get() = messages.firstOrNull { it.role == "user" }?.text ?: title
 

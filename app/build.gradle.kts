@@ -12,8 +12,8 @@ android {
         applicationId = "com.seyal.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "3.32.0"
+        versionCode = 36
+        versionName = "3.33.0"
     }
 
     // Same debug key on every build, so a new APK installs over the old one (settings kept).

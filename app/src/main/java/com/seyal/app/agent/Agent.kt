@@ -399,13 +399,18 @@ object Agent {
     /** Starts a new session for a user request and runs the loop. */
     fun start(command: String, image: Part.Image? = null, source: String = "user", files: List<Part.Image> = emptyList(), deep: Boolean = false): Session {
         val s = Session(newId(), System.currentTimeMillis(), source)
-        s.title = titleFrom(command)
         s.deep = source == "user" && (deep || Deep.wants(command))
-        val parts = mutableListOf<Part>(Part.Text(command.trim()))
+        // Dirghadarshi: a message that holds a question and an order is two jobs. The question is answered here; the
+        // order starts in its own chat when the answer is done (see finish), exactly as if it had been typed alone.
+        val jobs = if (s.deep) runCatching { Deep.jobs(command) }.getOrDefault(listOf(command)) else listOf(command)
+        val first = jobs.first()
+        if (jobs.size > 1) { s.next += jobs.drop(1); s.note = Deep.JOBS_NOTE }
+        s.title = titleFrom(first)
+        val parts = mutableListOf<Part>(Part.Text(first.trim()))
         image?.let { parts += it }
         parts += files
         // What is asked again and again at the same hour is a habit worth offering to automate.
-        if (source == "user" && Habits.worthLogging(command)) runCatching { Habits.log("cmd:" + Routines.normalise(command), System.currentTimeMillis()) }
+        if (source == "user" && jobs.size == 1 && Habits.worthLogging(command)) runCatching { Habits.log("cmd:" + Routines.normalise(command), System.currentTimeMillis()) }
         s.messages += Msg("user", parts)
         scope.launch {
             lock.withLock {
@@ -439,6 +444,11 @@ object Agent {
                 s.status.isOpen && jobs[s.id]?.isActive == true -> {
                     parts[0] = Part.Text(MIDTASK + msg)
                     s.queued += Msg("user", parts); touch(s); return@launch
+                }
+                // Dirghadarshi: a question and an order in one message. Its own chat, where start() takes the two apart.
+                (deep || Deep.wants(msg)) && s.parentId == null && runCatching { Deep.jobs(msg).size > 1 }.getOrDefault(false) -> {
+                    start(msg, image, files = files, deep = deep)
+                    return@launch
                 }
                 // A new job typed into an old chat: a fresh chat, because every AI step carries the whole chat along.
                 // On a real phone one chat was used all day and a booking started at "step 73", slow and confused.
@@ -1161,6 +1171,9 @@ object Agent {
             else if (!Settings.quiet || status != SessionStatus.DONE) Notify.line(app, "${s.title}: ${s.result}", s.id)
             if ((Settings.speak || (Settings.simpleMode && s.source == "user")) && status == SessionStatus.DONE) Speech.say(app, text)
         }
+        // Dirghadarshi: the question of a two-job message is answered (or could not be). Now its order, in a chat of its own.
+        val then = lock.withLock { if (s.parentId == null && !s.status.isOpen && s.next.isNotEmpty()) s.next.removeAt(0) else null }
+        if (then != null) start(then, deep = true).note = Deep.SECOND_JOB_NOTE
     }
 
     /**
@@ -1721,6 +1734,7 @@ object Agent {
             val s = live[sessionId] ?: return@launch
             if (!s.status.isOpen) return@launch
             s.status = SessionStatus.CANCELLED; s.result = "Stopped"
+            s.next.clear()
             s.calls.values.forEach { if (!it.status.isFinished) it.status = CallStatus.CANCELLED }
             touch(s)
         }

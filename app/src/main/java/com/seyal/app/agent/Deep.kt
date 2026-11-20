@@ -82,6 +82,111 @@ object Deep {
         return !orderIt.containsMatchIn(t) || (asking.containsMatchIn(t) && !Regex("^(?:please |pls |kindly |can you |could you )*(?:book|order|reserve)\\b", I).containsMatchIn(t))
     }
 
+    // ---- several jobs in one message
+
+    /** Where an order may begin inside a longer message: "book", "order" or "reserve" as a word, or "book" run into the word before it ("…price dropsbook 2 tickets", typed fast on a phone). */
+    private val orderAt = Regex("(?<![\\p{L}\\p{N}])(?:book|order|reserve)(?![\\p{L}\\p{N}])|(?<=\\p{L})book(?=\\s)", I)
+    /** Words that end in "book" and are things, not bookings. */
+    private val bookThing = Regex("(?:face|note|text|pass|mac|e|chrome|hand|cook|guide|log|year|story|work|audio|scrap|sketch|check|cheque|play|rule|phone|song|copy|day|case|bank|vivo|zen|think|pro|elite|ultra|net|look|pocket|flip|style|word|source|match)$", I)
+    /** A question cannot end on these: "what is the best time to | book…", "should I | order…", "which is a good | book…", "where is my | order". */
+    private val dangling = Regex(
+        "(?:^|[^\\p{L}])(?:to|i|we|you|they|he|she|it|should|shall|can|could|will|would|do|did|does|don'?t|not|never|or|if|whether|when|where|how|why|what|who|which|whom|" +
+            "the|a|an|my|your|our|his|her|their|this|that|these|those|is|are|was|were|be|been|of|for|on|in|at|with|about|before|after|while|than|by|from|into|" +
+            "good|best|better|new|great|nice|any|some|another|one|first|last|next|previous|old|favou?rite|every|each|no|place|placed|track|cancel|cancelled|same|repeat|re|pre|advance|online|" +
+            "tickets?|seats?|must|may|might|me|us|lets|let's|want|need|have|has|had|am|im|i'm|going|trying|able|way|just|only|even|still|already|always)$",
+        I,
+    )
+    /** "order status", "book review": the word is a thing here, not something to do. */
+    private val nounAfter = Regex("^(?:book|order|reserve)\\s+(?:status|history|details?|id|number|no|list|summary|reviews?|name|title|author|pdf|about|called|by|of|is|was|will|has|had|value|total|amount|bank|price)\\b", I)
+    private val joiner = Regex("(?:[\\s,;&-]|\\b(?:and|also|then|plus|after that|apram|appuram|aprom|aparam)\\b)+$", I)
+    /** Where a question may begin after an order: a new sentence, or "also / and then / plus", going on with a question word. */
+    private val thenAsk = Regex(
+        "(?:[.!?;\\n]+\\s*(?:(?:and|also|then|plus)\\s+)*|\\s+(?:and also|also|and then|then also|plus)\\s+)" +
+            "(?=(?:what|when|which|why|how|is|are|should|shall|can|could|will|would|does|do|tell me|let me know|explain|compare|give me|show me|find|check|best time|suggest|advise|be (?:a|an|my))\\b)",
+        I,
+    )
+    /** Words that point back at the order itself: such a question belongs to the order ("…which theatre is near?", "…tell me the fare"). */
+    private val pointsBack = Regex(
+        "\\b(?:it|its|that|this|there|them|they|those|these|same|tickets?|seats?|theat(?:re|er)s?|cinemas?|shows?|showtimes?|movie|film|bookings?|orders?|deliver\\w*|restaurants?|dish|cab|ride|driver|bus|train|flight|refund|cancel\\w*|" +
+            "the (?:fare|total|cost|price|amount|bill|charges?|fees?|eta|time|status|offer|discount)|arriv\\w*|reach\\w*)\\b",
+        I,
+    )
+
+    private val asksFirst = Regex("^(?:is|are|was|were|do|does|did|can|could|will|would|should|shall|has|have|why|how|what|when|where|which|who|tell me|let me know|explain|compare|check|find|show me|give me)\\b", I)
+
+    private fun isQuestion(part: String): Boolean =
+        part.trim().split(Regex("\\s+")).size >= 3 && (asking.containsMatchIn(part) || asksFirst.containsMatchIn(part.trim())) && asksOnly(part)
+
+    /** "book" run into the word before it starts an order only when a ticket, a seat, a table or a ride follows soon. */
+    private val gluedOrder = Regex("^book\\s+(?:\\S+\\s+){0,7}?(?:tickets?|seats?|cab|auto|taxi|table|bus|train|flight|show)\\b", I)
+
+    /** An order that leans on the question beside it ("…then order the cheaper one", "book it if so") cannot run alone. */
+    private val leansBack = Regex(
+        "\\b(?:it|that|them|those|these|this(?!\\s+(?:evening|morning|afternoon|night|week|weekend|month|year|sunday|monday|tuesday|wednesday|thursday|friday|saturday))|" +
+            "the (?:cheaper|cheapest|better|best|same|first|second|other|one|winner|right)|whichever|which ?ever|accordingly|if (?:yes|so|not|possible|available))\\b",
+        I,
+    )
+
+    /**
+     * An order that can run alone: a film booking or a food order (the two done by code on a real phone) whose film
+     * or dish is in its own words. Anything else stays with its message, as before.
+     */
+    private fun isOrder(part: String): Boolean {
+        val p = part.trim()
+        if (nounAfter.containsMatchIn(p) || leansBack.containsMatchIn(p)) return false
+        val kind = Preflight.kind(p, true) ?: return false
+        if (kind != Preflight.Kind.MOVIE && kind != Preflight.Kind.FOOD) return false
+        return runCatching { Order.fromWords(kind, listOf(p)).item.isNotBlank() }.getOrDefault(false)
+    }
+
+    /**
+     * The jobs in one message typed in this mode. Usually one: the message itself. When it holds a question AND an
+     * order ("best time to buy gold… and let me know when the price drops book 2 tickets for…"), two: the question
+     * first, then the order, each exactly as if it had been typed alone. On a real phone such a message was handed
+     * to the AI whole: it did only the booking, asked for details already given, and never answered the question.
+     * Careful on purpose: when in any doubt the message stays whole.
+     */
+    fun jobs(said: String): List<String> {
+        val t = said.trim()
+        if (t.length < 30 || t.length > 1500) return listOf(said)
+        // A question, then an order.
+        for (m in orderAt.findAll(t)) {
+            val at = m.range.first
+            if (at < 12) continue
+            val before = t.substring(0, at)
+            // "facebook", "notebook": no booking starts there.
+            val glued = before.lastOrNull()?.isLetter() == true
+            val tail = t.substring(at).trim()
+            if (glued && (bookThing.containsMatchIn(before) || !gluedOrder.containsMatchIn(tail))) continue
+            val head = joiner.replace(before.trim().trimEnd('.'), "").trim()
+            if (!isQuestion(head) || dangling.containsMatchIn(head.trimEnd('.', ',', ';', '!', '-', ' ')) || !isOrder(tail)) continue
+            // "…book 2 tickets for OM. Also, what is the weather tomorrow?": that question joins the first.
+            val (order, after) = orderThenAsk(tail) ?: (tail to "")
+            return listOf(if (after.isBlank()) head else head.trimEnd('.', ' ') + ". " + after, order)
+        }
+        // An order, then a question about something else.
+        orderThenAsk(t)?.let { (order, ask) -> return listOf(ask, order) }
+        return listOf(said)
+    }
+
+    /** [text] as (the order, the question after it), when it is an order followed by a question about something else. */
+    private fun orderThenAsk(text: String): Pair<String, String>? {
+        for (m in thenAsk.findAll(text)) {
+            val head = text.substring(0, m.range.first).trim()
+            val tail = text.substring(m.range.last + 1).trim()
+            if (head.length < 12 || tail.split(Regex("\\s+")).size < 5) continue
+            if (pointsBack.containsMatchIn(tail) || !isQuestion(tail) || orderAt.containsMatchIn(tail)) continue
+            if (asksOnly(head) || !isOrder(head)) continue
+            return head to tail
+        }
+        return null
+    }
+
+    /** Shown above the chat that answers the question. */
+    const val JOBS_NOTE = "Two jobs in your message. 1: your question, answered here. 2: the booking or order, which starts in a new chat as soon as the answer is done."
+    /** Shown above the chat that does the order. */
+    const val SECOND_JOB_NOTE = "Job 2 from your message: the booking or order. The answer to your question is in the chat before this one, under ☰."
+
     /** A plain instruction ("send…", "set an alarm…", "open…"): something to do, not something to think through. */
     fun isAction(said: String): Boolean = doIt.containsMatchIn(strip(said).trim())
 
@@ -143,6 +248,8 @@ PRECISION (the user makes real decisions from this; a wrong answer is worse than
 - Whose word counts: a central bank, a regulator, an exchange, the company itself, a standards body, or a news agency with editors (Reuters, PTI, AP, a national daily) comes first. A dealer's blog, an affiliate site or an unknown site is used only with a second source beside it, or marked "(one source, a dealer's site)". Name the source by what it is.
 - Dates of pages: every page in a tool result carries "dated", the day the page itself says it is from (empty = it shows none). Give today's figure only from a page dated today or yesterday, and write that date beside it. A page from another year with the same day and month ("November 20" written in 2025) is the commonest mistake: check the year. When a result's note says no page of today was found, your first line says you could not confirm it for today.
 - A local price (gold, silver, fuel): name the purity or grade, the unit and the city (the user's city when the context gives it). 22K and 24K gold are different figures; per gram and per 10 g are different figures: never mix them, and never work one out from the other without saying "by my sum".
+- Several asks in one message: answer EVERY one. Before you finish, go through the user's message part by part and check that each part got its answer or its action. Under **Answer** write one numbered line for each ask (1., 2.); the other parts of the shape are written once.
+- "Let me know when the price drops", "tell me when it opens", "alert me if…": answer first, then set it up with watch_add on the page you read the figure from (price_below with the user's limit, or just under today's figure when they gave none; `near` = the words that sit just before that figure on the page). Say in one line what is watched, the limit and how often. If no page can be watched, say that plainly. Never promise to tell them later without a watch set.
 - A question is a question. "Best time to buy…", "what is the price of…", "should I buy…" ask for facts and a judgement: answer them. Never ask which app or how many, never offer shops or carts, unless the user tells you to buy, book or order.
 - The user lives in India: give money in rupees and Indian units as well (gold per gram or per 10 g in the user's city when a source has it, not only dollars per ounce), and say what is different here (the rupee, import duty, GST, local rules).
 - Never name a share, a coin or a bet to buy or sell. For other money questions (gold, a house, a big purchase, a loan) do give your lean, as what a careful person would do and why, with the main risk, and one line saying it is general information and the choice is theirs. For a health, legal or money matter of weight, say when a professional must be asked.
@@ -163,6 +270,7 @@ WHEN THE REQUEST IS AN ACTION on the phone (book, order, buy, send, post, delete
             "3. Is the first word of the Answer the choice or the fact they asked for? Is anything vague (\"around\", \"soon\", \"some\"), padded or repeated? Cut it.\n" +
             "4. What is the one risk most likely to make this wrong?\n" +
             "5. For today's price or rate: is the page it comes from dated today or yesterday (its \"dated\" field, year included)? If the page is older or shows no date, the first line says it is not confirmed for today and gives that date.\n" +
+            "6. Did the user's message hold more than one ask? Is each one answered, and is a watch set for each \"let me know when…\"?\n" +
             "Then write the FINAL answer in the answer shape the mode asks for (short unless the user asked for more), in the user's language. " +
             "Write only the final answer: do not mention the draft or this review."
 

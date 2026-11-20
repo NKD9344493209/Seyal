@@ -3246,6 +3246,81 @@ fun testPayPage() {
     T.check("…and the user is told what to do, in plain words", PayPause.LOST.contains("Off, then On") && PayPause.LOST.contains("stopped here"))
 }
 
+fun testJobs() {
+    println("Dirghadarshi: a question and an order in one message are two jobs (phone, 20 Nov 2026: only the booking was done)")
+    // ---- the message from the phone, as typed
+    val phone = "best time to buy cheapest goal.. be a gold advisior and let me know whenever the gold price dropsbook o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket"
+    val now = java.time.LocalDateTime.of(2026, 11, 20, 13, 0)
+    T.eq("whole, it was no order and its film could not be read", listOf("null", "Which movie?"), listOf(Preflight.kind(phone, deep = true).toString(), Preflight.missingMovie(listOf(phone), now).joinToString()))
+    val two = Deep.jobs(phone)
+    T.eq("it is two jobs, the question first", listOf(
+        "best time to buy cheapest goal.. be a gold advisior and let me know whenever the gold price drops",
+        "book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket",
+    ), two)
+    T.eq("the question is a question, and one about today's price", listOf(true, true), listOf(Deep.asksOnly(two[0]) && Preflight.kind(two[0], deep = true) == null, Fresh.limit(two[0]) == 1))
+    val o = Order.fromWords(Preflight.Kind.MOVIE, listOf(two[1]), now)
+    T.eq("the order alone is read in full: nothing left to ask", listOf("MOVIE", "OM", "Tamil", "2", "190", ""),
+        listOf(Preflight.kind(two[1], deep = true).toString(), o.item, o.language, o.count.toString(), o.maxEach.toString(), Preflight.missingMovie(listOf(two[1]), now).joinToString()))
+    // ---- other ways of typing two jobs
+    fun j(s: String) = Deep.jobs(s)
+    T.eq("with a full stop between", listOf("what is today's 22k gold rate in Coimbatore", "book 2 tickets for Leo tomorrow evening at any nearby theatre"),
+        j("what is today's 22k gold rate in Coimbatore. book 2 tickets for Leo tomorrow evening at any nearby theatre"))
+    T.eq("with \"and then\"", listOf("should I buy gold now or wait", "order 2 masala dosa from A2B under 200"),
+        j("should I buy gold now or wait and then order 2 masala dosa from A2B under 200"))
+    T.eq("the order first: the question is still answered first", listOf("what is today's 22k gold rate in Coimbatore?", "book 2 tickets for Leo tomorrow evening at any nearby theatre"),
+        j("book 2 tickets for Leo tomorrow evening at any nearby theatre. Also what is today's 22k gold rate in Coimbatore?"))
+    T.eq("a question on each side of the order", "is petrol price going up this week. what is the weather in Chennai tomorrow morning | book 2 tickets for Leo tomorrow at any nearby theatre",
+        j("is petrol price going up this week, book 2 tickets for Leo tomorrow at any nearby theatre. what is the weather in Chennai tomorrow morning").joinToString(" | "))
+    val more = listOf(
+        "tell me a joke and book 2 tickets for Leo tomorrow" to "tell me a joke | book 2 tickets for Leo tomorrow",
+        "why is gold falling today? order 2 idli from Annapoorna" to "why is gold falling today? | order 2 idli from Annapoorna",
+        "what is today's petrol price in Coimbatore book 2 tickets for Leo movie today any nearby theatre" to "what is today's petrol price in Coimbatore | book 2 tickets for Leo movie today any nearby theatre",
+        "gold rate today?? order dosa from nearby restaurant 2 dosa... 100 per dosa" to "gold rate today?? | order dosa from nearby restaurant 2 dosa... 100 per dosa",
+        "book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket and also be a gold advisor and tell me the best time to buy gold" to
+            "be a gold advisor and tell me the best time to buy gold | book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket",
+        "Dirghadarshi: is silver a better buy than gold this year? book 2 tickets for Leo tomorrow 190 per ticket" to "Dirghadarshi: is silver a better buy than gold this year? | book 2 tickets for Leo tomorrow 190 per ticket",
+        "what is the best phone under 20000 and order 2 chicken biryani from Kovai Biryani" to "what is the best phone under 20000 | order 2 chicken biryani from Kovai Biryani",
+        "should i watch Leo or OM this weekend, book 2 tickets for Leo tomorrow" to "should i watch Leo or OM this weekend | book 2 tickets for Leo tomorrow",
+        "is petrol going up, facebook is down, book 2 tickets for Leo tomorrow" to "is petrol going up, facebook is down | book 2 tickets for Leo tomorrow",
+    )
+    T.eq("nine more messages with two jobs", emptyList<String>(), more.filter { (said, want) -> j(said).joinToString(" | ") != want }.map { it.first })
+    // ---- one job stays one job
+    val whole = listOf(
+        "book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket",
+        "book 2 tickets for Leo tomorrow at any nearby theatre. which theatre is nearest to me?",
+        "book 2 tickets for Leo tomorrow at any nearby theatre. is it worth watching?",
+        "book a cab to the airport at 6 am. tell me the fare before you confirm",
+        "order 2 masala dosa from A2B and also tell me when it will arrive",
+        "what is the best time to book train tickets for Pongal?",
+        "should I order 2 biryani today or wait for the weekend offer?",
+        "can you tell me how to book a ticket on BookMyShow for tomorrow?",
+        "which is a good book to read about gold investing this year?",
+        "what is the price of gold today and where is my order from Swiggy?",
+        "what is my order status on Swiggy for the 2 dosa tickets I raised?",
+        "should I buy the vivobook or the zenbook for coding under 60000?",
+        "is facebook 2 tickets offer for the movie show genuine or a scam?",
+        "gold rate evlo nu sollu, apram Leo ku 2 ticket book pannu",
+        "best time to buy cheapest gold.. be a gold advisor and let me know whenever the gold price drops",
+        "is it safe to pre-book 2 tickets for the movie before the reviews come?",
+        "what will happen if I cancel after I book 2 tickets for the show tomorrow?",
+        "book 2 tickets for Leo tomorrow, which is releasing in Tamil at any nearby theatre",
+        "compare iphone 17 and pixel 11 then order the cheaper one on amazon",
+        "can you check whether Leo is running nearby and book 2 tickets",
+        "is it raining tomorrow? book 2 tickets for Leo if not",
+        "which theatre has the cheapest tickets for Leo? book 2 there",
+        "how is the weather today, book cab to airport at 6 am",
+        "what is the price of gold today? order status of my swiggy",
+        "is BookMyShow safe to book 2 tickets for Leo tomorrow",
+        "",
+        "gold?",
+    )
+    T.eq("no split when it is one job, or when in doubt", emptyList<String>(), whole.filter { j(it) != listOf(it) })
+    T.eq("every job of a split is a question followed by an order", true, listOf(phone, "why is gold falling today? order 2 idli from Annapoorna").all { m -> j(m).let { it.size == 2 && Preflight.kind(it[0], deep = true) == null && Preflight.kind(it[1], deep = true) != null } })
+    T.eq("the notes say where each job is", true, Deep.JOBS_NOTE.contains("new chat") && Deep.SECOND_JOB_NOTE.contains("☰"))
+    val rules = Deep.system(false)
+    T.eq("the mode's rules cover several asks and \"let me know when\"", true, rules.contains("Several asks in one message") && rules.contains("watch_add") && Deep.REVIEW_NUDGE.contains("more than one ask"))
+}
+
 fun testFresh() {
     println("Dirghadarshi: today's figure only from today's pages (phone, 20 Nov 2026: two gold rates of another year, both \"How sure: High\")")
     val today = java.time.LocalDate.of(2026, 11, 20)
@@ -3320,7 +3395,7 @@ fun testFresh() {
 }
 
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testPayPage()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testPayPage()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3329,7 +3404,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testPayPage()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testPayPage()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }
