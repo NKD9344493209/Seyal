@@ -30,6 +30,9 @@ object Later {
     private val clockAt = Regex("(?:\\b($EVERY|$DAY)\\s+)?(?:\\b(?:at|by|@)\\s+)?(?:\\b($EVERY|$DAY)\\s+)?(?:\\b(?:at|by|@)\\s+)?\\b(?:$CLOCK)(?!\\d|:)(?:\\s+\\b($EVERY|$DAY)\\b)?", I)
     private val inMinutes = Regex("\\b(?:in|after)\\s+(\\d{1,3}|a|an|one|half an?)\\s*(min|mins|minutes?|hrs?|hours?)\\b", I)
 
+    /** The patterns kept here, for the check that Android can read every one of them. */
+    internal val patterns: List<Regex> get() = listOf(clockAt, inMinutes, timeIsTheThing)
+
     /** Requests where the time belongs to the thing itself: an alarm, a reminder, a meeting, a booking, a show time. */
     private val timeIsTheThing = Regex(
         "\\b(alarm|remind|reminder|timer|wake|meeting|calendar|event|appointment|book|booking|ticket|tickets|movie|train|bus|flight|cab|taxi|auto|order|deliver|delivery|schedule|snooze)\\b",
