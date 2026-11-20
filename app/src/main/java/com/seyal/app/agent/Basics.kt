@@ -93,8 +93,11 @@ object Basics {
 
     /** The plan for a request with a later time ([w]): a one-time (or daily) skill holding the fetch, or null for the AI. */
     private fun later(w: Later.When, now: LocalDateTime, whatsApp: Boolean): Plan? {
-        val inner = plan(w.rest, now, whatsApp) ?: return null
-        if (inner.tool !in fetchLater || inner.who != null) return null
+        val inner = plan(w.rest, now, whatsApp)
+        val fetch = inner != null && inner.tool in fetchLater && inner.who == null
+        // Not something to fetch: is it something to DO then ("search bairavaa in chrome… don't remind, you perform")?
+        // If so Seyal does it itself at that time. Anything else with a later time is planned by the AI, as before.
+        val task = if (fetch) "" else Later.task(w.rest).takeIf { Later.performs(it, w.rest) } ?: return null
         val at = w.at
         if (w.past && at != null) return Plan("", say = "${Later.say(at, now).replaceFirstChar { it.uppercase() }} has already passed. Tell me another time, or ask again without a time to get it now.")
         val hhmm = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
@@ -105,8 +108,24 @@ object Basics {
             at ?: return null
             trigger.put("repeat", "once").put("time", at.format(hhmm)).put("day", at.toLocalDate().toString()); "at ${Later.say(at, now)}"
         }
+        if (!fetch) {
+            val what = task.trimEnd('.', '?', '!').replaceFirstChar { it.uppercase() }
+            // A web or YouTube search, or a one-word command ("torch on", "open YouTube"), needs no AI at that time.
+            val fixed = Later.step(task) ?: Quick.match(task)?.let { it.name to it.args }
+            val steps = org.json.JSONArray().apply { fixed?.let { put(JSONObject().put("tool", it.first).put("args_json", it.second.toString())) } }
+            val screen = Skills.needsScreen(what, listOfNotNull(fixed?.first))
+            return Plan(
+                "skill_save",
+                args("name" to what.take(40), "description" to "Asked in the chat for $whenSaid: Seyal does it itself, no reminder", "goal" to what, "steps" to steps, "trigger_json" to trigger.toString()),
+            ) { o ->
+                if (o.optString("id").isBlank()) "I couldn't schedule that. Try again, or ask without a time to do it now."
+                else "Okay. I will do this myself $whenSaid, with no reminder: \"$what\"." +
+                    (if (screen) " Keep the phone unlocked then: if it is locked, you get one notification, and a tap on it runs this." else "") +
+                    " To change or cancel it: Skills tab."
+            }
+        }
         val what = w.rest.trim().trimEnd('.', '?', '!').replaceFirstChar { it.uppercase() }
-        val steps = org.json.JSONArray().put(JSONObject().put("tool", inner.tool).put("args_json", inner.args.toString()))
+        val steps = org.json.JSONArray().put(JSONObject().put("tool", inner!!.tool).put("args_json", inner.args.toString()))
         return Plan(
             "skill_save",
             args("name" to what.take(40), "description" to "Asked in the chat for $whenSaid", "goal" to what, "steps" to steps, "trigger_json" to trigger.toString()),

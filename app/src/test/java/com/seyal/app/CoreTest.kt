@@ -3173,7 +3173,7 @@ fun testPatternsLoadOnAndroid() {
     println("  note patterns read from the app's classes: $seen")
     T.eq("none of the patterns found in the app's classes is one Android refuses", emptyList<String>(), bad)
     T.eq("Later's own patterns are ones Android reads", emptyList<String>(), Later.patterns.filter { icuTrap(it.pattern) }.map { it.pattern.take(60) })
-    T.check("…all three of them", Later.patterns.size == 3)
+    T.check("…all eight of them (three for the time, five for \"do it then\")", Later.patterns.size == 8)
     T.check("Later loads and reads a time", Later.find("gold news at 9 pm", LocalDateTime.of(2026, 11, 20, 8, 0))?.at?.hour == 21)
 }
 
@@ -3244,6 +3244,46 @@ fun testPayPage() {
     // ---- screen control dropped out in the middle (first recording of the morning: no progress bar, the app reopened again and again)
     T.check("a step that failed because screen control is not answering is known", PayPause.lostScreen("Screen control is off. Full edition → Control → turn on Seyal in Accessibility settings.") && !PayPause.lostScreen("No text field on screen") && !PayPause.lostScreen(""))
     T.check("…and the user is told what to do, in plain words", PayPause.LOST.contains("Off, then On") && PayPause.LOST.contains("stopped here"))
+}
+
+fun testDoLater() {
+    println("A thing to DO at a time is done by Seyal then, not turned into a reminder (phone, 20 Nov 2026: \"…search bairavaa in chrome... don't remind you perform\" → \"Reminder set\")")
+    val now = java.time.LocalDateTime.of(2026, 11, 20, 15, 33, 5)
+    val phone = "at 3:34 pm today.. search bairavaa in chrome... don't remind you perform"
+    // ---- the request from the phone
+    val w = Later.find(phone, now)
+    T.eq("the time is read although the words hold \"remind\"", "2026-11-20T15:34", w?.at?.toString())
+    T.eq("what is left is the thing to do", "search bairavaa in chrome", Later.task(w?.rest.orEmpty()))
+    T.eq("…and it is something to do, said so by the user", listOf(true, true), listOf(Later.saysPerform(phone), Later.performs(Later.task(w?.rest.orEmpty()), w?.rest.orEmpty())))
+    val p = Basics.plan(phone, now)
+    val trig = org.json.JSONObject(p?.args?.optString("trigger_json").orEmpty().ifBlank { "{}" })
+    val step = p?.args?.optJSONArray("steps")?.optJSONObject(0)
+    val stepArgs = org.json.JSONObject(step?.optString("args_json").orEmpty().ifBlank { "{}" })
+    T.eq("it is saved to run once at 3:34 PM that day", listOf("skill_save", "Search bairavaa in chrome", "time", "once", "15:34", "2026-11-20"),
+        listOf(p?.tool, p?.args?.optString("goal"), trig.optString("type"), trig.optString("repeat"), trig.optString("time"), trig.optString("day")))
+    T.eq("with the search itself as its step, in Chrome, so no AI is needed then", listOf("open_url", "https://www.google.com/search?q=bairavaa", "Chrome"), listOf(step?.optString("tool"), stepArgs.optString("url"), stepArgs.optString("app")))
+    val said = p?.answer?.invoke(org.json.JSONObject().put("id", "x")).orEmpty()
+    T.eq("the answer says Seyal does it, at the time, with no reminder", listOf(true, true, true, false), listOf(said.contains("I will do this myself at 3:34 PM today"), said.contains("no reminder"), said.contains("Search bairavaa in chrome"), said.contains("Reminder set")))
+    T.eq("no reminder tool is planned", false, p?.tool == "reminder_set")
+    // ---- other things to do at a time
+    fun plan(t: String) = Basics.plan(t, now)
+    fun steps(t: String) = plan(t)?.args?.optJSONArray("steps")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).optString("tool") + " " + a.getJSONObject(it).optString("args_json") } }
+    T.eq("a YouTube search is one step too", listOf("open_url {\"url\":\"https://www.youtube.com/results?search_query=leo+trailer\"}"), steps("search leo trailer on youtube at 8 pm"))
+    T.eq("a setting is switched by its own step", listOf("skill_save", "set_setting"), listOf(plan("at 9 pm turn on dnd")?.tool, steps("at 9 pm turn on dnd")?.firstOrNull()?.substringBefore(" ")))
+    T.eq("what code cannot do in one step is left to the AI at that time, as the goal", listOf("skill_save", "Play suprabhatam on youtube", "0"),
+        plan("tomorrow at 6 am play suprabhatam on youtube").let { listOf(it?.tool, it?.args?.optString("goal"), it?.args?.optJSONArray("steps")?.length().toString()) })
+    T.eq("every day works the same way", "daily", org.json.JSONObject(plan("every day at 10 pm turn on dnd")?.args?.optString("trigger_json").orEmpty().ifBlank { "{}" }).optString("repeat"))
+    T.eq("a time already gone is said", true, plan("today at 2 pm search bairavaa in chrome, do it yourself")?.say?.contains("already passed") == true)
+    // ---- what must stay as it was
+    T.eq("messages, calls and payments at a time are still planned by the AI", listOf<String?>(null, null, null, null),
+        listOf("send hi to amma at 5 pm", "at 5 pm call appa, don't remind you do it", "at 9 pm whatsapp ram that i reached, do it yourself", "tomorrow 9 am pay the rent, you perform").map { plan(it)?.tool })
+    T.eq("a question at a time is still the AI's", listOf<String?>(null, null), listOf("at 5 pm what should i cook", "at 8 pm is it going to rain").map { plan(it)?.tool })
+    T.eq("a reminder asked for is still a reminder, an alarm an alarm, a booking a booking", emptyList<String>(),
+        listOf("remind me at 9 pm to call amma", "set alarm at 7 am", "book 2 tickets for Leo at 6 pm", "order biryani at 8 pm", "meeting at 5 pm", "remind me at 4 pm to search bairavaa in chrome").filter { Later.find(it, now) != null })
+    T.eq("news at a time still comes as a notification", true, plan("give the news about gold trend at today 11:09 pm")?.answer?.invoke(org.json.JSONObject().put("id", "x")).orEmpty().contains("comes as a notification"))
+    T.eq("\"can you open…\" is not read as \"you perform\"", listOf("open youtube", false), listOf(Later.task("can you open youtube").removePrefix("can you "), Later.saysPerform("can you open youtube at 5 pm")))
+    T.eq("the words are cleaned, whatever the order", listOf("search bairavaa in chrome", "open youtube", "turn on wifi", ""),
+        listOf("don't remind me, you perform: search bairavaa in chrome", "open youtube.. do it yourself", "turn on wifi automatically", "don't remind me").map { Later.task(it) })
 }
 
 fun testBuyThinks() {
@@ -3438,7 +3478,7 @@ fun testFresh() {
 }
 
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testPayPage()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testDoLater(); testPayPage()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3447,7 +3487,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testPayPage()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testDoLater(); testPayPage()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

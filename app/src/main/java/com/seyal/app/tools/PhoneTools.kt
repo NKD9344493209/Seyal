@@ -184,7 +184,7 @@ object PhoneTools {
             Tool(
                 "open_url", "phone",
                 "Open a link in the browser or the app that handles it. Also app deep links: geo:0,0?q=<place> (map), google.navigation:q=<place> (start navigation), https://www.youtube.com/results?search_query=<words>, market://details?id=<package>, https://www.google.com/search?q=<words>. With screen control on, the result includes the new screen.",
-                schema { str("url", "The link", required = true) },
+                schema { str("url", "The link", required = true); str("app", "Optional: \"Chrome\" to open a web link in Chrome when the user asked for Chrome") },
             ) { a, _ ->
                 val raw = a.optString("url").trim()
                 val u = if (Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:(?!\\d)").containsMatchIn(raw)) raw else "https://$raw"
@@ -202,6 +202,11 @@ object PhoneTools {
                         val view = Intent(Intent.ACTION_VIEW, Uri.parse(u)).setPackage(pkg)
                         if (runCatching { pm.queryIntentActivities(view, 0).isNotEmpty() }.getOrDefault(false) && launch(view)) { inApp = owner.name; break }
                     }
+                }
+                // "…in Chrome": a web link goes to Chrome when it is on the phone (otherwise wherever links open).
+                if (inApp == null && scheme.startsWith("http") && a.optString("app").contains("chrome", ignoreCase = true)) {
+                    val view = Intent(Intent.ACTION_VIEW, Uri.parse(u)).setPackage("com.android.chrome")
+                    if (runCatching { ctx.packageManager.queryIntentActivities(view, 0).isNotEmpty() }.getOrDefault(false) && launch(view)) inApp = "Chrome"
                 }
                 if (inApp == null && !launch(Intent(Intent.ACTION_VIEW, Uri.parse(u)))) return@Tool ToolResult.Failed("Nothing on this phone can open that link")
                 val out = JSONObject().put("ok", true).put("url", u)

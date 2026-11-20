@@ -31,7 +31,7 @@ object Later {
     private val inMinutes = Regex("\\b(?:in|after)\\s+(\\d{1,3}|a|an|one|half an?)\\s*(min|mins|minutes?|hrs?|hours?)\\b", I)
 
     /** The patterns kept here, for the check that Android can read every one of them. */
-    internal val patterns: List<Regex> get() = listOf(clockAt, inMinutes, timeIsTheThing)
+    internal val patterns: List<Regex> get() = listOf(clockAt, inMinutes, timeIsTheThing, notRemind, doItYourself, toPeopleOrMoney, actionFirst, webSearch)
 
     /** Requests where the time belongs to the thing itself: an alarm, a reminder, a meeting, a booking, a show time. */
     private val timeIsTheThing = Regex(
@@ -56,7 +56,8 @@ object Later {
     /** The time asked for and the request without it; null when the request names no later time. */
     fun find(text: String, now: LocalDateTime): When? {
         val t = text.trim().replace(Regex("\\s+"), " ")
-        if (t.length < 6 || timeIsTheThing.containsMatchIn(t)) return null
+        // "…don't remind, you perform" asks for no reminder: the word "remind" there must not make it one.
+        if (t.length < 6 || timeIsTheThing.containsMatchIn(notRemind.replace(t, " "))) return null
         inMinutes.find(t)?.let { m ->
             val n = when (m.groupValues[1].lowercase()) { "a", "an", "one" -> 1; "half a", "half an" -> 0; else -> m.groupValues[1].toInt() }
             val hours = m.groupValues[2].lowercase().startsWith("h")
@@ -81,6 +82,63 @@ object Later {
             at = at.plusDays(1)
         }
         return When(at, null, rest)
+    }
+
+    // ---- something to DO at that time, by Seyal itself ("at 3:34 pm search bairavaa in chrome, don't remind, you perform")
+
+    /** "don't remind me", "no reminder", "not a reminder", "don't just notify me". */
+    private val notRemind = Regex("\\b(?:don'?t|do not|dont|no need to|never)\\s+(?:just\\s+)?(?:remind|notify)(?:\\s+me)?\\b|\\b(?:no|not a|not an|without a|without)\\s+(?:reminders?|notifications?|reminding)\\b|\\binstead of remind\\w*\\b", I)
+    /** "you perform", "do it yourself", "perform it", "do it automatically", "you do it". */
+    private val doItYourself = Regex(
+        "\\byou\\s+(?:only\\s+|just\\s+|must\\s+|should\\s+|have to\\s+)?(?:perform|execute)(?:\\s+it)?(?:\\s+(?:yourself|by yourself|on your own))?\\b|\\byou\\s+(?:just\\s+|must\\s+|should\\s+)?do\\s+it(?:\\s+(?:yourself|by yourself|on your own))?\\b|" +
+            "\\b(?:just\\s+)?(?:perform|execute)\\s+it\\b|\\bperform\\s*$|\\bdo it (?:yourself|by yourself|on your own|automatically)\\b|\\b(?:by yourself|on your own|automatically)\\b|\\bneeye (?:pannu|sei)\\b|\\bnee pannu\\b",
+        I,
+    )
+    /** Messages, calls and posts go to people; money moves. Those are planned by the AI with its own checks, as before. */
+    private val toPeopleOrMoney = Regex(
+        "\\b(send|message|msg|text|whatsapp|sms|e-?mail|mail|call|ring|dial|reply|post|share|forward|wish|invite|inform|tell (?!me\\b)\\w+|pay|transfer|recharge|buy|purchase|upi|gpay|phonepe|paytm)\\b|அனுப்பு",
+        I,
+    )
+    private val actionFirst = Regex(
+        "^(?:please |pls |kindly )?(?:search|google|look up|open|launch|play|go to|visit|browse|turn (?:on|off)|switch (?:on|off)|(?:turn|switch) .{2,24} (?:on|off)|set|put|mute|unmute|start|stop|pause|resume|download|take|record|navigate|run|clear|close|enable|disable|increase|decrease|reduce|raise|lower)\\b",
+        I,
+    )
+
+    /** Whether the user said to do it and not to remind ("don't remind, you perform", "do it yourself", "no reminder"). */
+    fun saysPerform(said: String): Boolean = notRemind.containsMatchIn(said) || doItYourself.containsMatchIn(said)
+
+    /** The thing to do, without "don't remind", "you perform" and stray dots: "search bairavaa in chrome". "" when nothing is left. */
+    fun task(rest: String): String =
+        doItYourself.replace(notRemind.replace(rest, " "), " ")
+            .replace(Regex("\\.{2,}|…|\\s+[.,;]+(?=\\s|$)"), " ").replace(Regex("\\s+"), " ")
+            .replace(Regex("^(?:and|but|then|so|,)\\s+|\\s+(?:and|but|then|so|,)$", I), "")
+            .trim().trim(',', '.', '-', ':', ';').trim()
+
+    /**
+     * Whether [task] (what is left of a request with a later time, in the user's words [said]) is something for Seyal
+     * to DO at that time: the user said so, or it is plainly an action on the phone ("search…", "open…", "play…",
+     * "turn on…"). Never a message, a call or a payment: those keep their own planning and checks.
+     * (Seen on a real phone, 20 Nov 2026: "at 3:34 pm today.. search bairavaa in chrome... don't remind you perform"
+     * got a reminder that opens Chrome on a tap.)
+     */
+    fun performs(task: String, said: String): Boolean {
+        if (task.length < 3 || toPeopleOrMoney.containsMatchIn(task)) return false
+        return saysPerform(said) || actionFirst.containsMatchIn(task)
+    }
+
+    private val webSearch = Regex("^(?:please |pls )?(?:search|google|look up)\\s+(?:for\\s+)?(.{1,80}?)\\s+(?:in|on|using|with|from)\\s+(?:the\\s+|my\\s+)?(chrome|google|browser|web|internet|net|youtube|you tube|yt)(?:\\s+(?:app|browser))?$", I)
+
+    /**
+     * The step that does [task] with no AI at all, as (tool, arguments), when it is as plain as a web or YouTube
+     * search; null when the AI has to work it out at that time.
+     */
+    fun step(task: String): Pair<String, org.json.JSONObject>? {
+        val m = webSearch.find(task.trim()) ?: return null
+        val q = java.net.URLEncoder.encode(m.groupValues[1].trim().trim('"', '\''), "UTF-8")
+        val where = m.groupValues[2].lowercase()
+        if (q.isBlank()) return null
+        return if (where.startsWith("you") || where == "yt") "open_url" to org.json.JSONObject().put("url", "https://www.youtube.com/results?search_query=$q")
+        else "open_url" to org.json.JSONObject().put("url", "https://www.google.com/search?q=$q").apply { if (where == "chrome") put("app", "Chrome") }
     }
 
     /** [t] without the span [r] and the little words left hanging ("at", "on", a comma). */
