@@ -152,7 +152,10 @@ USING THE SCREEN
             apps += Lessons.appsIn(said)
             // A purchase: which of the apps that can do it are on this phone (the one the user named first).
             val kind = Preflight.kind(said, s.deep) ?: Preflight.kind(s.firstCommand, s.deep).takeIf { said.length < 40 }
-            val canDo = kind?.let { Preflight.appsFor(it, said) }.orEmpty()
+            // Buying a thing: the apps follow what was chosen ("gobi chilli" after "cauliflower or gobi chilli?" is a restaurant's).
+            // When the AI could not write the order down, the user's answer to "which one?" says it.
+            val bought = s.order?.let { o -> listOf(o.app, o.item).filter { it.isNotBlank() }.joinToString(" ") }?.takeIf { it.isNotBlank() } ?: Agent.requestWords(s).drop(1).lastOrNull() ?: said
+            val canDo = kind?.let { k -> Preflight.appsFor(k, if (k == Preflight.Kind.SHOP) bought else said) }.orEmpty()
             if (kind != null) {
                 apps += canDo.take(2)
                 if (canDo.isEmpty()) when (kind) {

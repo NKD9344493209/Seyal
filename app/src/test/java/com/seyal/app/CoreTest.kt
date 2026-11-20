@@ -3246,6 +3246,49 @@ fun testPayPage() {
     T.check("…and the user is told what to do, in plain words", PayPause.LOST.contains("Off, then On") && PayPause.LOST.contains("stopped here"))
 }
 
+fun testBuyThinks() {
+    println("Buying a thing: the app is worked out, never asked (phone, 20 Nov 2026: \"buy cauliflower or gobi chilli\" → \"Which app or shop? (Amazon / Flipkart / Blinkit)\")")
+    val phone = "buy cauliflower or gobi chilli"
+    val labels = listOf("Amazon", "Flipkart", "Blinkit", "Swiggy", "Zomato", "BookMyShow")
+    // ---- the request from the phone
+    T.eq("two things of two kinds: a shop request, with which one still open", listOf("SHOP", "MIXED", "cauliflower / gobi chilli"),
+        listOf(Preflight.kind(phone).toString(), Preflight.sells(phone).toString(), Preflight.either(phone)?.let { it.first + " / " + it.second }.orEmpty()))
+    T.eq("only two things are asked: which one, and how much", listOf("Which one: cauliflower or gobi chilli?", "How much or how many? (for example 1 kg, 2 packets, 1 plate)"), Preflight.missingShop(listOf(phone)))
+    val asked = "1. Which item would you like? (Cauliflower / Gobi chilli, with brand/size/variant if any)\n2. How many? (e.g. 1 kg / 1 plate)\n3. What is your maximum budget? (e.g. under ₹100 / under ₹200)\n4. Which app or shop? (Amazon / Flipkart / Blinkit)\nAnswer in one line, or say 'you choose'."
+    val q = Preflight.shopQuestion(asked, listOf(phone)).orEmpty()
+    T.eq("the question from the phone loses its budget and app lines", listOf(true, true, false, false, false), listOf(q.contains("Which item"), q.contains("How many"), q.contains("budget", true), q.contains("app", true), q.contains("Amazon")))
+    T.eq("no shopping question anywhere names an app or a budget", emptyList<String>(),
+        listOf(Preflight.fallbackQuestion(Preflight.Kind.SHOP, false), Preflight.Kind.SHOP.details, Preflight.askFor(Preflight.missingShop(listOf(phone)), "order")).filter { Regex("which app|budget|amazon|flipkart", RegexOption.IGNORE_CASE).containsMatchIn(it) })
+    // ---- the answer decides the app
+    T.eq("the vegetable: a grocery app first, never Amazon first", "Blinkit", Preflight.shopApps("cauliflower", labels).first.firstOrNull())
+    T.eq("the dish: a food app first", "Swiggy", Preflight.shopApps("gobi chilli", labels).first.firstOrNull())
+    T.eq("shoes: a shopping app first", "Amazon", Preflight.shopApps("black running shoes size 9", labels).first.firstOrNull())
+    val line = Preflight.shopAppsLine(phone, labels)
+    T.eq("the AI is given the apps by what they sell, and told never to ask", true, line.contains("a cooked dish from a restaurant: Swiggy, Zomato") && line.contains("daily needs: Blinkit") && line.contains("everything else") && line.contains("Amazon, Flipkart") && line.contains("NEVER ask the user which app"))
+    // ---- nothing is asked when it was all said
+    T.eq("item and amount said: no question, whatever the AI wanted to ask", listOf<String?>(null, null, null),
+        listOf(Preflight.shopQuestion("Which brand? Which app (Amazon / Blinkit)?", listOf("buy 1 kg cauliflower")), Preflight.shopQuestion(asked, listOf("buy 2 packets of milk")), Preflight.shopQuestion(asked, listOf(phone, "gobi chilli 1 plate"))))
+    T.eq("a weight or a pack is \"how much\"", listOf(true, true, true, true, false, false), listOf("buy 1 kg cauliflower", "half litre milk", "2 packets of bread", "a dozen eggs", "buy cauliflower", "buy shoes under 500").map { Preflight.saysHowMuch(listOf(it)) })
+    T.eq("only the amount is asked when the thing is clear", listOf("How much or how many? (for example 1 kg, 2 packets, 1 plate)"), Preflight.missingShop(listOf("buy cauliflower")))
+    T.eq("a plain question of the AI's that is not about the app stays", "Which size of shoe: 8, 9 or 10?", Preflight.shopQuestion("Which size of shoe: 8, 9 or 10?", listOf("buy black running shoes")))
+    // ---- a cooked dish is a food order; things for the shelf are not
+    val dishes = listOf("buy gobi chilli", "order gobi manchurian", "buy chilli chicken", "order paneer butter masala", "buy 2 egg puffs", "order chicken 65", "buy paneer tikka", "order samosa")
+    T.eq("a cooked dish goes to the food apps", emptyList<String>(), dishes.filter { Preflight.kind(it) != Preflight.Kind.FOOD })
+    val shelf = listOf("buy cauliflower", "buy chilli powder", "buy 1 kg onions", "buy curry leaves", "buy vada mix", "buy frozen samosa packet", "buy a sandwich maker", "buy butter", "buy paneer 200 g", "buy 65 inch tv", "buy a phone under 15000", "buy steel plates", "buy tissue roll")
+    T.eq("things for the shelf stay shop requests", emptyList<String>(), shelf.filter { Preflight.kind(it) != Preflight.Kind.SHOP })
+    T.eq("…and each gets the right kind of app", listOf("GROCERY", "GROCERY", "GROCERY", "GROCERY", "GROCERY", "GROCERY", "GOODS", "GROCERY", "GROCERY", "GOODS", "GOODS", "GOODS", "GROCERY"), shelf.map { Preflight.sells(it).toString() })
+    T.eq("a brand, a kitchen tool and Tamil words are told apart", listOf("GOODS", "GOODS", "GOODS", "GROCERY", "GROCERY", "MIXED", "GOODS"),
+        listOf("buy apple iphone 16", "buy a rice cooker", "buy sandwich maker or toaster", "vaangu thakkali 1 kg", "buy 6 apples", "buy rice or biryani", "buy me something nice").map { Preflight.sells(it).toString() })
+    T.eq("shoes are not asked about kilos, and a phone's variant may still be asked", listOf("How many?", "Which storage: 128 GB or 256 GB?"),
+        listOf(Preflight.missingShop(listOf("buy black running shoes")).joinToString(), Preflight.shopQuestion("1. Which storage: 128 GB or 256 GB?\n2. Which app? (Amazon / Flipkart)\n3. Budget?", listOf("buy 1 apple iphone 16")).orEmpty()))
+    T.eq("a vegetable is never asked its brand", "Before I order, tell me:\n1) Which one: cauliflower or gobi chilli?\n2) How much or how many? (for example 1 kg, 2 packets, 1 plate)\nAnswer in one line, or say 'you choose'.",
+        Preflight.shopQuestion("1. Which one?\n2. Which brand?\n3. How many?\n4. Which app?", listOf(phone)).orEmpty())
+    // ---- what worked before is unchanged
+    T.eq("food and film requests are read as before", listOf("FOOD", "FOOD", "MOVIE", "FOOD"),
+        listOf("order dosa from nearby restaurant 2 dosa... 100 per dosa", "order 2 chicken biryani from A2B", "book o. m movie ticket releasing on 20th November.. any nearby theatre 2 tickets, tamil, any time.. 190 per ticket", "buy pizza").map { Preflight.kind(it).toString() })
+    T.eq("the food and film app lists are as before", listOf(listOf("Swiggy", "Zomato"), listOf("BookMyShow")), listOf(Preflight.installed(Preflight.Kind.FOOD, labels), Preflight.installed(Preflight.Kind.MOVIE, labels)))
+}
+
 fun testJobs() {
     println("Dirghadarshi: a question and an order in one message are two jobs (phone, 20 Nov 2026: only the booking was done)")
     // ---- the message from the phone, as typed
@@ -3395,7 +3438,7 @@ fun testFresh() {
 }
 
 fun main() {
-    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testPayPage()
+    testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testPayPage()
     println("\n${T.passed} passed, ${T.failed} failed")
     if (T.failed > 0) System.exit(1)
 }
@@ -3404,7 +3447,7 @@ fun main() {
 class CoreJUnitTest {
     @org.junit.Test
     fun brain() {
-        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testPayPage()
+        testModels(); testTimes(); testParsers(); testMemory(); testLlm(); testTriggers(); testFiles(); testPhase2(); testPhase3(); testPhase4(); testBasics(); testBatch23(); testReliability(); testQuality(); testTrust(); testPhoneVideos(); testLongChats(); testSecondVideos(); testThirdVideos(); testFourthVideo(); testBrain(); testFifthVideo(); testSpeakFirst(); testForesight(); testSixthVideos(); testSeventhVideos(); testEighthVideos(); testNinthVideos(); testAwareness(); testBookingByCode(); testLaterAndFood(); testBackup(); testPatternsLoadOnAndroid(); testFresh(); testJobs(); testBuyThinks(); testPayPage()
         org.junit.Assert.assertEquals("failed checks", 0, T.failed)
     }
 }

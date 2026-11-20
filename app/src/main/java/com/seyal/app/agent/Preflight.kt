@@ -37,7 +37,7 @@ object Preflight {
         ),
         SHOP(
             "buy or order something",
-            "1) exactly which item (brand, variant, size or colour where it matters)  2) how many  3) budget  4) which app or shop, if they care",
+            "1) exactly which thing. When they named two with 'or', which of the two: say in a few words what each is (\"cauliflower, the vegetable\" / \"gobi chilli, the dish\"). Brand, size or colour ONLY where the thing cannot be bought without it (clothes, shoes, a phone): never for vegetables, groceries or food  2) how much or how many, in the unit that fits (kg, packets, plates, pieces)",
             listOf("Amazon", "Flipkart", "Meesho", "Myntra", "Blinkit", "Zepto", "Instamart", "bigbasket", "JioMart", "Ajio", "Nykaa", "Tata Neu", "DMart"), "items",
         ),
     }
@@ -51,7 +51,8 @@ object Preflight {
 
     /** The same, for this phone. If the user named an app in [said], it comes first. */
     fun appsFor(kind: Kind, said: String = ""): List<String> {
-        val have = installed(kind, runCatching { appLabels() }.getOrDefault(emptyList()))
+        val labels = runCatching { appLabels() }.getOrDefault(emptyList())
+        val have = if (kind == Kind.SHOP) shopApps(said, labels).let { g -> g.first + g.second + g.third } else installed(kind, labels)
         return have.sortedBy { if (said.contains(it, true) || said.contains(it.substringBefore(' '), true)) 0 else 1 }
     }
 
@@ -145,7 +146,7 @@ object Preflight {
             Kind.FOOD -> "Before I order, tell me what you haven't said yet:\n1) Which dish (veg / chicken / mutton, size)\n2) How many\n3) Which restaurant (or 'best rated nearby')\n4) Budget\nAnswer in one line, or say 'you choose'."
             Kind.TRAVEL -> "Before I book, tell me what you haven't said yet:\n1) From and to\n2) Day and time of day\n3) How many people\n4) Seat type (sleeper / seater, AC / non-AC)\n5) Budget per seat\nAnswer in one line, or say 'you choose'."
             Kind.CAB -> "Before I book, tell me what you haven't said yet:\n1) Pickup (or 'from here')\n2) Drop place\n3) Now, or at what time\n4) Auto / mini / sedan / bike\nAnswer in one line."
-            Kind.SHOP -> "Before I order, tell me what you haven't said yet:\n1) Exactly which item (brand, size, colour)\n2) How many\n3) Budget\n4) Which app, if you care\nAnswer in one line, or say 'you choose'."
+            Kind.SHOP -> "Before I order, tell me:\n1) Exactly which item\n2) How much or how many (for example 1 kg, 2 packets, 1 plate)\nAnswer in one line."
         }
     }
 
@@ -202,10 +203,131 @@ object Preflight {
             travel.containsMatchIn(t) -> Kind.TRAVEL
             cab.containsMatchIn(t) -> Kind.CAB
             food.containsMatchIn(t) -> Kind.FOOD
+            // "buy gobi chilli", "order paneer butter masala": a cooked dish comes from a restaurant, not from a shop.
+            sells(t) == Sells.DISH -> Kind.FOOD
             // "Book" or "reserve" with nothing recognisable after it (a table, a slot, an appointment) is not a shop order.
             buyVerb.containsMatchIn(t) || orderVerb.containsMatchIn(t) -> Kind.SHOP
             else -> null
         }
+    }
+
+    // ---- buying a thing: what kind of thing it is decides the app, and the user is never asked which app
+
+    /** Who sells a thing: a restaurant (a cooked dish), a grocery app (vegetables, fruit, milk, daily needs), or a shopping app. MIXED: the words name more than one kind. */
+    enum class Sells { DISH, GROCERY, GOODS, MIXED }
+
+    private val I = RegexOption.IGNORE_CASE
+    /** Cooked dishes that only a restaurant sells. Things also sold in a pack (pasta, soup, chapati) are left out on purpose. */
+    private val dishWords = Regex(
+        "\\b(gobi (?:chill?[iy]|manchurian|65|fry|masala)|chill?[iy] (?:gobi|chicken|paneer|parotta|mushroom|potato|fish|prawn|egg|idli|beef)|manchurian|(?:chicken|gobi|paneer|mushroom|fish|prawn) 65|" +
+            "pulao|uttapam|pongal|vada|vadai|bonda|bajji|pakoda|pakora|samosa|naan|kurma|korma|gravy|curry(?! leaves| powder| leaf| paste)|butter chicken|butter masala|tikka|kebab|kabab|tandoori|shawarma|" +
+            "(?:egg|chicken|paneer|veg|kathi|spring|mutton) rolls?|(?:egg|veg|chicken) puffs?|sandwich|momos?|chaat|pani puri|pav bhaji|thali|omelette|milkshake|lassi|falooda)\\b",
+        I,
+    )
+    /** The same word as something for the kitchen shelf: "curry paste", "vada mix", "frozen samosa". */
+    private val formWords = Regex("\\b(powder|mix|paste|batter|raw|frozen|instant|ready ?made|packets?|packs?|pkt)\\b", I)
+    /** …or as a thing to cook it with: "sandwich maker", "dosa tawa". */
+    private val toolWords = Regex("\\b(makers?|pan|tawa|machine|toaster|grill|griller|oven|cookers?|boilers?|dispenser|grinder|mixer|juicer|kettle|flask|jars?|containers?|baskets?|rack|cutter|slicer|peeler|knife|mould|book|box|plates?|stand|mugs?|cups?|case|cover|toys?)\\b", I)
+    private val groceryWords = Regex(
+        "\\b(vegetables?|veggies|fruits?|grocer\\w+|provisions?|cauliflower|gobi|cabbage|onions?|tomato(?:es)?|potato(?:es)?|carrots?|beans|brinjal|ladies finger|okra|drumsticks?|spinach|keerai|coriander|curry lea(?:f|ves)|mint|ginger|garlic|" +
+            "chill?(?:i|ies|y)|lemons?|coconuts?|bananas?|apples?(?! (?:iphone|ipad|mac\\w*|watch|airpods|pencil|tv|phone|laptop|charger|earphones|store))|mango(?:es)?|oranges?|grapes|pomegranates?|papaya|watermelon|milk|curd|paneer|butter|ghee|cheese|eggs?|bread|rice|atta|maida|rava|flour|dal|dhal|sugar|salt|oil|" +
+            "tea|coffee|biscuits?|chips|maggi|soap|shampoo|detergent|toothpaste|tissues?|diapers?|" +
+            "thakkali|vengayam|urulai\\w*|kathiri\\w*|vendakk?ai|murungakk?ai|kaaikari|kaikari|keerai|pazham|paal|thayir|muttai|arisi|paruppu|sakkarai|uppu|ennai)\\b",
+        I,
+    )
+
+    private fun sellsOne(t: String): Sells {
+        val dish = dishWords.containsMatchIn(t)
+        val form = formWords.containsMatchIn(t)
+        val grocery = groceryWords.containsMatchIn(t)
+        return when {
+            // "sandwich maker", "rice cooker", "milk jar": a thing for the kitchen, not something to eat.
+            (dish || grocery) && toolWords.containsMatchIn(t) -> Sells.GOODS
+            dish && !form -> Sells.DISH
+            dish || grocery -> Sells.GROCERY
+            else -> Sells.GOODS
+        }
+    }
+
+    /**
+     * What kind of seller has the thing [text] names. A guess by rule: it orders the apps and sends a plain cooked
+     * dish to the food apps; the AI and the user's answer decide the rest. "A or B" of two kinds is MIXED.
+     */
+    fun sells(text: String): Sells {
+        val parts = text.split(Regex("\\s+or\\s+", I))
+        if (parts.size == 2) { val a = sellsOne(parts[0]); val b = sellsOne(parts[1]); return if (a == b) a else Sells.MIXED }
+        return sellsOne(text)
+    }
+
+    private val groceryApps = listOf("Blinkit", "Zepto", "Instamart", "bigbasket", "JioMart", "DMart")
+
+    /** The apps on this phone for buying a thing, as (first choice, second, the rest) by what [said] names. */
+    internal fun shopApps(said: String, labels: List<String>): Triple<List<String>, List<String>, List<String>> {
+        val food = installed(Kind.FOOD, labels)
+        val grocery = groceryApps.mapNotNull { want -> labels.firstOrNull { it.contains(want, true) } }.distinct()
+        val goods = installed(Kind.SHOP, labels).filter { it !in grocery }
+        return when (sells(said)) {
+            Sells.DISH -> Triple(food, grocery, goods)
+            Sells.MIXED -> Triple(grocery, food, goods)
+            Sells.GROCERY -> Triple(grocery, goods, emptyList())
+            Sells.GOODS -> Triple(goods, grocery, emptyList())
+        }
+    }
+
+    /** The apps as the AI is told them for a purchase: by what each kind of app sells, with the rule that the app is never asked about. */
+    internal fun shopAppsLine(said: String, labels: List<String> = runCatching { appLabels() }.getOrDefault(emptyList())): String {
+        fun list(l: List<String>) = if (l.isEmpty()) "(none on this phone)" else l.joinToString(", ")
+        val food = installed(Kind.FOOD, labels)
+        val grocery = groceryApps.mapNotNull { want -> labels.firstOrNull { it.contains(want, true) } }.distinct()
+        val goods = installed(Kind.SHOP, labels).filter { it !in grocery }
+        return "APPS ON THIS PHONE, by what they sell: a cooked dish from a restaurant: ${list(food)} · vegetables, fruit, milk, groceries, daily needs: ${list(grocery)} · everything else (clothes, electronics, books, things for the house): ${list(goods)}. " +
+            "THINK about what the thing is and where a person really gets it: a dish is not bought on Amazon, a vegetable not on Flipkart, a phone not on Swiggy. Use the app the user named, otherwise the first app of the right group, and write it in details_complete's app. " +
+            "NEVER ask the user which app or shop, and never ask for a budget: the price is shown to them before anything is paid."
+    }
+
+    private val eitherOr = Regex("\\b(?:buy|order|purchase|get|vaangu|vangu)\\s+(?:me\\s+|us\\s+)?(?:(?:a|an|some|one)\\s+)?(.{2,30}?)\\s+or\\s+(.{2,30}?)(?=\\s*(?:[,.;!?]|$)|\\s+(?:from|for|under|below|on|in|at|today|tomorrow|now)\\b)", I)
+
+    /** "buy cauliflower or gobi chilli" → (cauliflower, gobi chilli): two things, of which the user wants one. */
+    fun either(said: String): Pair<String, String>? = eitherOr.find(said.trim())?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }?.takeIf { it.first.isNotBlank() && it.second.isNotBlank() }
+
+    /** Whether the user said how much by weight, volume or pack ("1 kg", "half litre", "2 packets", "a dozen"). */
+    fun saysHowMuch(texts: List<String>): Boolean = texts.any { Regex("\\b(?:\\d+(?:\\.\\d+)?|half|quarter|one|two|three|a|kaal|arai|oru)\\s?(?:kgs?|kilos?|grams?|gms?|g|litres?|liters?|l|ml|packets?|packs?|pkt|dozen|bunch(?:es)?|bottles?|plates?|pieces?|pcs|nos?|boxes|box)\\b", I).containsMatchIn(it) }
+
+    /**
+     * What a "buy…" request does not say, as the questions to ask: which of two things, and how much. Never the app
+     * and never the budget. (Seen on a real phone: "buy cauliflower or gobi chilli" was asked four things, the last
+     * being "Which app or shop? (Amazon / Flipkart / Blinkit)".) Empty = nothing to ask.
+     */
+    fun missingShop(words: List<String>): List<String> {
+        val first = words.firstOrNull().orEmpty()
+        val two = either(first)
+        return buildList {
+            if (two != null && words.size == 1) add("Which one: ${two.first} or ${two.second}?")
+            else if (words.size == 1 && Order.itemFromWords(words).isBlank() && first.trim().split(Regex("\\s+")).size <= 3) add("Exactly which item?")
+            if (!saysHowMany(words) && !saysHowMuch(words)) add(if (sells(words.joinToString(" ")) == Sells.GOODS) "How many?" else "How much or how many? (for example 1 kg, 2 packets, 1 plate)")
+        }
+    }
+
+    private val notAsked = Regex("\\b(apps?|shops?|stores?|websites?|sites?|budget|price range|maximum|max|how much (?:do|can|would|will) you (?:want to )?(?:spend|pay)|amazon|flipkart|blinkit|zepto|instamart|bigbasket|meesho|myntra|swiggy|zomato)\\b", I)
+
+    /**
+     * The question for a "buy…" request: the AI's own wording without any line about the app, the shop or the budget;
+     * the built-in one when nothing of the AI's is left; null when the user's words already say it all.
+     */
+    fun shopQuestion(fromAi: String?, words: List<String>): String? {
+        val goods = sells(words.joinToString(" ")) == Sells.GOODS
+        val missing = missingShop(words)
+        fun ours() = missing.takeIf { it.isNotEmpty() }?.let { askFor(it, "order") }
+        // Food and groceries need only the thing and the amount: both said, nothing to ask (no brand of a vegetable).
+        // Other goods may need a size or a variant, so the AI's question about that stays.
+        if (missing.isEmpty() && !goods) return null
+        val text = fromAi.orEmpty().trim()
+        val numbered = text.lines().map { it.trim() }.filter { Regex("^\\d{1,2}\\s*[.)]").containsMatchIn(it) }
+        // One plain question from the AI that is not about the app or the budget stays as it is.
+        if (numbered.isEmpty()) return if (text.isNotBlank() && !notAsked.containsMatchIn(text)) text else ours()
+        val kept = numbered.filter { !notAsked.containsMatchIn(it) }.map { it.replace(Regex("^\\d{1,2}\\s*[.)]\\s*"), "") }
+        if (kept.isEmpty() || (!goods && kept.size > missing.size)) return ours()
+        return if (kept.size == 1) kept[0] else kept.mapIndexed { i, q -> "${i + 1}) $q" }.joinToString("\n") + "\nAnswer in one line."
     }
 
     /** The second choice the AI gets beside ask_user. */
@@ -223,7 +345,7 @@ You are the first step of a phone assistant. The user wants to ${kind.what}. Bef
 NEEDED: ${kind.details}
 
 NOW: ${Times.nowText()}. Home city: ${Settings.homeCity.ifBlank { "unknown" }}.
-APPS ON THIS PHONE FOR THIS: ${if (apps.isEmpty()) "(none found)" else apps.joinToString(", ")}. The app is not a detail to ask about: the one the user named is used, otherwise the first of these.
+${if (kind == Kind.SHOP) shopAppsLine(said) else "APPS ON THIS PHONE FOR THIS: " + (if (apps.isEmpty()) "(none found)" else apps.joinToString(", ")) + ". The app is not a detail to ask about: the one the user named is used, otherwise the first of these."}
 KNOWN ABOUT THE USER: ${Memory.text().ifBlank { "(nothing)" }.take(600)}
 LAST TIME (this user's last order of this kind that went through): ${Usual.text(kind.name).ifBlank { "(none yet)" }}. If they say "same as last time" or "the usual", those details count as given (never the day or the time). Otherwise you may offer it as the first choice in your question.
 

@@ -116,7 +116,7 @@ class Order(
                 .put("count", p("integer", "How many tickets / seats / people / items the user said. 0 if they did not say."))
                 .put("max_each", p("integer", "The most the user will pay for ONE, in rupees. 0 if not said."))
                 .put("seat", p("string", "Seat class or type the user said (balcony, recliner, sleeper, AC, window). Empty if not said."))
-                .put("app", p("string", "The app the user named, if any."))
+                .put("app", p("string", if (kind == Preflight.Kind.SHOP) "The app to use: the one the user named, otherwise the first app of the group that sells this kind of thing." else "The app the user named, if any."))
             if (kind == Preflight.Kind.MOVIE) props.put("language", p("string", "The language of the film, if the user said it."))
             if (kind == Preflight.Kind.TRAVEL || kind == Preflight.Kind.CAB) {
                 props.put("from", p("string", "Where from")); props.put("to", p("string", "Where to"))

@@ -665,6 +665,12 @@ object Agent {
                             if (kind == Preflight.Kind.FOOD && question != null && Preflight.missingFood(lock.withLock { requestWords(s) }).isEmpty()) question = null
                             // A film too: "…190 per ticket" was asked "the most you want to pay per ticket?" (real phone, twice).
                             if (kind == Preflight.Kind.MOVIE && question != null && Preflight.missingMovie(lock.withLock { requestWords(s) }, java.time.LocalDateTime.now()).isEmpty()) question = null
+                            // Buying a thing: never "which app or shop?" and never the budget (real phone: "buy cauliflower or gobi
+                            // chilli" → "Which app or shop? (Amazon / Flipkart / Blinkit)"). Only which thing and how much, when not said.
+                            if (kind == Preflight.Kind.SHOP && question != null) {
+                                val q = Preflight.shopQuestion(question.args.optString("question"), lock.withLock { requestWords(s) })
+                                question = q?.let { Part.Call(newId(), "ask_user", JSONObject().put("question", it)) }
+                            }
                             if (question == null) {
                                 // The AI did not ask. That is only right when the user really gave the details: check the one
                                 // that costs most when guessed (how many), and ask it ourselves if nobody said it.
@@ -672,7 +678,7 @@ object Agent {
                                 val saidComplete = pre?.calls?.any { it.name == "details_complete" } == true
                                 val leaves = Preflight.leavesChoice(words)
                                 val usual = if (words.any { Usual.asksForSame(it) }) Usual.last(kind.name) else null
-                                val needCount = kind.unit.isNotBlank() && !Preflight.saysHowMany(words) && (usual?.count ?: 0) == 0
+                                val needCount = kind.unit.isNotBlank() && !Preflight.saysHowMany(words) && (usual?.count ?: 0) == 0 && !(kind == Preflight.Kind.SHOP && Preflight.saysHowMuch(words))
                                 val needSeat = kind == Preflight.Kind.MOVIE && !Preflight.saysSeatOrBudget(words) && usual?.let { it.seat.isNotBlank() || it.maxEach > 0 } != true
                                 question = when {
                                     leaves -> null
@@ -681,6 +687,7 @@ object Agent {
                                     !saidComplete -> (when (kind) {
                                         Preflight.Kind.MOVIE -> Preflight.missingMovie(words, java.time.LocalDateTime.now()).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it) }
                                         Preflight.Kind.FOOD -> Preflight.missingFood(words).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it, "order") }
+                                        Preflight.Kind.SHOP -> Preflight.missingShop(words).takeIf { it.isNotEmpty() }?.let { Preflight.askFor(it, "order") }
                                         else -> Preflight.fallbackQuestion(kind, onlyCount = false)
                                     })
                                         ?.let { q -> Part.Call(newId(), "ask_user", JSONObject().put("question", q)) }
